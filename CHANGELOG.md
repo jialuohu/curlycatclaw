@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.0] - 2026-03-27
+
+Phase 2 "Intelligence Layer." Smart context, semantic memory, scheduling, and plugins.
+
+### Added
+- Remind skill: set_reminder, list_reminders, cancel_reminder with persistent gocron scheduler
+- ReminderActor with past-due fire on startup, timezone-aware scheduling, cron recurring
+- Prompt budget manager: 3-tier context classification (keyword fast-path, SHA256 cache, Haiku LLM)
+- BuildContextWithBudget falls back to sliding window on classification error
+- Vector search via Qdrant gRPC with semantic_search skill and user-scoped collections
+- Async message indexing in session actor for vector search
+- Wasm skill runtime (wazero) with JSON-over-shared-memory protocol
+- Host functions: catclaw_log, catclaw_http_get (allow-list), catclaw_db_query (SELECT-only), catclaw_send_message
+- Capability-based security model with manifest.json per Wasm plugin
+- fsnotify hot-reload for Wasm skills directory
+- Config sections: [budget], [vector], [wasm] (all opt-in, disabled by default)
+
+### Fixed
+- Skill Registry now thread-safe with RWMutex (prevents data race from fsnotify goroutine)
+- Reminder uses blocking send with 5s timeout (prevents silent message drops)
+- GitHub Actions release workflow pinned to SHA (supply chain hardening)
+- .gstack/ and .idea/ added to .gitignore
+
 ## [0.1.0] - 2026-03-26
 
 Phase 1 MVP. A personal AI assistant that lives in your Telegram, powered by Claude.
