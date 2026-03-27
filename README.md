@@ -24,7 +24,11 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Reminders** ... "remind me at 3pm" with persistent scheduler, timezone-aware, recurring
 - **Wasm plugins** ... extend with custom skills via WebAssembly, capability-based security (opt-in)
 - **Actor model** ... each component runs in its own goroutine with typed message channels
-- **Supervision** ... automatic restart with exponential backoff, resets after 60s healthy run
+- **Supervision** ... automatic restart with exponential backoff, graceful shutdown with 30s drain timeout
+- **Configurable logging** ... level, format (text/json), file output with rotation via lumberjack
+- **Landlock sandbox** ... Linux filesystem restriction with BestEffort degradation (opt-in)
+- **Tool transparency** ... see what tools Claude calls before seeing the response
+- **Secure defaults** ... Telegram bot fails closed on empty user allowlist, MCP env filtering
 - **Encrypted credentials** ... AES-256-GCM for MCP server secrets
 
 ## Quick Start
@@ -61,7 +65,7 @@ model   = "claude-sonnet-4-6-20250514"
 
 [telegram]
 token = "123456:ABC-DEF..."
-allowed_user_ids = []      # restrict access; empty = allow all
+allowed_user_ids = [123456789]  # your Telegram user ID (required unless allow_all = true)
 
 [storage]
 db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
@@ -104,7 +108,9 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 | Vector | `internal/memory/vectorstore.go` | Qdrant vector search |
 | Wasm | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | Credentials | `internal/security/credential.go` | AES-256-GCM encrypted credential store |
-| Supervisor | `internal/actor/supervisor.go` | Panic recovery with exponential backoff |
+| Sandbox | `internal/security/sandbox_linux.go` | Landlock filesystem sandbox (Linux) |
+| Supervisor | `internal/actor/supervisor.go` | Panic recovery, graceful shutdown drain |
+| systemd | `deploy/curlycatclaw.service` | Service unit with hardening directives |
 
 ## Built-in Skills
 
@@ -161,7 +167,7 @@ See [deploy/UPGRADE.md](deploy/UPGRADE.md) for upgrade instructions.
 go test ./... -count=1
 ```
 
-Tests cover all subsystems across 11 packages.
+Tests cover all subsystems across 12 packages.
 
 ## License
 
