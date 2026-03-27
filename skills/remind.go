@@ -380,8 +380,26 @@ func (ra *ReminderActor) scheduleReminder(scheduler gocron.Scheduler, r reminder
 }
 
 // fireReminder sends the reminder message via Telegram and updates the DB status.
+// Uses a blocking send with timeout so reminders are not silently dropped.
+// On send failure, status stays "pending" for retry on next actor restart.
 func (ra *ReminderActor) fireReminder(r reminderRow) {
-	// Update status to "fired" (for non-recurring). For recurring, keep as pending.
+	msg := telegram.OutgoingMessage{
+		ChatID: r.ChatID,
+		Text:   "Reminder: " + r.Message,
+	}
+
+	// Blocking send with 5s timeout. Reminders are too important to silently drop.
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case ra.tgInbox <- msg:
+		slog.Info("reminder: fired", "id", r.ID, "chat_id", r.ChatID)
+	case <-timer.C:
+		slog.Error("reminder: telegram inbox full after 5s, keeping pending for retry", "id", r.ID)
+		return // Don't update status — will retry on next startup.
+	}
+
+	// Only mark fired after successful send. For recurring, keep as pending.
 	if r.CronExpr == nil {
 		_, err := ra.db.Exec(
 			`UPDATE reminders SET status = 'fired' WHERE id = ? AND status = 'pending'`,
@@ -390,18 +408,6 @@ func (ra *ReminderActor) fireReminder(r reminderRow) {
 		if err != nil {
 			slog.Error("reminder: update status to fired", "id", r.ID, "err", err)
 		}
-	}
-
-	msg := telegram.OutgoingMessage{
-		ChatID: r.ChatID,
-		Text:   "Reminder: " + r.Message,
-	}
-
-	select {
-	case ra.tgInbox <- msg:
-		slog.Info("reminder: fired", "id", r.ID, "chat_id", r.ChatID)
-	default:
-		slog.Error("reminder: telegram inbox full, message dropped", "id", r.ID)
 	}
 }
 

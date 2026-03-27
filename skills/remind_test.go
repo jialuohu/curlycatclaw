@@ -390,6 +390,9 @@ func TestReminderActor_FiresPastDueOnStartup(t *testing.T) {
 		t.Fatal("timed out waiting for past-due reminder to fire")
 	}
 
+	// Allow time for the DB status update (runs after successful send).
+	time.Sleep(100 * time.Millisecond)
+
 	// Verify status updated to "fired".
 	var status string
 	err = db.QueryRow(`SELECT status FROM reminders WHERE id = 1`).Scan(&status)
