@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/jialuohu/curlycatclaw/config"
@@ -58,10 +60,20 @@ func run(configPath string) error {
 	slog.Info("storage initialized", "path", cfg.Storage.DBPath)
 
 	// Initialize credential store (Phase 1: optional, skip if no master key).
-	credPath := filepath.Join(dataDir, "credentials.enc")
-	credStore, err := security.NewCredentialStore(credPath, nil)
-	if err != nil {
-		slog.Warn("credential store unavailable, MCP env refs won't resolve", "err", err)
+	var credStore *security.CredentialStore
+	if masterKeyHex := os.Getenv("CURLYCATCLAW_MASTER_KEY"); masterKeyHex != "" {
+		masterKey, err := hex.DecodeString(masterKeyHex)
+		if err != nil || len(masterKey) != 32 {
+			slog.Warn("invalid CURLYCATCLAW_MASTER_KEY (need 64 hex chars for 32 bytes), credentials disabled")
+		} else {
+			credPath := filepath.Join(dataDir, "credentials.enc")
+			credStore, err = security.NewCredentialStore(credPath, masterKey)
+			if err != nil {
+				slog.Warn("credential store init failed", "err", err)
+			} else {
+				slog.Info("credential store initialized")
+			}
+		}
 	}
 
 	// Initialize Claude client.
@@ -83,11 +95,15 @@ func run(configPath string) error {
 	defer cancel()
 
 	// Start MCP servers.
-	envResolver := func(ref string) (string, error) {
-		if credStore == nil {
-			return "", fmt.Errorf("credential store not available")
+	envResolver := func(val string) (string, error) {
+		const prefix = "encrypted:ref:"
+		if !strings.HasPrefix(val, prefix) {
+			return val, nil
 		}
-		return credStore.Get(ref)
+		if credStore == nil {
+			return "", fmt.Errorf("credential store not available (set CURLYCATCLAW_MASTER_KEY)")
+		}
+		return credStore.Get(strings.TrimPrefix(val, prefix))
 	}
 	if err := mcpMgr.Start(ctx, cfg.MCP.Servers, envResolver); err != nil {
 		slog.Warn("some MCP servers failed to start", "err", err)

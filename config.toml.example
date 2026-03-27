@@ -10,7 +10,9 @@ token = "123456:ABC-DEF..."
 allowed_user_ids = []
 
 [storage]
-db_path = "~/.curlycatclaw/curlycatclaw.db"
+# WARNING: ~ does not expand in TOML values; use an absolute path.
+# db_path = "~/.curlycatclaw/curlycatclaw.db"
+db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
 
 # MCP server configurations
 [[mcp.servers]]

@@ -59,8 +59,8 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// CreateConversation inserts a new conversation for userID and returns its UUID.
-func (s *Store) CreateConversation(userID int64) (string, error) {
+// CreateConversation inserts a new conversation for userID and chatID and returns its UUID.
+func (s *Store) CreateConversation(userID int64, chatID int64) (string, error) {
 	id, err := newUUID()
 	if err != nil {
 		return "", fmt.Errorf("memory: generate uuid: %w", err)
@@ -68,8 +68,8 @@ func (s *Store) CreateConversation(userID int64) (string, error) {
 
 	now := time.Now().UTC()
 	_, err = s.db.Exec(
-		`INSERT INTO conversations (id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		id, userID, now, now,
+		`INSERT INTO conversations (id, user_id, chat_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		id, userID, chatID, now, now,
 	)
 	if err != nil {
 		return "", fmt.Errorf("memory: create conversation: %w", err)
@@ -168,27 +168,27 @@ func (s *Store) CompleteToolCall(callID string, output json.RawMessage, isError 
 	return nil
 }
 
-// GetActiveConversation returns the most recent conversation for userID.
+// GetActiveConversation returns the most recent conversation for userID and chatID.
 // If no conversation exists or the most recent one is older than 4 hours,
 // a new conversation is created.
-func (s *Store) GetActiveConversation(userID int64) (string, error) {
+func (s *Store) GetActiveConversation(userID int64, chatID int64) (string, error) {
 	var id string
 	var updatedAt time.Time
 
 	err := s.db.QueryRow(
-		`SELECT id, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1`,
-		userID,
+		`SELECT id, updated_at FROM conversations WHERE user_id = ? AND chat_id = ? ORDER BY updated_at DESC LIMIT 1`,
+		userID, chatID,
 	).Scan(&id, &updatedAt)
 
 	if err == sql.ErrNoRows {
-		return s.CreateConversation(userID)
+		return s.CreateConversation(userID, chatID)
 	}
 	if err != nil {
 		return "", fmt.Errorf("memory: get active conversation: %w", err)
 	}
 
 	if time.Since(updatedAt) > 4*time.Hour {
-		return s.CreateConversation(userID)
+		return s.CreateConversation(userID, chatID)
 	}
 
 	return id, nil
@@ -200,12 +200,13 @@ func (s *Store) migrate() error {
 	CREATE TABLE IF NOT EXISTS conversations (
 		id         TEXT PRIMARY KEY,
 		user_id    INTEGER NOT NULL,
+		chat_id    INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
-		ON conversations (user_id, updated_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_conversations_user_chat_updated
+		ON conversations (user_id, chat_id, updated_at DESC);
 
 	CREATE TABLE IF NOT EXISTS messages (
 		id              INTEGER PRIMARY KEY AUTOINCREMENT,

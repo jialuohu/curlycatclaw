@@ -60,7 +60,6 @@ func Supervise(ctx context.Context, a Actor) {
 // SuperviseAll starts multiple actors under supervision, each in its own
 // goroutine. It blocks until ctx is cancelled.
 func SuperviseAll(ctx context.Context, actors ...Actor) {
-	done := make(chan struct{})
 	for _, a := range actors {
 		go func(a Actor) {
 			Supervise(ctx, a)
@@ -70,5 +69,4 @@ func SuperviseAll(ctx context.Context, actors ...Actor) {
 	<-ctx.Done()
 	// Give actors a moment to drain.
 	time.Sleep(100 * time.Millisecond)
-	close(done)
 }

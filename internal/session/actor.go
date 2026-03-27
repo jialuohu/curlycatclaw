@@ -15,7 +15,11 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 )
 
-const maxToolRounds = 10
+const (
+	maxToolRounds  = 10
+	claudeTimeout  = 120 * time.Second
+	mcpToolTimeout = 30 * time.Second
+)
 
 // Actor is the central session actor. It wires together Telegram messages,
 // Claude API calls, MCP tool execution, and conversation memory.
@@ -56,16 +60,20 @@ func (a *Actor) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case msg := <-a.tg.Updates():
+		case msg, ok := <-a.tg.Updates():
+			if !ok {
+				slog.Info("telegram updates channel closed, stopping session")
+				return nil
+			}
 			if err := a.handleMessage(ctx, msg); err != nil {
 				slog.Error("failed to handle message",
 					"user_id", msg.UserID,
 					"err", err,
 				)
-				a.tg.Inbox() <- telegram.OutgoingMessage{
+				a.trySend(telegram.OutgoingMessage{
 					ChatID: msg.ChatID,
 					Text:   "Sorry, something went wrong. Please try again.",
-				}
+				})
 			}
 		}
 	}
@@ -73,7 +81,7 @@ func (a *Actor) Run(ctx context.Context) error {
 
 func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage) error {
 	// Get or create conversation for this user.
-	convID, err := a.store.GetActiveConversation(msg.UserID)
+	convID, err := a.store.GetActiveConversation(msg.UserID, msg.ChatID)
 	if err != nil {
 		return fmt.Errorf("get conversation: %w", err)
 	}
@@ -112,11 +120,13 @@ func (a *Actor) toolUseLoop(
 	tools []anthropic.ToolUnionParam,
 ) error {
 	for i := 0; i < maxToolRounds; i++ {
-		resp, err := a.claude.SendStreaming(ctx, claude.SendParams{
+		claudeCtx, claudeCancel := context.WithTimeout(ctx, claudeTimeout)
+		resp, err := a.claude.SendStreaming(claudeCtx, claude.SendParams{
 			Messages:     messages,
 			SystemPrompt: systemPrompt,
 			Tools:        tools,
 		})
+		claudeCancel()
 		if err != nil {
 			return fmt.Errorf("claude send: %w", err)
 		}
@@ -130,10 +140,10 @@ func (a *Actor) toolUseLoop(
 		// If no tool calls, send the text response and we're done.
 		if len(resp.ToolCalls) == 0 {
 			if resp.TextContent != "" {
-				a.tg.Inbox() <- telegram.OutgoingMessage{
+				a.trySend(telegram.OutgoingMessage{
 					ChatID: chatID,
 					Text:   resp.TextContent,
-				}
+				})
 			}
 			return nil
 		}
@@ -162,7 +172,9 @@ func (a *Actor) toolUseLoop(
 			}
 
 			// Execute via MCP.
-			result, execErr := a.mcp.CallTool(ctx, call.Name, args)
+			mcpCtx, mcpCancel := context.WithTimeout(ctx, mcpToolTimeout)
+			result, execErr := a.mcp.CallTool(mcpCtx, call.Name, args)
+			mcpCancel()
 
 			// Log tool result.
 			resultJSON, _ := json.Marshal(result)
@@ -181,6 +193,12 @@ func (a *Actor) toolUseLoop(
 			}
 		}
 
+		// Store tool results to DB so conversation replay includes them.
+		toolResultContent, _ := json.Marshal(toolResultBlocks)
+		if err := a.store.AppendMessage(convID, "tool_result", toolResultContent); err != nil {
+			slog.Error("failed to store tool result message", "err", err)
+		}
+
 		// Append assistant message + tool results and loop.
 		messages = append(messages,
 			anthropic.NewAssistantMessage(assistantBlocks...),
@@ -189,11 +207,19 @@ func (a *Actor) toolUseLoop(
 	}
 
 	// Hit the loop limit.
-	a.tg.Inbox() <- telegram.OutgoingMessage{
+	a.trySend(telegram.OutgoingMessage{
 		ChatID: chatID,
 		Text:   "I seem to be stuck in a tool-use loop. Please try rephrasing your request.",
-	}
+	})
 	return nil
+}
+
+func (a *Actor) trySend(msg telegram.OutgoingMessage) {
+	select {
+	case a.tg.Inbox() <- msg:
+	default:
+		slog.Warn("telegram inbox full, dropping message", "chat_id", msg.ChatID)
+	}
 }
 
 func (a *Actor) buildSystemPrompt() string {

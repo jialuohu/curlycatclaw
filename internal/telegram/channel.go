@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -103,7 +104,10 @@ func (ch *Channel) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			bot.StopReceivingUpdates()
-			close(ch.updates)
+			// Do not close(ch.updates) here — the session actor's select
+			// may still be reading from it, and closing would race with
+			// sends from handleUpdate. The GC will collect the channel
+			// once all references are dropped.
 			return ctx.Err()
 
 		case upd, ok := <-tgUpdates:
@@ -189,44 +193,49 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 // code fences (``` blocks), and falls back to newline splits for oversized
 // single paragraphs.
 func chunkMessage(text string) []string {
-	if len(text) <= maxMessageLen {
+	if utf8.RuneCountInString(text) <= maxMessageLen {
 		return []string{text}
 	}
 
 	paragraphs := splitParagraphs(text)
 	var chunks []string
 	var buf strings.Builder
+	bufRunes := 0
 
 	for _, para := range paragraphs {
 		// If adding this paragraph would exceed the limit, flush the
 		// buffer first.
-		needed := para
-		if buf.Len() > 0 {
-			needed = "\n\n" + para
+		paraRunes := utf8.RuneCountInString(para)
+		neededRunes := paraRunes
+		if bufRunes > 0 {
+			neededRunes += 2 // "\n\n"
 		}
 
-		if buf.Len()+len(needed) > maxMessageLen {
+		if bufRunes+neededRunes > maxMessageLen {
 			// Flush whatever we have accumulated.
-			if buf.Len() > 0 {
+			if bufRunes > 0 {
 				chunks = append(chunks, buf.String())
 				buf.Reset()
+				bufRunes = 0
 			}
 
 			// If the paragraph itself is too long, split it further.
-			if len(para) > maxMessageLen {
+			if paraRunes > maxMessageLen {
 				sub := splitLongParagraph(para)
 				chunks = append(chunks, sub...)
 				continue
 			}
 		}
 
-		if buf.Len() > 0 {
+		if bufRunes > 0 {
 			buf.WriteString("\n\n")
+			bufRunes += 2
 		}
 		buf.WriteString(para)
+		bufRunes += paraRunes
 	}
 
-	if buf.Len() > 0 {
+	if bufRunes > 0 {
 		chunks = append(chunks, buf.String())
 	}
 	return chunks
@@ -275,17 +284,19 @@ func splitParagraphs(text string) []string {
 }
 
 // splitLongParagraph breaks a single oversized paragraph at the nearest
-// newline that keeps each piece under maxMessageLen. As a last resort it
-// hard-cuts at maxMessageLen.
+// newline that keeps each piece under maxMessageLen runes. As a last resort it
+// hard-cuts at maxMessageLen runes.
 func splitLongParagraph(text string) []string {
 	var chunks []string
 
-	for len(text) > maxMessageLen {
-		// Find the last newline within the limit.
-		cut := strings.LastIndex(text[:maxMessageLen], "\n")
+	for utf8.RuneCountInString(text) > maxMessageLen {
+		// Find the byte offset corresponding to maxMessageLen runes.
+		byteLimit := runeOffsetToByteOffset(text, maxMessageLen)
+		// Find the last newline within the rune limit.
+		cut := strings.LastIndex(text[:byteLimit], "\n")
 		if cut <= 0 {
-			// No newline found — hard cut.
-			cut = maxMessageLen
+			// No newline found — hard cut at the rune boundary.
+			cut = byteLimit
 		}
 		chunks = append(chunks, text[:cut])
 		text = text[cut:]
@@ -298,4 +309,14 @@ func splitLongParagraph(text string) []string {
 		chunks = append(chunks, text)
 	}
 	return chunks
+}
+
+// runeOffsetToByteOffset returns the byte position of the n-th rune in s.
+func runeOffsetToByteOffset(s string, n int) int {
+	offset := 0
+	for i := 0; i < n && offset < len(s); i++ {
+		_, size := utf8.DecodeRuneInString(s[offset:])
+		offset += size
+	}
+	return offset
 }
