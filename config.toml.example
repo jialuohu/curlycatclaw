@@ -6,8 +6,12 @@ model   = "claude-sonnet-4-6-20250514"
 
 [telegram]
 token = "123456:ABC-DEF..."
-# Restrict to specific Telegram user IDs. Empty = allow all.
+# Restrict to specific Telegram user IDs. Required unless allow_all = true.
 allowed_user_ids = []
+# Set to true to allow any Telegram user to interact with this bot.
+# allow_all = true
+# Show tool calls to the user in Telegram (default: true).
+# show_tool_calls = true
 
 [storage]
 # WARNING: ~ does not expand in TOML values; use an absolute path.
@@ -46,6 +50,9 @@ BRAVE_API_KEY = "encrypted:ref:brave_api_key"
 # max_age = 14            # days to keep old files
 # max_backups = 3         # number of old files to keep
 # format = "text"         # text or json
+
+# Tool confirmation: tool name prefixes that require user confirmation before executing.
+# confirm_tools = ["cancel_reminder", "filesystem__delete"]
 
 # Filesystem sandbox (Linux only, requires kernel 5.13+)
 # [sandbox]
