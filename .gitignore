@@ -4,6 +4,8 @@
 *.db-shm
 *.enc
 config.toml
+.env
+.env.*
 .DS_Store
 .gstack/
 .idea/

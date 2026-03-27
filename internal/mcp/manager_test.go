@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -123,5 +124,65 @@ func TestTools_Empty(t *testing.T) {
 	tools := m.Tools()
 	if len(tools) != 0 {
 		t.Errorf("tools length: got %d, want 0", len(tools))
+	}
+}
+
+func TestFilteredEnv_DefaultOnly(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("CURLYCATCLAW_MASTER_KEY", "supersecret")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+	env := filteredEnv(nil)
+
+	envMap := make(map[string]string)
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		envMap[k] = v
+	}
+
+	if envMap["PATH"] != "/usr/bin" {
+		t.Errorf("PATH should pass through, got %q", envMap["PATH"])
+	}
+	if _, ok := envMap["CURLYCATCLAW_MASTER_KEY"]; ok {
+		t.Error("CURLYCATCLAW_MASTER_KEY should NOT pass through")
+	}
+	if _, ok := envMap["ANTHROPIC_API_KEY"]; ok {
+		t.Error("ANTHROPIC_API_KEY should NOT pass through")
+	}
+}
+
+func TestFilteredEnv_WithExtra(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("SECRET_TOKEN", "nope")
+
+	env := filteredEnv([]string{"NODE_ENV"})
+
+	envMap := make(map[string]string)
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		envMap[k] = v
+	}
+
+	if envMap["NODE_ENV"] != "production" {
+		t.Errorf("NODE_ENV should pass through when in extra, got %q", envMap["NODE_ENV"])
+	}
+	if _, ok := envMap["SECRET_TOKEN"]; ok {
+		t.Error("SECRET_TOKEN should NOT pass through")
+	}
+}
+
+func TestFilteredEnv_ExplicitEnvAlwaysPresent(t *testing.T) {
+	// filteredEnv only handles inheritance. Explicit srv.Env entries are
+	// appended separately in startServer. This test verifies that
+	// filteredEnv does not include unlisted vars, so explicit env wins.
+	t.Setenv("BRAVE_API_KEY", "from-parent")
+
+	env := filteredEnv(nil)
+
+	for _, e := range env {
+		k, _, _ := strings.Cut(e, "=")
+		if k == "BRAVE_API_KEY" {
+			t.Error("BRAVE_API_KEY should NOT be in filtered env (it's added via srv.Env)")
+		}
 	}
 }

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0] - 2026-03-27
+
+Phase 4 "Trust Hardening." Closes the security and trust gaps flagged by adversarial reviews.
+
+### Added
+- MCP environment filtering: allowlist-based env var inheritance for child processes, preventing secret leakage (CURLYCATCLAW_MASTER_KEY, API keys). Per-server `env_inherit` config for additional vars.
+- Telegram secure defaults: empty `allowed_user_ids` now fails validation unless `allow_all = true` is explicitly set. Prevents accidental public bots.
+- Wasm send_message chat scoping: plugins can only send messages to the chat that invoked them. Cross-chat injection blocked with warning log.
+- Tool transparency: `[tool]` lines sent to user in Telegram showing what tools Claude called. Opt-out via `show_tool_calls = false`.
+- MCP user context: `_user_context` map (user_id, chat_id) injected into MCP tool arguments, enabling per-user access control in MCP servers.
+- Tool confirmation: `confirm_tools` config lists tool name prefixes requiring user approval. Stateless via Claude re-ask pattern.
+
+### Changed
+- Existing configs with empty `allowed_user_ids` must add either user IDs or `allow_all = true` (breaking change, intentional for security)
+
 ## [0.3.0] - 2026-03-27
 
 Phase 3 "Production Hardening." Reliable shutdown, configurable logging, Linux sandboxing, and deployment tooling.

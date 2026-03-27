@@ -137,6 +137,14 @@ func TestIsSelectOnly(t *testing.T) {
 		{"SELECT * FROM notes; DELETE FROM notes", false},
 		{"REPLACE INTO notes VALUES (1)", false},
 		{"TRUNCATE TABLE notes", false},
+		// Comment stripping: keywords inside comments are removed, query itself is clean.
+		{"SELECT * FROM notes /* just a comment */", true},
+		{"SELECT * FROM notes -- trailing comment", true},
+		// Semicolon-based bypass blocked even inside comments.
+		{"SELECT 1 /* ; DROP TABLE x */; DROP TABLE y", false},
+		// Semicolon-based multi-statement.
+		{"SELECT 1; SELECT 2", false},
+		{"SELECT * FROM notes;DROP TABLE notes", false},
 	}
 
 	for _, tt := range tests {

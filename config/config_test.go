@@ -70,6 +70,7 @@ api_key = "sk-key"
 
 [telegram]
 token = "tok"
+allow_all = true
 `
 	path := writeConfig(t, minimal)
 
@@ -155,6 +156,7 @@ api_key = "sk-key"
 
 [telegram]
 token = "tok"
+allow_all = true
 `
 	path := writeConfig(t, content)
 
@@ -193,7 +195,7 @@ func TestValidate_MissingAPIKey(t *testing.T) {
 	cfg := &Config{
 		Timezone: "UTC",
 		Claude:   ClaudeConfig{APIKey: ""},
-		Telegram: TGConfig{Token: "tok"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
 	}
 
 	err := cfg.validate()
@@ -225,7 +227,7 @@ func TestValidate_InvalidTimezone(t *testing.T) {
 	cfg := &Config{
 		Timezone: "Bogus/TZ",
 		Claude:   ClaudeConfig{APIKey: "sk-key"},
-		Telegram: TGConfig{Token: "tok"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
 	}
 
 	err := cfg.validate()
@@ -241,7 +243,7 @@ func TestValidate_AllValid(t *testing.T) {
 	cfg := &Config{
 		Timezone: "UTC",
 		Claude:   ClaudeConfig{APIKey: "sk-key"},
-		Telegram: TGConfig{Token: "tok"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -319,5 +321,58 @@ format = "json"
 	}
 	if cfg.Logging.Format != "json" {
 		t.Errorf("Logging.Format = %q, want %q", cfg.Logging.Format, "json")
+	}
+}
+
+func TestValidate_EmptyAllowlistNoAllowAll(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowedID: nil, AllowAll: false},
+	}
+
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("validate with empty allowlist and no allow_all should return an error")
+	}
+	if !strings.Contains(err.Error(), "allowed_user_ids") {
+		t.Errorf("error = %q, want it to mention %q", err.Error(), "allowed_user_ids")
+	}
+}
+
+func TestValidate_EmptyAllowlistWithAllowAll(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowedID: nil, AllowAll: true},
+	}
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate with allow_all=true should succeed, got: %v", err)
+	}
+}
+
+func TestValidate_PopulatedAllowlist(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowedID: []int64{42}},
+	}
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate with populated allowlist should succeed, got: %v", err)
+	}
+}
+
+func TestLoad_ShowToolCallsDefault(t *testing.T) {
+	path := writeConfig(t, validTOML)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if !cfg.Telegram.ShowToolCalls {
+		t.Error("ShowToolCalls should default to true")
 	}
 }

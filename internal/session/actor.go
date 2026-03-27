@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -183,10 +184,23 @@ func (a *Actor) toolUseLoop(
 
 		// Execute tool calls and collect results.
 		var toolResultBlocks []anthropic.ContentBlockParamUnion
+		var toolLines []string
 		for _, call := range resp.ToolCalls {
 			// Log tool call before execution.
 			if err := a.store.LogToolCall(convID, call.ID, call.Name, call.Input); err != nil {
 				slog.Error("failed to log tool call", "err", err)
+			}
+
+			// Check if this tool requires user confirmation.
+			if a.requiresConfirmation(call.Name) {
+				preview := fmt.Sprintf("[confirm?] %s(%s)", call.Name, truncate(string(call.Input), 120))
+				a.trySend(telegram.OutgoingMessage{ChatID: chatID, Text: preview})
+				toolResultBlocks = append(toolResultBlocks,
+					anthropic.NewToolResultBlock(call.ID,
+						"This tool requires user confirmation. The request has been shown to the user. Ask them to confirm before retrying.", true),
+				)
+				toolLines = append(toolLines, fmt.Sprintf("[tool] %s -> awaiting confirmation", call.Name))
+				continue
 			}
 
 			// Try built-in skill first, then fall back to MCP.
@@ -203,7 +217,7 @@ func (a *Actor) toolUseLoop(
 					args = map[string]any{"raw": string(call.Input)}
 				}
 				mcpCtx, mcpCancel := context.WithTimeout(ctx, mcpToolTimeout)
-				result, execErr = a.mcp.CallTool(mcpCtx, call.Name, args)
+				result, execErr = a.mcp.CallTool(mcpCtx, call.Name, args, userID, chatID)
 				mcpCancel()
 			}
 
@@ -213,15 +227,26 @@ func (a *Actor) toolUseLoop(
 				slog.Error("failed to complete tool call log", "err", err)
 			}
 
+			// Build tool transparency line.
 			if execErr != nil {
 				toolResultBlocks = append(toolResultBlocks,
 					anthropic.NewToolResultBlock(call.ID, execErr.Error(), true),
 				)
+				toolLines = append(toolLines, fmt.Sprintf("[tool] %s -> error", call.Name))
 			} else {
 				toolResultBlocks = append(toolResultBlocks,
 					anthropic.NewToolResultBlock(call.ID, result, false),
 				)
+				toolLines = append(toolLines, fmt.Sprintf("[tool] %s(%s)", call.Name, truncate(string(call.Input), 80)))
 			}
+		}
+
+		// Send tool transparency message to user.
+		if a.cfg.Telegram.ShowToolCalls && len(toolLines) > 0 {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: chatID,
+				Text:   strings.Join(toolLines, "\n"),
+			})
 		}
 
 		// Store tool results to DB so conversation replay includes them.
@@ -359,6 +384,26 @@ func toAnthropicTools(tools []mcp.ToolDef) []anthropic.ToolUnionParam {
 		})
 	}
 	return result
+}
+
+// truncate returns s truncated to max runes with "..." appended if truncated.
+func truncate(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
+}
+
+// requiresConfirmation checks if a tool name matches any prefix in the
+// confirm_tools config list.
+func (a *Actor) requiresConfirmation(toolName string) bool {
+	for _, prefix := range a.cfg.ConfirmTools {
+		if strings.HasPrefix(toolName, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // toSkillTools converts built-in skills to Anthropic SDK tool params.
