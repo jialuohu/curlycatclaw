@@ -84,41 +84,34 @@ For encrypted MCP credentials, set the `CURLYCATCLAW_MASTER_KEY` env var (64 hex
 ## Architecture
 
 ```
-                          ┌─────────────────────────────────────────────┐
-                          │              Supervisor                     │
-                          │   (panic/recover, backoff, 30s drain)       │
-                          └──────┬──────────┬──────────────┬───────────┘
-                                 │          │              │
-                          ┌──────▼──┐  ┌────▼─────┐  ┌────▼──────┐
-          Telegram ◄─────►│ Channel │  │ Session  │  │ Reminder  │
-          Bot API         │  Actor  ├──► Actor    │  │  Actor    │
-                          └─────────┘  └────┬─────┘  └───────────┘
-                                            │
-                     ┌──────────────────────┼──────────────────────┐
-                     │                      │                      │
-               ┌─────▼──────┐        ┌──────▼──────┐       ┌──────▼──────┐
-               │   Claude    │        │    Tools     │       │   Memory    │
-               │  Streaming  │        │              │       │             │
-               │  + tool_use │        │  ┌─────────┐ │       │  SQLite WAL │
-               └─────────────┘        │  │Built-in │ │       │  + Budget   │
-                                      │  │ Skills  │ │       │  + Vector   │
-                [tool] lines ◄────────│  ├─────────┤ │       └─────────────┘
-                 to Telegram          │  │  MCP    │ │
-                                      │  │Servers  │ │
-              [confirm?] ◄────────────│  │(filtered│ │
-               for sensitive tools    │  │  env)   │ │
-                                      │  ├─────────┤ │
-                                      │  │  Wasm   │ │
-                                      │  │Plugins  │ │
-                                      │  │(scoped) │ │
-                                      │  └─────────┘ │
-                                      └──────────────┘
-                     │
-              ┌──────▼──────┐
-              │   Landlock   │
-              │  Sandbox     │
-              │ (Linux only) │
-              └──────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                       Supervisor                         │
+│            (panic/recover, backoff, 30s drain)            │
+└─────────┬───────────────────┬───────────────┬────────────┘
+          │                   │               │
+   ┌──────▼──────┐     ┌──────▼──────┐  ┌─────▼───────┐
+   │   Channel   │     │   Session   │  │  Reminder   │
+   │    Actor    ├────►│    Actor    │  │   Actor     │
+   └──────┬──────┘     └──────┬──────┘  └─────────────┘
+          │                   │
+  Telegram│          ┌────────┼────────┐
+  Bot API │          │        │        │
+          │    ┌─────▼─┐  ┌──▼───┐  ┌─▼───────┐
+          │    │Claude │  │Tools │  │ Memory  │
+          │    │Stream │  │      │  │         │
+          │    │+tools │  │Skills│  │SQLite   │
+          │    └───────┘  │MCP   │  │Budget   │
+          │               │Wasm  │  │Vector   │
+          │    [tool]     └──────┘  └─────────┘
+          ◄─── lines
+          │    [confirm?]
+          ◄─── preview
+          │
+   ┌──────▼──────┐
+   │  Landlock   │
+   │  Sandbox    │
+   │ (Linux)     │
+   └─────────────┘
 ```
 
 Everything runs as goroutine-based actors under supervision. If an actor panics or errors, it restarts with exponential backoff (1s to 30s), resetting after 60s of healthy operation. On shutdown, actors get 30 seconds to drain in-flight work before forced exit.
