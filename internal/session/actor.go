@@ -32,6 +32,7 @@ type Actor struct {
 	store  *memory.Store
 	ctxb   *memory.ContextBuilder
 	skills *skills.Registry
+	vector *memory.VectorStore
 }
 
 // New creates a new session actor.
@@ -42,15 +43,22 @@ func New(
 	mcpMgr *mcp.Manager,
 	store *memory.Store,
 	skillReg *skills.Registry,
+	budget *memory.BudgetManager,
+	vectorStore *memory.VectorStore,
 ) *Actor {
+	ctxb := memory.NewContextBuilder(store)
+	if budget != nil {
+		ctxb.SetBudget(budget)
+	}
 	return &Actor{
 		cfg:    cfg,
 		claude: claudeClient,
 		tg:     tg,
 		mcp:    mcpMgr,
 		store:  store,
-		ctxb:   memory.NewContextBuilder(store),
+		ctxb:   ctxb,
 		skills: skillReg,
+		vector: vectorStore,
 	}
 }
 
@@ -94,6 +102,16 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	userContent, _ := json.Marshal(msg.Text)
 	if err := a.store.AppendMessage(convID, "user", userContent); err != nil {
 		return fmt.Errorf("store user message: %w", err)
+	}
+
+	// Index user message in vector store asynchronously.
+	if a.vector != nil {
+		go func() {
+			msgID := fmt.Sprintf("%d", time.Now().UnixNano())
+			if err := a.vector.Index(context.Background(), convID+":"+msgID, msg.Text, msg.UserID, msg.ChatID, "message"); err != nil {
+				slog.Warn("vector index failed", "err", err)
+			}
+		}()
 	}
 
 	// Build context from conversation history.

@@ -3,6 +3,7 @@ package skills
 import (
 	"context"
 	"encoding/json"
+	"sync"
 )
 
 type ctxKey string
@@ -36,8 +37,9 @@ type Skill struct {
 	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
 }
 
-// Registry holds all built-in skills.
+// Registry holds all built-in skills. Safe for concurrent access.
 type Registry struct {
+	mu     sync.RWMutex
 	skills map[string]*Skill
 }
 
@@ -50,16 +52,29 @@ func NewRegistry() *Registry {
 
 // Register adds a skill to the registry.
 func (r *Registry) Register(s *Skill) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.skills[s.Name] = s
+}
+
+// Unregister removes a skill from the registry by name.
+func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.skills, name)
 }
 
 // Get returns a skill by name, or nil if not found.
 func (r *Registry) Get(name string) *Skill {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.skills[name]
 }
 
 // All returns all registered skills.
 func (r *Registry) All() []*Skill {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	result := make([]*Skill, 0, len(r.skills))
 	for _, s := range r.skills {
 		result = append(result, s)

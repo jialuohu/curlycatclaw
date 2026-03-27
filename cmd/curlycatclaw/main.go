@@ -20,6 +20,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/security"
 	"github.com/jialuohu/curlycatclaw/internal/session"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/internal/wasm"
 	"github.com/jialuohu/curlycatclaw/skills"
 )
 
@@ -122,10 +123,68 @@ func run(configPath string) error {
 			skillReg.Register(s)
 		}
 	}
+	remindSignalCh := make(chan int64, 16)
+	remindSkills, err := skills.InitRemindSkills(store.DB(), remindSignalCh, cfg.Location())
+	if err != nil {
+		slog.Warn("failed to initialize remind skills", "err", err)
+	} else {
+		for _, s := range remindSkills {
+			skillReg.Register(s)
+		}
+	}
 	slog.Info("skills registered", "count", len(skillReg.All()))
 
+	// Initialize prompt budget manager (optional).
+	var budgetMgr *memory.BudgetManager
+	if cfg.Budget.Enabled {
+		haikuClient := claude.NewClient(cfg.Claude.APIKey, cfg.Budget.Model)
+		var bmErr error
+		budgetMgr, bmErr = memory.NewBudgetManager(store.DB(), haikuClient, true)
+		if bmErr != nil {
+			slog.Warn("budget manager init failed", "err", bmErr)
+		} else {
+			slog.Info("budget manager enabled", "model", cfg.Budget.Model)
+		}
+	}
+
+	// Initialize vector store (optional).
+	var vectorStore *memory.VectorStore
+	if cfg.Vector.Enabled {
+		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr)
+		if err != nil {
+			slog.Warn("vector store init failed, disabling", "err", err)
+		} else {
+			vectorStore = vs
+			defer vectorStore.Close()
+			skillReg.Register(skills.NewSemanticSearchSkill(vectorStore))
+			slog.Info("vector store enabled", "addr", cfg.Vector.QdrantAddr)
+		}
+	}
+
+	// Initialize wasm skill runtime (optional).
+	if cfg.Wasm.Enabled {
+		wasmRT, err := wasm.NewWasmRuntime(cfg.Wasm, skillReg, store.DB(), tg.Inbox())
+		if err != nil {
+			slog.Warn("wasm runtime init failed", "err", err)
+		} else {
+			if err := wasmRT.LoadAll(ctx); err != nil {
+				slog.Warn("wasm: failed to load some modules", "err", err)
+			}
+			go func() {
+				if err := wasmRT.WatchForChanges(ctx); err != nil {
+					slog.Warn("wasm: file watcher stopped", "err", err)
+				}
+			}()
+			defer wasmRT.Close()
+			slog.Info("wasm runtime enabled", "dir", cfg.Wasm.SkillsDir)
+		}
+	}
+
+	// Create reminder actor.
+	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh)
+
 	// Create session actor.
-	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg)
+	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore)
 
 	// Handle shutdown signals.
 	sigCh := make(chan os.Signal, 1)
@@ -139,7 +198,7 @@ func run(configPath string) error {
 	slog.Info("curlycatclaw started")
 
 	// Run actors under supervision.
-	actor.SuperviseAll(ctx, tg, sess)
+	actor.SuperviseAll(ctx, tg, sess, reminderActor)
 
 	slog.Info("curlycatclaw stopped")
 	return nil

@@ -32,7 +32,10 @@ Test expectations:
 - **Claude client**: streaming + tool_use state machine, 120s per-request timeout
 - **MCP manager**: persistent stdio server connections, tool namespacing (server__tool)
 - **Memory**: SQLite WAL mode, sliding window context (25 turns, ~150K tokens), conversations keyed by (userID, chatID)
-- **Skills**: built-in Go skills (search, note) registered alongside MCP tools
+- **Budget manager**: Haiku-powered context classification (keyword fast-path + cache + LLM), opt-in
+- **Vector search**: Qdrant gRPC for semantic search across messages and notes, opt-in
+- **Skills**: built-in Go skills (search, note, remind, semantic_search) + Wasm plugin runtime
+- **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload
 
 ## Key Files
 
@@ -44,6 +47,9 @@ Test expectations:
 | `internal/telegram/channel.go` | Telegram channel actor |
 | `internal/memory/store.go` | SQLite storage |
 | `internal/mcp/manager.go` | MCP server lifecycle |
+| `internal/memory/budget.go` | Prompt budget manager (Haiku classification) |
+| `internal/memory/vectorstore.go` | Qdrant vector search |
+| `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | `skills/` | Built-in skill implementations |
 
 ## Configuration
