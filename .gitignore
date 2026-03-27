@@ -1,0 +1,7 @@
+/curlycatclaw
+*.db
+*.db-wal
+*.db-shm
+*.enc
+config.toml
+.DS_Store
