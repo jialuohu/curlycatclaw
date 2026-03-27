@@ -5,3 +5,5 @@
 *.enc
 config.toml
 .DS_Store
+.gstack/
+.idea/
