@@ -260,7 +260,7 @@ func TestSuperviseAll_RunsMultipleConcurrently(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		SuperviseAll(ctx, actors...)
+		SuperviseAll(ctx, 5*time.Second, actors...)
 		close(done)
 	}()
 
@@ -297,5 +297,67 @@ func TestSuperviseAll_RunsMultipleConcurrently(t *testing.T) {
 		// SuperviseAll returned after cancellation.
 	case <-time.After(3 * time.Second):
 		t.Fatal("SuperviseAll did not return after context cancellation")
+	}
+}
+
+func TestSuperviseAll_WaitsForActorDrain(t *testing.T) {
+	// An actor that takes 500ms to shut down after context cancellation.
+	// SuperviseAll should wait for it (timeout is 5s).
+	var drained atomic.Bool
+	a := &mockActor{name: "slow-drain"}
+	a.runFunc = func(ctx context.Context) error {
+		<-ctx.Done()
+		time.Sleep(500 * time.Millisecond)
+		drained.Store(true)
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		SuperviseAll(ctx, 5*time.Second, a)
+		close(done)
+	}()
+
+	// Let the actor start, then cancel.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		if !drained.Load() {
+			t.Error("SuperviseAll returned before actor finished draining")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SuperviseAll did not return after drain")
+	}
+}
+
+func TestSuperviseAll_TimesOutOnHangingActor(t *testing.T) {
+	// An actor that ignores context cancellation. SuperviseAll should
+	// return after the timeout, not hang forever.
+	a := &mockActor{name: "hanger"}
+	a.runFunc = func(ctx context.Context) error {
+		// Ignore ctx.Done() — hang until the test's overall deadline.
+		select {}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		SuperviseAll(ctx, 500*time.Millisecond, a)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// SuperviseAll returned due to timeout. Good.
+	case <-time.After(3 * time.Second):
+		t.Fatal("SuperviseAll hung despite timeout — WaitGroup drain not enforced")
 	}
 }
