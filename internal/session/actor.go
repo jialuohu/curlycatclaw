@@ -13,6 +13,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/skills"
 )
 
 const (
@@ -30,6 +31,7 @@ type Actor struct {
 	mcp    *mcp.Manager
 	store  *memory.Store
 	ctxb   *memory.ContextBuilder
+	skills *skills.Registry
 }
 
 // New creates a new session actor.
@@ -39,6 +41,7 @@ func New(
 	tg *telegram.Channel,
 	mcpMgr *mcp.Manager,
 	store *memory.Store,
+	skillReg *skills.Registry,
 ) *Actor {
 	return &Actor{
 		cfg:    cfg,
@@ -47,6 +50,7 @@ func New(
 		mcp:    mcpMgr,
 		store:  store,
 		ctxb:   memory.NewContextBuilder(store),
+		skills: skillReg,
 	}
 }
 
@@ -104,8 +108,9 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// Build system prompt with timezone.
 	systemPrompt := a.buildSystemPrompt()
 
-	// Collect MCP tools and convert to Anthropic SDK format.
+	// Collect all tools: MCP tools + built-in skills.
 	tools := toAnthropicTools(a.mcp.Tools())
+	tools = append(tools, toSkillTools(a.skills)...)
 
 	// Run the tool_use loop.
 	return a.toolUseLoop(ctx, msg.ChatID, convID, messages, systemPrompt, tools)
@@ -165,16 +170,22 @@ func (a *Actor) toolUseLoop(
 				slog.Error("failed to log tool call", "err", err)
 			}
 
-			// Unmarshal input for MCP call.
-			var args map[string]any
-			if err := json.Unmarshal(call.Input, &args); err != nil {
-				args = map[string]any{"raw": string(call.Input)}
+			// Try built-in skill first, then fall back to MCP.
+			var result string
+			var execErr error
+			if skill := a.skills.Get(call.Name); skill != nil {
+				mcpCtx, mcpCancel := context.WithTimeout(ctx, mcpToolTimeout)
+				result, execErr = skill.Execute(mcpCtx, call.Input)
+				mcpCancel()
+			} else {
+				var args map[string]any
+				if err := json.Unmarshal(call.Input, &args); err != nil {
+					args = map[string]any{"raw": string(call.Input)}
+				}
+				mcpCtx, mcpCancel := context.WithTimeout(ctx, mcpToolTimeout)
+				result, execErr = a.mcp.CallTool(mcpCtx, call.Name, args)
+				mcpCancel()
 			}
-
-			// Execute via MCP.
-			mcpCtx, mcpCancel := context.WithTimeout(ctx, mcpToolTimeout)
-			result, execErr := a.mcp.CallTool(mcpCtx, call.Name, args)
-			mcpCancel()
 
 			// Log tool result.
 			resultJSON, _ := json.Marshal(result)
@@ -293,6 +304,26 @@ func toAnthropicTools(tools []mcp.ToolDef) []anthropic.ToolUnionParam {
 			OfTool: &anthropic.ToolParam{
 				Name:        t.Name,
 				Description: anthropic.String(t.Description),
+				InputSchema: schema,
+			},
+		})
+	}
+	return result
+}
+
+// toSkillTools converts built-in skills to Anthropic SDK tool params.
+func toSkillTools(reg *skills.Registry) []anthropic.ToolUnionParam {
+	all := reg.All()
+	result := make([]anthropic.ToolUnionParam, 0, len(all))
+	for _, s := range all {
+		var schema anthropic.ToolInputSchemaParam
+		if err := json.Unmarshal(s.InputSchema, &schema); err != nil {
+			schema = anthropic.ToolInputSchemaParam{}
+		}
+		result = append(result, anthropic.ToolUnionParam{
+			OfTool: &anthropic.ToolParam{
+				Name:        s.Name,
+				Description: anthropic.String(s.Description),
 				InputSchema: schema,
 			},
 		})

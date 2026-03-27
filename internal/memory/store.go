@@ -54,6 +54,11 @@ func NewStore(dbPath string) (*Store, error) {
 	return s, nil
 }
 
+// DB returns the underlying *sql.DB for shared use (e.g., built-in skills).
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
 	return s.db.Close()

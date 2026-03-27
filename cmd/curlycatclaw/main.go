@@ -20,6 +20,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/security"
 	"github.com/jialuohu/curlycatclaw/internal/session"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/skills"
 )
 
 func main() {
@@ -110,8 +111,21 @@ func run(configPath string) error {
 	}
 	defer mcpMgr.Shutdown()
 
+	// Initialize built-in skills.
+	skillReg := skills.NewRegistry()
+	skillReg.Register(skills.NewWebSearchSkill())
+	noteSkills, err := skills.InitNoteSkills(store.DB())
+	if err != nil {
+		slog.Warn("failed to initialize note skills", "err", err)
+	} else {
+		for _, s := range noteSkills {
+			skillReg.Register(s)
+		}
+	}
+	slog.Info("skills registered", "count", len(skillReg.All()))
+
 	// Create session actor.
-	sess := session.New(cfg, claudeClient, tg, mcpMgr, store)
+	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg)
 
 	// Handle shutdown signals.
 	sigCh := make(chan os.Signal, 1)
