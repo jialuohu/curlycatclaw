@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="CurlyCatClaw" width="280" />
+  <img src="assets/logo.png" alt="CurlyCatClaw" width="400" />
 </p>
 
 <h1 align="center">CurlyCatClaw</h1>
