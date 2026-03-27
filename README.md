@@ -18,7 +18,11 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Claude-powered** ... streaming responses with tool use, 120s timeout per request
 - **Conversation memory** ... SQLite with WAL mode, sliding window context (25 turns, ~150K tokens)
 - **MCP tool integration** ... connect any MCP server (search, filesystem, APIs) via stdio
-- **Built-in skills** ... web search (DuckDuckGo), save/search notes, all user-scoped
+- **Built-in skills** ... web search, save/search notes, reminders, semantic search
+- **Smart context** ... prompt budget manager classifies turn relevance via Haiku (opt-in)
+- **Vector search** ... semantic memory via Qdrant for "what did I say about X?" (opt-in)
+- **Reminders** ... "remind me at 3pm" with persistent scheduler, timezone-aware, recurring
+- **Wasm plugins** ... extend with custom skills via WebAssembly, capability-based security (opt-in)
 - **Actor model** ... each component runs in its own goroutine with typed message channels
 - **Supervision** ... automatic restart with exponential backoff, resets after 60s healthy run
 - **Encrypted credentials** ... AES-256-GCM for MCP server secrets
@@ -96,6 +100,9 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 | Context | `internal/memory/context.go` | Sliding window context builder |
 | MCP | `internal/mcp/manager.go` | MCP server lifecycle, tool namespacing |
 | Skills | `skills/` | Built-in skill implementations |
+| Budget | `internal/memory/budget.go` | Prompt budget manager (Haiku classification) |
+| Vector | `internal/memory/vectorstore.go` | Qdrant vector search |
+| Wasm | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | Credentials | `internal/security/credential.go` | AES-256-GCM encrypted credential store |
 | Supervisor | `internal/actor/supervisor.go` | Panic recovery with exponential backoff |
 
@@ -106,8 +113,12 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 | `web_search` | Search the web via DuckDuckGo |
 | `save_note` | Save a note (user-scoped, persisted to SQLite) |
 | `search_notes` | Search saved notes by keyword |
+| `set_reminder` | Set a reminder with time and optional recurrence |
+| `list_reminders` | List your pending/fired reminders |
+| `cancel_reminder` | Cancel a scheduled reminder |
+| `semantic_search` | Search conversation history and notes by meaning (requires Qdrant) |
 
-Skills are registered alongside MCP tools. Claude sees them all as available tools and picks the right one.
+Skills are registered alongside MCP tools. Claude sees them all as available tools and picks the right one. Wasm plugins are loaded from `~/.curlycatclaw/skills/*.wasm` when enabled.
 
 ## Testing
 
@@ -115,7 +126,7 @@ Skills are registered alongside MCP tools. Claude sees them all as available too
 go test ./... -count=1
 ```
 
-Tests cover the Claude client, MCP manager, memory store, credential encryption, Telegram channel, and skills. 48 tests across 6 packages.
+Tests cover all subsystems across 11 packages.
 
 ## License
 
