@@ -1,0 +1,21 @@
+timezone = "America/Los_Angeles"
+
+[claude]
+api_key = "sk-ant-..."
+model   = "claude-sonnet-4-6-20250514"
+
+[telegram]
+token = "123456:ABC-DEF..."
+# Restrict to specific Telegram user IDs. Empty = allow all.
+allowed_user_ids = []
+
+[storage]
+db_path = "~/.curlycatclaw/curlycatclaw.db"
+
+# MCP server configurations
+[[mcp.servers]]
+name    = "search"
+command = "npx"
+args    = ["-y", "@anthropic/mcp-server-brave-search"]
+[mcp.servers.env]
+BRAVE_API_KEY = "encrypted:ref:brave_api_key"
