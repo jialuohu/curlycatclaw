@@ -21,3 +21,19 @@ command = "npx"
 args    = ["-y", "@anthropic/mcp-server-brave-search"]
 [mcp.servers.env]
 BRAVE_API_KEY = "encrypted:ref:brave_api_key"
+
+# Prompt budget manager (uses Claude Haiku to classify context relevance)
+# [budget]
+# enabled = true
+# model   = "claude-haiku-4-5-20251001"
+
+# Vector search via Qdrant (requires Qdrant server running)
+# docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+# [vector]
+# enabled    = true
+# qdrant_addr = "localhost:6334"
+
+# WebAssembly skill plugins
+# [wasm]
+# enabled    = true
+# skills_dir = "/home/you/.curlycatclaw/skills"

@@ -20,6 +20,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/security"
 	"github.com/jialuohu/curlycatclaw/internal/session"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/internal/wasm"
 	"github.com/jialuohu/curlycatclaw/skills"
 )
 
@@ -146,11 +147,44 @@ func run(configPath string) error {
 		}
 	}
 
+	// Initialize vector store (optional).
+	var vectorStore *memory.VectorStore
+	if cfg.Vector.Enabled {
+		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr)
+		if err != nil {
+			slog.Warn("vector store init failed, disabling", "err", err)
+		} else {
+			vectorStore = vs
+			defer vectorStore.Close()
+			skillReg.Register(skills.NewSemanticSearchSkill(vectorStore))
+			slog.Info("vector store enabled", "addr", cfg.Vector.QdrantAddr)
+		}
+	}
+
+	// Initialize wasm skill runtime (optional).
+	if cfg.Wasm.Enabled {
+		wasmRT, err := wasm.NewWasmRuntime(cfg.Wasm, skillReg, store.DB(), tg.Inbox())
+		if err != nil {
+			slog.Warn("wasm runtime init failed", "err", err)
+		} else {
+			if err := wasmRT.LoadAll(ctx); err != nil {
+				slog.Warn("wasm: failed to load some modules", "err", err)
+			}
+			go func() {
+				if err := wasmRT.WatchForChanges(ctx); err != nil {
+					slog.Warn("wasm: file watcher stopped", "err", err)
+				}
+			}()
+			defer wasmRT.Close()
+			slog.Info("wasm runtime enabled", "dir", cfg.Wasm.SkillsDir)
+		}
+	}
+
 	// Create reminder actor.
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh)
 
 	// Create session actor.
-	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg, budgetMgr)
+	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore)
 
 	// Handle shutdown signals.
 	sigCh := make(chan os.Signal, 1)

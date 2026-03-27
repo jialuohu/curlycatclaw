@@ -17,6 +17,8 @@ type Config struct {
 	Storage  StorageConfig `toml:"storage"`
 	MCP      MCPConfig     `toml:"mcp"`
 	Budget   BudgetConfig  `toml:"budget"`
+	Vector   VectorConfig  `toml:"vector"`
+	Wasm     WasmConfig    `toml:"wasm"`
 }
 
 type ClaudeConfig struct {
@@ -49,6 +51,16 @@ type BudgetConfig struct {
 	Model   string `toml:"model"`
 }
 
+type VectorConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	QdrantAddr string `toml:"qdrant_addr"`
+}
+
+type WasmConfig struct {
+	Enabled   bool   `toml:"enabled"`
+	SkillsDir string `toml:"skills_dir"`
+}
+
 // Location returns the parsed timezone location.
 func (c *Config) Location() *time.Location {
 	loc, err := time.LoadLocation(c.Timezone)
@@ -76,6 +88,14 @@ func Load(path string) (*Config, error) {
 		Budget: BudgetConfig{
 			Enabled: false,
 			Model:   "claude-haiku-4-5-20251001",
+		},
+		Vector: VectorConfig{
+			Enabled:    false,
+			QdrantAddr: "localhost:6334",
+		},
+		Wasm: WasmConfig{
+			Enabled:   false,
+			SkillsDir: filepath.Join(defaultDataDir(), "skills"),
 		},
 	}
 

@@ -32,11 +32,10 @@ type Actor struct {
 	store  *memory.Store
 	ctxb   *memory.ContextBuilder
 	skills *skills.Registry
-	budget *memory.BudgetManager
+	vector *memory.VectorStore
 }
 
-// New creates a new session actor. The optional budget parameter enables
-// relevance-based context pruning when non-nil.
+// New creates a new session actor.
 func New(
 	cfg *config.Config,
 	claudeClient *claude.Client,
@@ -45,6 +44,7 @@ func New(
 	store *memory.Store,
 	skillReg *skills.Registry,
 	budget *memory.BudgetManager,
+	vectorStore *memory.VectorStore,
 ) *Actor {
 	ctxb := memory.NewContextBuilder(store)
 	if budget != nil {
@@ -58,7 +58,7 @@ func New(
 		store:  store,
 		ctxb:   ctxb,
 		skills: skillReg,
-		budget: budget,
+		vector: vectorStore,
 	}
 }
 
@@ -104,8 +104,18 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 		return fmt.Errorf("store user message: %w", err)
 	}
 
+	// Index user message in vector store asynchronously.
+	if a.vector != nil {
+		go func() {
+			msgID := fmt.Sprintf("%d", time.Now().UnixNano())
+			if err := a.vector.Index(context.Background(), convID+":"+msgID, msg.Text, msg.UserID, msg.ChatID, "message"); err != nil {
+				slog.Warn("vector index failed", "err", err)
+			}
+		}()
+	}
+
 	// Build context from conversation history.
-	history, err := a.ctxb.BuildContextWithBudget(convID, msg.Text)
+	history, err := a.ctxb.BuildContext(convID)
 	if err != nil {
 		return fmt.Errorf("build context: %w", err)
 	}
