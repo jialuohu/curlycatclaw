@@ -32,9 +32,11 @@ type Actor struct {
 	store  *memory.Store
 	ctxb   *memory.ContextBuilder
 	skills *skills.Registry
+	budget *memory.BudgetManager
 }
 
-// New creates a new session actor.
+// New creates a new session actor. The optional budget parameter enables
+// relevance-based context pruning when non-nil.
 func New(
 	cfg *config.Config,
 	claudeClient *claude.Client,
@@ -42,15 +44,21 @@ func New(
 	mcpMgr *mcp.Manager,
 	store *memory.Store,
 	skillReg *skills.Registry,
+	budget *memory.BudgetManager,
 ) *Actor {
+	ctxb := memory.NewContextBuilder(store)
+	if budget != nil {
+		ctxb.SetBudget(budget)
+	}
 	return &Actor{
 		cfg:    cfg,
 		claude: claudeClient,
 		tg:     tg,
 		mcp:    mcpMgr,
 		store:  store,
-		ctxb:   memory.NewContextBuilder(store),
+		ctxb:   ctxb,
 		skills: skillReg,
+		budget: budget,
 	}
 }
 
@@ -97,7 +105,7 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	}
 
 	// Build context from conversation history.
-	history, err := a.ctxb.BuildContext(convID)
+	history, err := a.ctxb.BuildContextWithBudget(convID, msg.Text)
 	if err != nil {
 		return fmt.Errorf("build context: %w", err)
 	}

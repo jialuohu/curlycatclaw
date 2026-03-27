@@ -11,11 +11,12 @@ import (
 
 // Config holds all application configuration.
 type Config struct {
-	Timezone string       `toml:"timezone"`
-	Claude   ClaudeConfig `toml:"claude"`
-	Telegram TGConfig     `toml:"telegram"`
+	Timezone string        `toml:"timezone"`
+	Claude   ClaudeConfig  `toml:"claude"`
+	Telegram TGConfig      `toml:"telegram"`
 	Storage  StorageConfig `toml:"storage"`
-	MCP      MCPConfig    `toml:"mcp"`
+	MCP      MCPConfig     `toml:"mcp"`
+	Budget   BudgetConfig  `toml:"budget"`
 }
 
 type ClaudeConfig struct {
@@ -43,6 +44,11 @@ type MCPServerConfig struct {
 	Env     map[string]string `toml:"env"`
 }
 
+type BudgetConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Model   string `toml:"model"`
+}
+
 // Location returns the parsed timezone location.
 func (c *Config) Location() *time.Location {
 	loc, err := time.LoadLocation(c.Timezone)
@@ -66,6 +72,10 @@ func Load(path string) (*Config, error) {
 		},
 		Storage: StorageConfig{
 			DBPath: filepath.Join(defaultDataDir(), "curlycatclaw.db"),
+		},
+		Budget: BudgetConfig{
+			Enabled: false,
+			Model:   "claude-haiku-4-5-20251001",
 		},
 	}
 
