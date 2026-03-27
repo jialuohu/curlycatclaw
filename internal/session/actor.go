@@ -113,11 +113,12 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	tools = append(tools, toSkillTools(a.skills)...)
 
 	// Run the tool_use loop.
-	return a.toolUseLoop(ctx, msg.ChatID, convID, messages, systemPrompt, tools)
+	return a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools)
 }
 
 func (a *Actor) toolUseLoop(
 	ctx context.Context,
+	userID int64,
 	chatID int64,
 	convID string,
 	messages []anthropic.MessageParam,
@@ -175,7 +176,8 @@ func (a *Actor) toolUseLoop(
 			var execErr error
 			if skill := a.skills.Get(call.Name); skill != nil {
 				mcpCtx, mcpCancel := context.WithTimeout(ctx, mcpToolTimeout)
-				result, execErr = skill.Execute(mcpCtx, call.Input)
+				skillCtx := skills.WithUser(mcpCtx, skills.UserInfo{UserID: userID, ChatID: chatID})
+				result, execErr = skill.Execute(skillCtx, call.Input)
 				mcpCancel()
 			} else {
 				var args map[string]any

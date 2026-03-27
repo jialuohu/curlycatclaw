@@ -124,7 +124,7 @@ func (ch *Channel) Run(ctx context.Context) error {
 
 // handleUpdate filters and forwards a single Telegram update.
 func (ch *Channel) handleUpdate(upd tgbotapi.Update) {
-	if upd.Message == nil || upd.Message.Text == "" {
+	if upd.Message == nil || upd.Message.Text == "" || upd.Message.From == nil {
 		return
 	}
 

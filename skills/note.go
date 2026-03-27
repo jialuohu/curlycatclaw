@@ -15,6 +15,8 @@ import (
 func InitNoteSkills(db *sql.DB) ([]*Skill, error) {
 	const schema = `CREATE TABLE IF NOT EXISTS notes (
 		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL DEFAULT 0,
+		chat_id    INTEGER NOT NULL DEFAULT 0,
 		title      TEXT NOT NULL,
 		content    TEXT NOT NULL,
 		created_at DATETIME NOT NULL
@@ -58,10 +60,11 @@ func makeSaveNoteExecute(db *sql.DB) func(ctx context.Context, input json.RawMes
 			return "", fmt.Errorf("content is required")
 		}
 
+		user := GetUser(ctx)
 		now := time.Now().UTC()
 		_, err := db.ExecContext(ctx,
-			`INSERT INTO notes (title, content, created_at) VALUES (?, ?, ?)`,
-			params.Title, params.Content, now,
+			`INSERT INTO notes (user_id, chat_id, title, content, created_at) VALUES (?, ?, ?, ?, ?)`,
+			user.UserID, user.ChatID, params.Title, params.Content, now,
 		)
 		if err != nil {
 			return "", fmt.Errorf("save note: %w", err)
@@ -85,10 +88,11 @@ func makeSearchNotesExecute(db *sql.DB) func(ctx context.Context, input json.Raw
 			return "", fmt.Errorf("query is required")
 		}
 
+		user := GetUser(ctx)
 		pattern := "%" + params.Query + "%"
 		rows, err := db.QueryContext(ctx,
-			`SELECT title, content, created_at FROM notes WHERE title LIKE ? OR content LIKE ? ORDER BY created_at DESC`,
-			pattern, pattern,
+			`SELECT title, content, created_at FROM notes WHERE user_id = ? AND (title LIKE ? OR content LIKE ?) ORDER BY created_at DESC`,
+			user.UserID, pattern, pattern,
 		)
 		if err != nil {
 			return "", fmt.Errorf("search notes: %w", err)

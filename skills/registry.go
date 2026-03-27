@@ -5,6 +5,29 @@ import (
 	"encoding/json"
 )
 
+type ctxKey string
+
+const userCtxKey ctxKey = "skill_user"
+
+// UserInfo identifies the caller of a skill for user-scoped data.
+type UserInfo struct {
+	UserID int64
+	ChatID int64
+}
+
+// WithUser attaches user identity to a context for skill execution.
+func WithUser(ctx context.Context, u UserInfo) context.Context {
+	return context.WithValue(ctx, userCtxKey, u)
+}
+
+// GetUser retrieves user identity from context. Returns zero UserInfo if absent.
+func GetUser(ctx context.Context) UserInfo {
+	if u, ok := ctx.Value(userCtxKey).(UserInfo); ok {
+		return u
+	}
+	return UserInfo{}
+}
+
 // Skill defines a built-in tool that Claude can call.
 type Skill struct {
 	Name        string
