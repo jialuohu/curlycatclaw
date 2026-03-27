@@ -194,7 +194,11 @@ func (m *Manager) CallTool(ctx context.Context, serverTool string, arguments map
 		return "", fmt.Errorf("mcp: call %q on server %q: %w", rawTool, serverName, err)
 	}
 
-	return formatResult(result), nil
+	formatted := formatResult(result)
+	if result.IsError {
+		return "", fmt.Errorf("%s", formatted)
+	}
+	return formatted, nil
 }
 
 // Shutdown gracefully closes all MCP server connections.
@@ -248,8 +252,5 @@ func formatResult(result *mcp.CallToolResult) string {
 		}
 	}
 
-	if result.IsError {
-		return "tool error: " + strings.Join(parts, "\n")
-	}
 	return strings.Join(parts, "\n")
 }

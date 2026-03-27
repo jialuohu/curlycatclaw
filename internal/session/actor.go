@@ -246,10 +246,38 @@ When the user says "3pm" they mean 3pm in their timezone, not UTC.`,
 		a.cfg.Timezone, now.Format("2006-01-02 15:04 MST"))
 }
 
+// storedToolResult matches the JSON shape of a tool_result block stored by
+// the toolUseLoop. Used to reconstruct valid Anthropic API messages from DB.
+type storedToolResult struct {
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
 // toAnthropicMessages converts memory Messages to Anthropic SDK MessageParam.
 func toAnthropicMessages(msgs []memory.Message) []anthropic.MessageParam {
 	var result []anthropic.MessageParam
 	for _, m := range msgs {
+		// Handle tool_result role: reconstruct as user message with tool result blocks.
+		if m.Role == "tool_result" {
+			var entries []storedToolResult
+			if err := json.Unmarshal(m.Content, &entries); err == nil && len(entries) > 0 {
+				var blocks []anthropic.ContentBlockParamUnion
+				for _, e := range entries {
+					var text string
+					if err := json.Unmarshal(e.Content, &text); err != nil {
+						text = string(e.Content)
+					}
+					blocks = append(blocks, anthropic.NewToolResultBlock(e.ToolUseID, text, e.IsError))
+				}
+				result = append(result, anthropic.NewUserMessage(blocks...))
+				continue
+			}
+			// Fallback: include raw content as text in a user message.
+			result = append(result, anthropic.NewUserMessage(anthropic.NewTextBlock(string(m.Content))))
+			continue
+		}
+
 		// Attempt to unmarshal content as plain string (user messages).
 		var text string
 		if err := json.Unmarshal(m.Content, &text); err == nil {
@@ -262,13 +290,15 @@ func toAnthropicMessages(msgs []memory.Message) []anthropic.MessageParam {
 			continue
 		}
 
-		// For complex content (stored Response objects), extract text.
+		// For complex content (stored Response objects), extract text and tool calls.
 		var resp claude.Response
-		if err := json.Unmarshal(m.Content, &resp); err == nil && resp.TextContent != "" {
+		if err := json.Unmarshal(m.Content, &resp); err == nil && (resp.TextContent != "" || len(resp.ToolCalls) > 0) {
 			switch m.Role {
 			case "assistant":
 				var blocks []anthropic.ContentBlockParamUnion
-				blocks = append(blocks, anthropic.NewTextBlock(resp.TextContent))
+				if resp.TextContent != "" {
+					blocks = append(blocks, anthropic.NewTextBlock(resp.TextContent))
+				}
 				for _, tc := range resp.ToolCalls {
 					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, tc.Input, tc.Name))
 				}

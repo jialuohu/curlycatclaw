@@ -98,7 +98,8 @@ func TestFormatResult_ErrorResult(t *testing.T) {
 		IsError: true,
 	}
 	got := formatResult(result)
-	want := "tool error: something went wrong"
+	// formatResult returns just the content; IsError is handled by CallTool.
+	want := "something went wrong"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
