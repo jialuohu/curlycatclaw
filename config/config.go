@@ -19,8 +19,9 @@ type Config struct {
 	Budget   BudgetConfig  `toml:"budget"`
 	Vector   VectorConfig  `toml:"vector"`
 	Wasm     WasmConfig    `toml:"wasm"`
-	Logging  LoggingConfig `toml:"logging"`
-	Sandbox  SandboxConfig `toml:"sandbox"`
+	Logging      LoggingConfig `toml:"logging"`
+	Sandbox      SandboxConfig `toml:"sandbox"`
+	ConfirmTools []string      `toml:"confirm_tools"`
 }
 
 type ClaudeConfig struct {
@@ -29,8 +30,10 @@ type ClaudeConfig struct {
 }
 
 type TGConfig struct {
-	Token     string  `toml:"token"`
-	AllowedID []int64 `toml:"allowed_user_ids"`
+	Token         string  `toml:"token"`
+	AllowedID     []int64 `toml:"allowed_user_ids"`
+	AllowAll      bool    `toml:"allow_all"`
+	ShowToolCalls bool    `toml:"show_tool_calls"`
 }
 
 type StorageConfig struct {
@@ -42,10 +45,11 @@ type MCPConfig struct {
 }
 
 type MCPServerConfig struct {
-	Name    string            `toml:"name"`
-	Command string            `toml:"command"`
-	Args    []string          `toml:"args"`
-	Env     map[string]string `toml:"env"`
+	Name       string            `toml:"name"`
+	Command    string            `toml:"command"`
+	Args       []string          `toml:"args"`
+	Env        map[string]string `toml:"env"`
+	EnvInherit []string          `toml:"env_inherit"`
 }
 
 type BudgetConfig struct {
@@ -96,6 +100,9 @@ func Load(path string) (*Config, error) {
 
 	cfg := &Config{
 		Timezone: "UTC",
+		Telegram: TGConfig{
+			ShowToolCalls: true,
+		},
 		Claude: ClaudeConfig{
 			Model: "claude-sonnet-4-6-20250514",
 		},
@@ -143,6 +150,10 @@ func (c *Config) validate() error {
 	}
 	if c.Telegram.Token == "" {
 		return fmt.Errorf("config: telegram.token is required")
+	}
+	if len(c.Telegram.AllowedID) == 0 && !c.Telegram.AllowAll {
+		return fmt.Errorf("config: telegram.allowed_user_ids is empty; " +
+			"set your Telegram user ID(s) or set telegram.allow_all = true to allow everyone")
 	}
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
 		return fmt.Errorf("config: invalid timezone %q: %w", c.Timezone, err)

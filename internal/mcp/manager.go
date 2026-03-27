@@ -75,9 +75,9 @@ func (m *Manager) Start(ctx context.Context, servers []config.MCPServerConfig, e
 
 // startServer launches a single MCP server and discovers its tools.
 func (m *Manager) startServer(ctx context.Context, srv config.MCPServerConfig, envResolver func(string) (string, error)) error {
-	// Build environment for the subprocess. Start with the current process
-	// environment so the child inherits PATH, HOME, etc.
-	env := os.Environ()
+	// Build environment for the subprocess. Only pass through a safe
+	// baseline of env vars to avoid leaking secrets to child processes.
+	env := filteredEnv(srv.EnvInherit)
 	for k, v := range srv.Env {
 		resolved := v
 		if envResolver != nil {
@@ -171,8 +171,16 @@ func (m *Manager) Tools() []ToolDef {
 
 // CallTool routes a tool call to the correct MCP server and returns the
 // result as a string. The serverTool argument must be a fully qualified name
-// produced by Tools (e.g. "search__web_search").
-func (m *Manager) CallTool(ctx context.Context, serverTool string, arguments map[string]any) (string, error) {
+// produced by Tools (e.g. "search__web_search"). When userID is non-zero,
+// a _user_context map is injected into the arguments so MCP servers can
+// implement per-user access control.
+func (m *Manager) CallTool(ctx context.Context, serverTool string, arguments map[string]any, userID, chatID int64) (string, error) {
+	if userID != 0 {
+		arguments["_user_context"] = map[string]any{
+			"user_id": userID,
+			"chat_id": chatID,
+		}
+	}
 	serverName, rawTool, ok := splitToolName(serverTool)
 	if !ok {
 		return "", fmt.Errorf("mcp: invalid tool name %q (expected server%stool)", serverTool, sep)
@@ -215,6 +223,35 @@ func (m *Manager) Shutdown() {
 	}
 	// Clear the map so a subsequent Shutdown is a no-op.
 	m.servers = make(map[string]*serverConn)
+}
+
+// defaultEnvAllowlist is the minimum set of environment variables that MCP
+// child processes need to function (find binaries, set locale, etc.).
+var defaultEnvAllowlist = map[string]struct{}{
+	"PATH": {}, "HOME": {}, "USER": {}, "LANG": {}, "LC_ALL": {},
+	"SHELL": {}, "TMPDIR": {}, "TZ": {}, "XDG_RUNTIME_DIR": {},
+}
+
+// filteredEnv returns a copy of the current environment containing only
+// variables on the default allowlist plus any extras. This prevents secrets
+// like CURLYCATCLAW_MASTER_KEY from leaking to MCP child processes.
+func filteredEnv(extra []string) []string {
+	allow := make(map[string]struct{}, len(defaultEnvAllowlist)+len(extra))
+	for k, v := range defaultEnvAllowlist {
+		allow[k] = v
+	}
+	for _, k := range extra {
+		allow[k] = struct{}{}
+	}
+	var out []string
+	for _, entry := range os.Environ() {
+		if k, _, ok := strings.Cut(entry, "="); ok {
+			if _, pass := allow[k]; pass {
+				out = append(out, entry)
+			}
+		}
+	}
+	return out
 }
 
 // splitToolName splits "server__tool" into ("server", "tool", true).
