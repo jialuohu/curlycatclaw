@@ -53,6 +53,11 @@ func (r *Registry) Register(s *Skill) {
 	r.skills[s.Name] = s
 }
 
+// Unregister removes a skill from the registry by name.
+func (r *Registry) Unregister(name string) {
+	delete(r.skills, name)
+}
+
 // Get returns a skill by name, or nil if not found.
 func (r *Registry) Get(name string) *Skill {
 	return r.skills[name]
