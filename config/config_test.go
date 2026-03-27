@@ -248,3 +248,76 @@ func TestValidate_AllValid(t *testing.T) {
 		t.Fatalf("validate with valid config returned error: %v", err)
 	}
 }
+
+func TestLoad_LoggingDefaults(t *testing.T) {
+	path := writeConfig(t, validTOML)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Logging.Level != "info" {
+		t.Errorf("Logging.Level = %q, want %q", cfg.Logging.Level, "info")
+	}
+	if cfg.Logging.MaxSize != 50 {
+		t.Errorf("Logging.MaxSize = %d, want 50", cfg.Logging.MaxSize)
+	}
+	if cfg.Logging.MaxAge != 14 {
+		t.Errorf("Logging.MaxAge = %d, want 14", cfg.Logging.MaxAge)
+	}
+	if cfg.Logging.MaxBackups != 3 {
+		t.Errorf("Logging.MaxBackups = %d, want 3", cfg.Logging.MaxBackups)
+	}
+	if cfg.Logging.Format != "text" {
+		t.Errorf("Logging.Format = %q, want %q", cfg.Logging.Format, "text")
+	}
+	if cfg.Logging.File != "" {
+		t.Errorf("Logging.File = %q, want empty", cfg.Logging.File)
+	}
+}
+
+func TestLoad_SandboxDefaults(t *testing.T) {
+	path := writeConfig(t, validTOML)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Sandbox.Enabled {
+		t.Error("Sandbox.Enabled should default to false")
+	}
+	if len(cfg.Sandbox.ExtraPaths) != 0 {
+		t.Errorf("Sandbox.ExtraPaths = %v, want empty", cfg.Sandbox.ExtraPaths)
+	}
+}
+
+func TestLoad_LoggingFromTOML(t *testing.T) {
+	content := validTOML + `
+[logging]
+level = "debug"
+file = "/var/log/test.log"
+max_size = 100
+format = "json"
+`
+	path := writeConfig(t, content)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Logging.Level != "debug" {
+		t.Errorf("Logging.Level = %q, want %q", cfg.Logging.Level, "debug")
+	}
+	if cfg.Logging.File != "/var/log/test.log" {
+		t.Errorf("Logging.File = %q, want %q", cfg.Logging.File, "/var/log/test.log")
+	}
+	if cfg.Logging.MaxSize != 100 {
+		t.Errorf("Logging.MaxSize = %d, want 100", cfg.Logging.MaxSize)
+	}
+	if cfg.Logging.Format != "json" {
+		t.Errorf("Logging.Format = %q, want %q", cfg.Logging.Format, "json")
+	}
+}

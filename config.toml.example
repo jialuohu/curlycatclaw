@@ -37,3 +37,18 @@ BRAVE_API_KEY = "encrypted:ref:brave_api_key"
 # [wasm]
 # enabled    = true
 # skills_dir = "/home/you/.curlycatclaw/skills"
+
+# Logging configuration
+# [logging]
+# level = "info"          # debug, info, warn, error
+# file = "/var/log/curlycatclaw/curlycatclaw.log"
+# max_size = 50           # MB per file before rotation
+# max_age = 14            # days to keep old files
+# max_backups = 3         # number of old files to keep
+# format = "text"         # text or json
+
+# Filesystem sandbox (Linux only, requires kernel 5.13+)
+# [sandbox]
+# enabled = false
+# extra_paths = ["/usr/share/ca-certificates"]       # additional read-only paths
+# extra_paths_rw = ["/var/lib/curlycatclaw/custom"]  # additional read-write paths
