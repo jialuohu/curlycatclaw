@@ -85,16 +85,16 @@ For encrypted MCP credentials, set the `CURLYCATCLAW_MASTER_KEY` env var (64 hex
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                      Supervisor                       │
-│            (panic/recover, backoff, 30s drain)         │
+│                      Supervisor                      │
+│            (panic/recover, backoff, 30s drain)       │
 │                                                      │
-│   ┌─────────┐   ┌───────────┐   ┌───────────┐       │
-│   │ Channel │◄─►│  Session  │   │ Reminder  │       │
-│   │  Actor  │   │   Actor   │   │   Actor   │       │
-│   └────┬────┘   └─────┬─────┘   └─────┬─────┘       │
+│   ┌─────────┐   ┌───────────┐   ┌───────────┐        │
+│   │ Channel │◄─►│  Session  │   │ Reminder  │        │
+│   │  Actor  │   │   Actor   │   │   Actor   │        │
+│   └────┬────┘   └─────┬─────┘   └─────┬─────┘        │
 │        │              │               │              │
-│        │              ├──► Claude API  │              │
-│        │              │    stream + tool_use          │
+│        │              ├──► Claude API │              │
+│        │              │    stream + tool_use         │
 │        │              │               │              │
 │        │              ├──► Tools      │              │
 │        │              │    Skills     │              │
@@ -102,7 +102,7 @@ For encrypted MCP credentials, set the `CURLYCATCLAW_MASTER_KEY` env var (64 hex
 │        │              │    Wasm       │              │
 │        │              │               │              │
 │        │              └──► Memory ◄───┘              │
-│        │                   SQLite / Budget / Vector   │
+│        │                   SQLite / Budget / Vector  │
 │        │                                             │
 │        │◄── [tool] lines + [confirm?] previews       │
 │        │                                             │
