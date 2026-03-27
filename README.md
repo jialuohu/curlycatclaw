@@ -120,6 +120,41 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 
 Skills are registered alongside MCP tools. Claude sees them all as available tools and picks the right one. Wasm plugins are loaded from `~/.curlycatclaw/skills/*.wasm` when enabled.
 
+## Deployment
+
+### systemd (Linux)
+
+1. Create a system user:
+
+   ```bash
+   sudo useradd --system --create-home --home-dir /var/lib/curlycatclaw curlycatclaw
+   ```
+
+2. Copy the binary and config:
+
+   ```bash
+   sudo cp curlycatclaw /usr/local/bin/
+   sudo mkdir -p /etc/curlycatclaw
+   sudo cp config.toml /etc/curlycatclaw/config.toml
+   sudo chown -R curlycatclaw:curlycatclaw /etc/curlycatclaw
+   ```
+
+3. Install and enable the service:
+
+   ```bash
+   sudo cp deploy/curlycatclaw.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now curlycatclaw
+   ```
+
+4. View logs:
+
+   ```bash
+   journalctl -u curlycatclaw -f
+   ```
+
+See [deploy/UPGRADE.md](deploy/UPGRADE.md) for upgrade instructions.
+
 ## Testing
 
 ```bash

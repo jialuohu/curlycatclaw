@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -59,8 +60,11 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
-// Close closes the underlying database connection.
+// Close checkpoints the WAL and closes the underlying database connection.
 func (s *Store) Close() error {
+	if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		slog.Warn("wal checkpoint failed", "err", err)
+	}
 	return s.db.Close()
 }
 

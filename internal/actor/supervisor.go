@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -58,15 +59,31 @@ func Supervise(ctx context.Context, a Actor) {
 }
 
 // SuperviseAll starts multiple actors under supervision, each in its own
-// goroutine. It blocks until ctx is cancelled.
-func SuperviseAll(ctx context.Context, actors ...Actor) {
+// goroutine. It blocks until ctx is cancelled, then waits up to timeout
+// for all actors to drain before returning.
+func SuperviseAll(ctx context.Context, timeout time.Duration, actors ...Actor) {
+	var wg sync.WaitGroup
 	for _, a := range actors {
+		wg.Add(1)
 		go func(a Actor) {
+			defer wg.Done()
 			Supervise(ctx, a)
 		}(a)
 	}
 
 	<-ctx.Done()
-	// Give actors a moment to drain.
-	time.Sleep(100 * time.Millisecond)
+	slog.Info("waiting for actors to drain", "timeout", timeout)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		slog.Info("all actors drained")
+	case <-time.After(timeout):
+		slog.Warn("actor drain timed out, forcing shutdown", "timeout", timeout)
+	}
 }

@@ -19,6 +19,8 @@ type Config struct {
 	Budget   BudgetConfig  `toml:"budget"`
 	Vector   VectorConfig  `toml:"vector"`
 	Wasm     WasmConfig    `toml:"wasm"`
+	Logging  LoggingConfig `toml:"logging"`
+	Sandbox  SandboxConfig `toml:"sandbox"`
 }
 
 type ClaudeConfig struct {
@@ -61,6 +63,21 @@ type WasmConfig struct {
 	SkillsDir string `toml:"skills_dir"`
 }
 
+type LoggingConfig struct {
+	Level      string `toml:"level"`
+	File       string `toml:"file"`
+	MaxSize    int    `toml:"max_size"`
+	MaxAge     int    `toml:"max_age"`
+	MaxBackups int    `toml:"max_backups"`
+	Format     string `toml:"format"`
+}
+
+type SandboxConfig struct {
+	Enabled      bool     `toml:"enabled"`
+	ExtraPaths   []string `toml:"extra_paths"`
+	ExtraPathsRW []string `toml:"extra_paths_rw"`
+}
+
 // Location returns the parsed timezone location.
 func (c *Config) Location() *time.Location {
 	loc, err := time.LoadLocation(c.Timezone)
@@ -96,6 +113,16 @@ func Load(path string) (*Config, error) {
 		Wasm: WasmConfig{
 			Enabled:   false,
 			SkillsDir: filepath.Join(defaultDataDir(), "skills"),
+		},
+		Logging: LoggingConfig{
+			Level:      "info",
+			MaxSize:    50,
+			MaxAge:     14,
+			MaxBackups: 3,
+			Format:     "text",
+		},
+		Sandbox: SandboxConfig{
+			Enabled: false,
 		},
 	}
 

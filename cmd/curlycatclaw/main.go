@@ -5,12 +5,14 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/actor"
@@ -22,13 +24,22 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 	"github.com/jialuohu/curlycatclaw/internal/wasm"
 	"github.com/jialuohu/curlycatclaw/skills"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+var version = "dev"
 
 func main() {
 	configPath := flag.String("config", defaultConfigPath(), "path to config.toml")
+	versionFlag := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
-	// Set up structured logging.
+	if *versionFlag {
+		fmt.Println("curlycatclaw", version)
+		return
+	}
+
+	// Set up structured logging (default, will be reconfigured after config load).
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
@@ -45,7 +56,12 @@ func run(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	slog.Info("config loaded", "timezone", cfg.Timezone)
+
+	// Reconfigure logging from config.
+	if err := setupLogging(cfg.Logging); err != nil {
+		return fmt.Errorf("setup logging: %w", err)
+	}
+	slog.Info("config loaded", "timezone", cfg.Timezone, "version", version)
 
 	// Ensure data directory exists.
 	dataDir := filepath.Dir(cfg.Storage.DBPath)
@@ -180,25 +196,46 @@ func run(configPath string) error {
 		}
 	}
 
+	// Apply filesystem sandbox (Linux-only, no-op on other platforms).
+	if cfg.Sandbox.Enabled {
+		var logDir string
+		if cfg.Logging.File != "" {
+			logDir = filepath.Dir(cfg.Logging.File)
+		}
+		if err := security.ApplySandbox(security.SandboxParams{
+			DataDir:      dataDir,
+			ConfigPath:   configPath,
+			LogDir:       logDir,
+			ExtraPaths:   cfg.Sandbox.ExtraPaths,
+			ExtraPathsRW: cfg.Sandbox.ExtraPathsRW,
+		}); err != nil {
+			slog.Warn("sandbox: failed to apply", "err", err)
+		}
+	}
+
 	// Create reminder actor.
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh)
 
 	// Create session actor.
 	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore)
 
-	// Handle shutdown signals.
-	sigCh := make(chan os.Signal, 1)
+	// Handle shutdown signals. First signal triggers graceful shutdown;
+	// second signal forces immediate exit.
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		slog.Info("received signal, shutting down", "signal", sig)
+		slog.Info("received signal, shutting down gracefully", "signal", sig)
 		cancel()
+		sig = <-sigCh
+		slog.Error("received second signal, forcing exit", "signal", sig)
+		os.Exit(1)
 	}()
 
 	slog.Info("curlycatclaw started")
 
 	// Run actors under supervision.
-	actor.SuperviseAll(ctx, tg, sess, reminderActor)
+	actor.SuperviseAll(ctx, 30*time.Second, tg, sess, reminderActor)
 
 	slog.Info("curlycatclaw stopped")
 	return nil
@@ -210,4 +247,42 @@ func defaultConfigPath() string {
 		return "config.toml"
 	}
 	return filepath.Join(home, ".curlycatclaw", "config.toml")
+}
+
+func setupLogging(cfg config.LoggingConfig) error {
+	var level slog.Level
+	switch strings.ToLower(cfg.Level) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	var w io.Writer = os.Stderr
+	if cfg.File != "" {
+		if err := os.MkdirAll(filepath.Dir(cfg.File), 0750); err != nil {
+			return fmt.Errorf("create log dir: %w", err)
+		}
+		w = &lumberjack.Logger{
+			Filename:   cfg.File,
+			MaxSize:    cfg.MaxSize,
+			MaxAge:     cfg.MaxAge,
+			MaxBackups: cfg.MaxBackups,
+		}
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if cfg.Format == "json" {
+		handler = slog.NewJSONHandler(w, opts)
+	} else {
+		handler = slog.NewTextHandler(w, opts)
+	}
+
+	slog.SetDefault(slog.New(handler))
+	return nil
 }
