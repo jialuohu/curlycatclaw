@@ -249,7 +249,6 @@ func splitParagraphs(text string) []string {
 	inFence := false
 
 	lines := strings.Split(text, "\n")
-	prevBlank := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -261,12 +260,15 @@ func splitParagraphs(text string) []string {
 
 		isBlank := trimmed == ""
 
-		// A paragraph break is two consecutive newlines (i.e., a blank
-		// line following content) while outside a code fence.
-		if isBlank && prevBlank && !inFence && buf.Len() > 0 {
+		// A paragraph break is a blank line while outside a code fence.
+		if isBlank && !inFence && buf.Len() > 0 {
 			paragraphs = append(paragraphs, strings.TrimRight(buf.String(), "\n"))
 			buf.Reset()
-			prevBlank = false
+			continue
+		}
+
+		// Skip consecutive blank lines between paragraphs.
+		if isBlank && buf.Len() == 0 {
 			continue
 		}
 
@@ -274,7 +276,6 @@ func splitParagraphs(text string) []string {
 			buf.WriteByte('\n')
 		}
 		buf.WriteString(line)
-		prevBlank = isBlank
 	}
 
 	if buf.Len() > 0 {
