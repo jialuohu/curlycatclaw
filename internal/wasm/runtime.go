@@ -28,6 +28,10 @@ const (
 	maxQueryRows   = 100
 )
 
+// chatIDCtxKey is used to thread the invoking chat ID through Wasm execution
+// context for send_message scope validation.
+type chatIDCtxKey struct{}
+
 // Manifest describes a wasm skill's metadata and permission grants.
 // It is loaded from a JSON file alongside the .wasm binary.
 type Manifest struct {
@@ -172,7 +176,7 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 	if manifest.hasCapability("send_message") {
 		hostBuilder.NewFunctionBuilder().
 			WithFunc(func(ctx context.Context, mod api.Module, ptr, length uint32) {
-				w.hostSendMessage(mod, ptr, length)
+				w.hostSendMessage(ctx, mod, ptr, length)
 			}).
 			Export("catclaw_send_message")
 	}
@@ -211,7 +215,11 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			w.mu.RLock()
 			defer w.mu.RUnlock()
-			return callSkillExecute(ctx, instance, input)
+			// Thread the invoking chat ID into the Wasm context so
+			// hostSendMessage can validate message scope.
+			user := skills.GetUser(ctx)
+			execCtx := context.WithValue(ctx, chatIDCtxKey{}, user.ChatID)
+			return callSkillExecute(execCtx, instance, input)
 		},
 	}
 
@@ -420,7 +428,9 @@ type sendMessagePayload struct {
 }
 
 // hostSendMessage sends a Telegram message on behalf of the guest module.
-func (w *WasmRuntime) hostSendMessage(mod api.Module, ptr, length uint32) {
+// The context must carry the allowed chat ID (via chatIDCtxKey) so that
+// plugins can only reply to the chat that invoked them.
+func (w *WasmRuntime) hostSendMessage(ctx context.Context, mod api.Module, ptr, length uint32) {
 	data := readString(mod, ptr, length)
 
 	var payload sendMessagePayload
@@ -432,6 +442,15 @@ func (w *WasmRuntime) hostSendMessage(mod api.Module, ptr, length uint32) {
 	if payload.ChatID == 0 || payload.Text == "" {
 		slog.Warn("wasm: send_message missing chat_id or text")
 		return
+	}
+
+	// Validate chat scope: plugins may only send to the chat that invoked them.
+	if allowed, ok := ctx.Value(chatIDCtxKey{}).(int64); ok && allowed != 0 {
+		if payload.ChatID != allowed {
+			slog.Warn("wasm: send_message blocked, chat_id mismatch",
+				"requested", payload.ChatID, "allowed", allowed)
+			return
+		}
 	}
 
 	select {
