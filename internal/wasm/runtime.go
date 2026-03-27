@@ -588,17 +588,52 @@ func callSkillExecute(ctx context.Context, instance api.Module, input json.RawMe
 // isSelectOnly returns true if the trimmed, uppercased query begins with
 // SELECT and does not contain dangerous keywords.
 func isSelectOnly(query string) bool {
-	upper := strings.ToUpper(strings.TrimSpace(query))
+	// Strip SQL comments (both -- line and /* block */ styles) to prevent
+	// hiding mutating keywords inside comments.
+	cleaned := stripSQLComments(query)
+	upper := strings.ToUpper(strings.TrimSpace(cleaned))
 	if !strings.HasPrefix(upper, "SELECT") {
 		return false
 	}
-	// Reject statements that contain mutating keywords even after SELECT.
+	// Reject multi-statement queries (semicolons enable chaining).
+	if strings.Contains(upper, ";") {
+		return false
+	}
+	// Reject statements that contain mutating keywords.
 	for _, kw := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE"} {
 		if strings.Contains(upper, kw) {
 			return false
 		}
 	}
 	return true
+}
+
+// stripSQLComments removes -- line comments and /* block */ comments from SQL.
+func stripSQLComments(sql string) string {
+	var b strings.Builder
+	b.Grow(len(sql))
+	i := 0
+	for i < len(sql) {
+		if i+1 < len(sql) && sql[i] == '-' && sql[i+1] == '-' {
+			// Skip until end of line.
+			for i < len(sql) && sql[i] != '\n' {
+				i++
+			}
+		} else if i+1 < len(sql) && sql[i] == '/' && sql[i+1] == '*' {
+			// Skip until closing */.
+			i += 2
+			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(sql) {
+				i += 2 // skip */
+			}
+		} else {
+			b.WriteByte(sql[i])
+			i++
+		}
+	}
+	return b.String()
 }
 
 // isHostAllowed checks whether the given URL matches any entry in the
