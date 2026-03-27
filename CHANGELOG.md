@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0] - 2026-03-27
+
+Phase 3 "Production Hardening." Reliable shutdown, configurable logging, Linux sandboxing, and deployment tooling.
+
+### Added
+- Graceful shutdown: `SuperviseAll` uses `sync.WaitGroup` with configurable drain timeout (30s default), replacing the previous 100ms fixed sleep
+- Configurable logging: `[logging]` config section with level, file output, rotation (via lumberjack), and JSON format support
+- Landlock filesystem sandbox: Linux-only (`//go:build linux`) with BestEffort degradation, allowlists for data dir, config, zoneinfo, CA certs, and log rotation dir
+- No-op sandbox stub for non-Linux platforms
+- Version flag: `--version` prints version and exits, stamped via ldflags in release builds
+- systemd unit file (`deploy/curlycatclaw.service`) with hardening directives (NoNewPrivileges, ProtectSystem=strict, PrivateTmp)
+- Deployment docs: `deploy/UPGRADE.md` and README Deployment section
+- Second SIGTERM forces immediate exit (standard force-exit pattern)
+- WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`) on graceful database close
+
+### Changed
+- Release workflow uses environment variable for version to prevent shell injection via tag names
+
 ## [0.2.0] - 2026-03-27
 
 Phase 2 "Intelligence Layer." Smart context, semantic memory, scheduling, and plugins.

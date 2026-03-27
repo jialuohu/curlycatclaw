@@ -34,9 +34,10 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          go build -o dist/curlycatclaw-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/curlycatclaw
+          go build -ldflags "-X main.version=${VERSION}" -o dist/curlycatclaw-${GOOS}-${GOARCH} ./cmd/curlycatclaw
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
