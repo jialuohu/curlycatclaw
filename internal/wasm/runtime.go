@@ -139,8 +139,8 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 		return fmt.Errorf("load manifest %s: %w", manifestPath, err)
 	}
 
-	// Compile wasm bytes.
-	wasmBytes, err := os.ReadFile(wasmPath)
+	// Compile wasm bytes (with size cap to prevent DoS).
+	wasmBytes, err := readWasmFile(wasmPath)
 	if err != nil {
 		return fmt.Errorf("read wasm %s: %w", wasmPath, err)
 	}
@@ -890,6 +890,29 @@ func isHostAllowed(rawURL string, allowed []string) bool {
 // ---------------------------------------------------------------------------
 // File path helpers
 // ---------------------------------------------------------------------------
+
+// maxWasmSize is the maximum allowed size for a .wasm file (50 MiB).
+const maxWasmSize = 50 << 20
+
+// readWasmFile reads a .wasm file with a size cap to prevent memory exhaustion.
+// Uses Open+Stat+LimitReader to avoid TOCTOU between stat and read.
+func readWasmFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxWasmSize {
+		return nil, fmt.Errorf("exceeds size limit (%d bytes > %d bytes)", info.Size(), maxWasmSize)
+	}
+
+	return io.ReadAll(io.LimitReader(f, maxWasmSize+1))
+}
 
 // wasmPathToManifest converts a .wasm file path to its sibling .manifest.json path.
 func wasmPathToManifest(wasmPath string) string {
