@@ -262,6 +262,42 @@ func TestGetActiveConversation_DifferentChatIDs(t *testing.T) {
 	}
 }
 
+func TestGetActiveConversation_TransactionConsistency(t *testing.T) {
+	s := newTestStore(t)
+	const userID int64 = 42
+	const chatID int64 = 1
+
+	// First call creates a conversation.
+	id1, _, err := s.GetActiveConversation(userID, chatID)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if id1 == "" {
+		t.Fatal("first call returned empty ID")
+	}
+
+	// Second call within 4h should return the same conversation.
+	id2, _, err := s.GetActiveConversation(userID, chatID)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if id2 != id1 {
+		t.Errorf("expected same conversation %q, got %q", id1, id2)
+	}
+
+	// Verify only one conversation exists for this user/chat.
+	var count int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM conversations WHERE user_id = ? AND chat_id = ?`,
+		userID, chatID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 conversation, got %d", count)
+	}
+}
+
 func TestGetConversationMessages(t *testing.T) {
 	s := newTestStore(t)
 

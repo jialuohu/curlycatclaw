@@ -442,7 +442,9 @@ func (a *Actor) toolUseLoop(
 			return fmt.Errorf("marshal assistant response: %w", err)
 		}
 		if err := a.store.AppendMessage(convID, "assistant", assistantContent); err != nil {
-			slog.Error("failed to store assistant message", "err", err)
+			slog.Error("failed to store assistant message",
+				"err", err, "conversation_id", convID, "role", "assistant",
+				"content_len", len(assistantContent), "data_loss", true)
 		}
 
 		// If no tool calls, we're done. If streaming didn't produce output
@@ -556,7 +558,9 @@ func (a *Actor) toolUseLoop(
 			return fmt.Errorf("marshal tool results: %w", err)
 		}
 		if err := a.store.AppendMessage(convID, "tool_result", toolResultContent); err != nil {
-			slog.Error("failed to store tool result message", "err", err)
+			slog.Error("failed to store tool result message",
+				"err", err, "conversation_id", convID, "role", "tool_result",
+				"content_len", len(toolResultContent), "data_loss", true)
 		}
 
 		// Append assistant message + tool results and loop.

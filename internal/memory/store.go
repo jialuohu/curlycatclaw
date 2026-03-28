@@ -68,15 +68,29 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// execer abstracts *sql.DB and *sql.Tx for shared insert logic.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // CreateConversation inserts a new conversation for userID and chatID and returns its UUID.
 func (s *Store) CreateConversation(userID int64, chatID int64) (string, error) {
+	return s.insertConversation(s.db, userID, chatID)
+}
+
+// createConversationTx inserts a new conversation within an existing transaction.
+func (s *Store) createConversationTx(tx *sql.Tx, userID int64, chatID int64) (string, error) {
+	return s.insertConversation(tx, userID, chatID)
+}
+
+func (s *Store) insertConversation(e execer, userID int64, chatID int64) (string, error) {
 	id, err := newUUID()
 	if err != nil {
 		return "", fmt.Errorf("memory: generate uuid: %w", err)
 	}
 
 	now := time.Now().UTC()
-	_, err = s.db.Exec(
+	_, err = e.Exec(
 		`INSERT INTO conversations (id, user_id, chat_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
 		id, userID, chatID, now, now,
 	)
@@ -181,28 +195,52 @@ func (s *Store) CompleteToolCall(callID string, output json.RawMessage, isError 
 // If no conversation exists or the most recent one is older than 4 hours,
 // a new conversation is created. When an expired conversation is replaced,
 // expiredConvID returns the old conversation's ID (for summarization).
+//
+// The check-and-create is wrapped in a BEGIN IMMEDIATE transaction for
+// defense-in-depth, even though the session actor is currently single-goroutine.
 func (s *Store) GetActiveConversation(userID int64, chatID int64) (convID string, expiredConvID string, err error) {
+	// With MaxOpenConns(1), all operations are serialized through the single
+	// connection. The transaction provides atomicity for check-then-create.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", "", fmt.Errorf("memory: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
 	var id string
 	var updatedAt time.Time
 
-	qErr := s.db.QueryRow(
+	qErr := tx.QueryRow(
 		`SELECT id, updated_at FROM conversations WHERE user_id = ? AND chat_id = ? ORDER BY updated_at DESC LIMIT 1`,
 		userID, chatID,
 	).Scan(&id, &updatedAt)
 
 	if qErr == sql.ErrNoRows {
-		newID, cErr := s.CreateConversation(userID, chatID)
-		return newID, "", cErr
+		newID, cErr := s.createConversationTx(tx, userID, chatID)
+		if cErr != nil {
+			return "", "", cErr
+		}
+		if cErr = tx.Commit(); cErr != nil {
+			return "", "", fmt.Errorf("memory: commit tx: %w", cErr)
+		}
+		return newID, "", nil
 	}
 	if qErr != nil {
 		return "", "", fmt.Errorf("memory: get active conversation: %w", qErr)
 	}
 
 	if time.Since(updatedAt) > 4*time.Hour {
-		newID, cErr := s.CreateConversation(userID, chatID)
-		return newID, id, cErr
+		newID, cErr := s.createConversationTx(tx, userID, chatID)
+		if cErr != nil {
+			return "", "", cErr
+		}
+		if cErr = tx.Commit(); cErr != nil {
+			return "", "", fmt.Errorf("memory: commit tx: %w", cErr)
+		}
+		return newID, id, nil
 	}
 
+	// Read-only path — deferred Rollback() handles cleanup, no commit needed.
 	return id, "", nil
 }
 

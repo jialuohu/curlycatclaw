@@ -22,6 +22,7 @@ type Config struct {
 	Memory       MemoryConfig  `toml:"memory"`
 	Logging      LoggingConfig `toml:"logging"`
 	Sandbox      SandboxConfig `toml:"sandbox"`
+	Health       HealthConfig  `toml:"health"`
 	ConfirmTools []string      `toml:"confirm_tools"`
 }
 
@@ -99,6 +100,11 @@ type SandboxConfig struct {
 	ExtraPathsRW []string `toml:"extra_paths_rw"`
 }
 
+type HealthConfig struct {
+	Enabled bool `toml:"enabled"`
+	Port    int  `toml:"port"`
+}
+
 // Location returns the parsed timezone location.
 func (c *Config) Location() *time.Location {
 	loc, err := time.LoadLocation(c.Timezone)
@@ -155,6 +161,10 @@ func Load(path string) (*Config, error) {
 		},
 		Sandbox: SandboxConfig{
 			Enabled: false,
+		},
+		Health: HealthConfig{
+			Enabled: false,
+			Port:    8080,
 		},
 	}
 

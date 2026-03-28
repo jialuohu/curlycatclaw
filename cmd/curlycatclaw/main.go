@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -266,6 +269,11 @@ func run(configPath string) error {
 		os.Exit(1)
 	}()
 
+	// Start health server if enabled.
+	if cfg.Health.Enabled {
+		startHealthServer(ctx, cfg.Health.Port, store.DB())
+	}
+
 	slog.Info("curlycatclaw started")
 
 	// Run actors under supervision.
@@ -330,4 +338,45 @@ func setupLogging(cfg config.LoggingConfig) error {
 
 	slog.SetDefault(slog.New(handler))
 	return nil
+}
+
+// newHealthHandler returns an HTTP handler that checks process liveness
+// (context not cancelled) and database reachability (SELECT 1).
+func newHealthHandler(ctx context.Context, db *sql.DB) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		if ctx.Err() != nil {
+			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		if err := db.PingContext(r.Context()); err != nil {
+			http.Error(w, "database unreachable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "ok")
+	})
+	return mux
+}
+
+// startHealthServer runs an HTTP health endpoint in a background goroutine.
+func startHealthServer(ctx context.Context, port int, db *sql.DB) {
+	srv := &http.Server{
+		Addr:    net.JoinHostPort("", fmt.Sprintf("%d", port)),
+		Handler: newHealthHandler(ctx, db),
+	}
+
+	go func() {
+		slog.Info("health server started", "port", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("health server failed", "err", err)
+		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx) //nolint:errcheck
+	}()
 }

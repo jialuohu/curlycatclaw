@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/jialuohu/curlycatclaw/config"
+	_ "modernc.org/sqlite"
 )
 
 func TestSetupLogging_DefaultStderr(t *testing.T) {
@@ -80,5 +84,57 @@ func TestSetupLogging_FileHandler(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Fatalf("%s is not a directory", dir)
+	}
+}
+
+func TestHealthHandler_Returns200(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "health_test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := httptest.NewServer(newHealthHandler(ctx, db))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestHealthHandler_Returns503OnShutdown(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "health_test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	srv := httptest.NewServer(newHealthHandler(ctx, db))
+	defer srv.Close()
+
+	// Cancel context to simulate shutdown.
+	cancel()
+
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 during shutdown, got %d", resp.StatusCode)
 	}
 }
