@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -27,13 +29,17 @@ const (
 // Claude API calls, MCP tool execution, and conversation memory.
 type Actor struct {
 	cfg    *config.Config
-	claude *claude.Client
-	tg     *telegram.Channel
-	mcp    *mcp.Manager
-	store  *memory.Store
-	ctxb   *memory.ContextBuilder
+	claude LLMClient
+	tg     TelegramTransport
+	mcp    ToolRouter
+	store  MessageStore
+	ctxb   ContextProvider
 	skills *skills.Registry
-	vector *memory.VectorStore
+	vector VectorIndexer
+
+	// indexWg tracks in-flight vector indexing goroutines for clean shutdown.
+	indexWg  sync.WaitGroup
+	indexSeq atomic.Uint64
 }
 
 // New creates a new session actor.
@@ -51,6 +57,10 @@ func New(
 	if budget != nil {
 		ctxb.SetBudget(budget)
 	}
+	var vi VectorIndexer
+	if vectorStore != nil {
+		vi = vectorStore
+	}
 	return &Actor{
 		cfg:    cfg,
 		claude: claudeClient,
@@ -59,7 +69,7 @@ func New(
 		store:  store,
 		ctxb:   ctxb,
 		skills: skillReg,
-		vector: vectorStore,
+		vector: vi,
 	}
 }
 
@@ -68,6 +78,20 @@ func (a *Actor) Name() string { return "session" }
 // Run starts the session actor's event loop.
 func (a *Actor) Run(ctx context.Context) error {
 	slog.Info("session actor started")
+
+	defer func() {
+		// Wait for in-flight vector indexing goroutines (with timeout).
+		done := make(chan struct{})
+		go func() {
+			a.indexWg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			slog.Warn("session: timed out waiting for vector index goroutines")
+		}
+	}()
 
 	for {
 		select {
@@ -99,7 +123,7 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 		return fmt.Errorf("get conversation: %w", err)
 	}
 
-	// Store the user message.
+	// Store the user message. Marshal cannot fail for a Go string.
 	userContent, _ := json.Marshal(msg.Text)
 	if err := a.store.AppendMessage(convID, "user", userContent); err != nil {
 		return fmt.Errorf("store user message: %w", err)
@@ -107,16 +131,20 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// Index user message in vector store asynchronously.
 	if a.vector != nil {
+		a.indexWg.Add(1)
 		go func() {
-			msgID := fmt.Sprintf("%d", time.Now().UnixNano())
-			if err := a.vector.Index(context.Background(), convID+":"+msgID, msg.Text, msg.UserID, msg.ChatID, "message"); err != nil {
+			defer a.indexWg.Done()
+			indexCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			msgID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), a.indexSeq.Add(1))
+			if err := a.vector.Index(indexCtx, convID+":"+msgID, msg.Text, msg.UserID, msg.ChatID, "message"); err != nil {
 				slog.Warn("vector index failed", "err", err)
 			}
 		}()
 	}
 
-	// Build context from conversation history.
-	history, err := a.ctxb.BuildContext(convID)
+	// Build context from conversation history (budget-aware if BudgetManager is set).
+	history, err := a.ctxb.BuildContextWithBudget(ctx, convID, msg.Text)
 	if err != nil {
 		return fmt.Errorf("build context: %w", err)
 	}
@@ -157,7 +185,10 @@ func (a *Actor) toolUseLoop(
 		}
 
 		// Store assistant response.
-		assistantContent, _ := json.Marshal(resp)
+		assistantContent, err := json.Marshal(resp)
+		if err != nil {
+			return fmt.Errorf("marshal assistant response: %w", err)
+		}
 		if err := a.store.AppendMessage(convID, "assistant", assistantContent); err != nil {
 			slog.Error("failed to store assistant message", "err", err)
 		}
@@ -222,7 +253,10 @@ func (a *Actor) toolUseLoop(
 			}
 
 			// Log tool result.
-			resultJSON, _ := json.Marshal(result)
+			resultJSON, marshalErr := json.Marshal(result)
+			if marshalErr != nil {
+				slog.Error("failed to marshal tool result", "err", marshalErr)
+			}
 			if err := a.store.CompleteToolCall(call.ID, resultJSON, execErr != nil); err != nil {
 				slog.Error("failed to complete tool call log", "err", err)
 			}
@@ -250,7 +284,10 @@ func (a *Actor) toolUseLoop(
 		}
 
 		// Store tool results to DB so conversation replay includes them.
-		toolResultContent, _ := json.Marshal(toolResultBlocks)
+		toolResultContent, err := json.Marshal(toolResultBlocks)
+		if err != nil {
+			return fmt.Errorf("marshal tool results: %w", err)
+		}
 		if err := a.store.AppendMessage(convID, "tool_result", toolResultContent); err != nil {
 			slog.Error("failed to store tool result message", "err", err)
 		}

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -94,7 +95,7 @@ func (cb *ContextBuilder) BuildContext(convID string) ([]Message, error) {
 // Turns classified as "full" are included verbatim, "summary" turns are
 // replaced with a synthetic user message containing the summary, and "none"
 // turns are dropped. Falls back to BuildContext on any error.
-func (cb *ContextBuilder) BuildContextWithBudget(convID, currentMsg string) ([]Message, error) {
+func (cb *ContextBuilder) BuildContextWithBudget(ctx context.Context, convID, currentMsg string) ([]Message, error) {
 	// If no budget manager or it is disabled, use the standard path.
 	if cb.budget == nil || !cb.budget.enabled {
 		return cb.BuildContext(convID)
@@ -116,7 +117,7 @@ func (cb *ContextBuilder) BuildContextWithBudget(convID, currentMsg string) ([]M
 	}
 
 	// Classify turns via the budget manager.
-	classified, err := cb.budget.ClassifyTurns(currentMsg, turns)
+	classified, err := cb.budget.ClassifyTurns(ctx, currentMsg, turns)
 	if err != nil {
 		slog.Warn("budget classification failed, falling back to standard context", "err", err)
 		return cb.BuildContext(convID)

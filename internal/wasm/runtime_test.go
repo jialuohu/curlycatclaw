@@ -145,6 +145,15 @@ func TestIsSelectOnly(t *testing.T) {
 		// Semicolon-based multi-statement.
 		{"SELECT 1; SELECT 2", false},
 		{"SELECT * FROM notes;DROP TABLE notes", false},
+		// Word-boundary: mutating keywords inside identifiers/strings should NOT trigger.
+		{"SELECT * FROM t WHERE action = 'DELETE_REQUEST'", true},
+		{"SELECT * FROM t WHERE status = 'UPDATED'", true},
+		{"SELECT CREATED_AT FROM notes", true},
+		// But standalone keywords still blocked.
+		{"SELECT * FROM notes UNION DELETE FROM notes", false},
+		// String literals with comment-like content preserved.
+		{"SELECT * FROM t WHERE name = '-- comment'", true},
+		{"SELECT * FROM t WHERE name = 'O''Brien'", true},
 	}
 
 	for _, tt := range tests {

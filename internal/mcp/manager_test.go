@@ -107,7 +107,7 @@ func TestFormatResult_ErrorResult(t *testing.T) {
 }
 
 func TestNewManager(t *testing.T) {
-	m := NewManager()
+	m := NewManager("test")
 	if m == nil {
 		t.Fatal("NewManager returned nil")
 	}
@@ -120,7 +120,7 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestTools_Empty(t *testing.T) {
-	m := NewManager()
+	m := NewManager("test")
 	tools := m.Tools()
 	if len(tools) != 0 {
 		t.Errorf("tools length: got %d, want 0", len(tools))

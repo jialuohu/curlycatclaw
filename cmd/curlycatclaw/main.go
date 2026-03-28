@@ -106,7 +106,7 @@ func run(configPath string) error {
 	slog.Info("telegram channel initialized")
 
 	// Initialize MCP manager.
-	mcpMgr := mcp.NewManager()
+	mcpMgr := mcp.NewManager(version)
 
 	// Set up context with cancellation on signal.
 	ctx, cancel := context.WithCancel(context.Background())

@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.5.0] - 2026-03-27
+
+Phase 5 "Codebase Health + Deployment." Full codebase audit, session actor testability, Docker support, goreleaser, and security hardening.
+
+### Added
+- Session actor interfaces (LLMClient, MessageStore, ContextProvider, ToolRouter, VectorIndexer, TelegramTransport) for testability
+- 7 integration tests for session actor: BasicFlow, ToolUseLoop, MaxToolRounds, ToolConfirmation, VectorIndexing, ClaudeError, ShutdownCleanup
+- Dockerfile (CGO_ENABLED=0, Alpine, non-root) for containerized deployment
+- docker-compose.yml with Qdrant as a core service (always starts)
+- .goreleaser.yml for unified binary releases with checksums and changelog
+- Dockerfile.goreleaser for distroless release images
+- CI workflow (.github/workflows/ci.yml) with go vet + go test -race
+- deploy/docker.md deployment guide with MCP limitation callout
+
+### Fixed
+- Wired dead budget code path: session actor now calls BuildContextWithBudget instead of BuildContext
+- Goroutine leak in vector indexing: WaitGroup tracking, bounded timeout, atomic counter for unique IDs
+- Ignored json.Marshal errors in session actor (lines 160, 225, 253)
+- SQL comment stripping: full state machine handling single/double quotes and escaped quotes
+- WASM send_message default-deny: blocks when context is missing or zero ChatID
+- WASM JSON string injection: marshalError() replaces unescaped fmt.Sprintf in host functions
+- WASM compiled module leak: compiled.Close(ctx) in error paths
+- WASM HTTP redirect SSRF: CheckRedirect re-validates each redirect against host allowlist
+- Budget turnText now unescapes JSON strings for cleaner Haiku classification
+- context.Context threaded through ClassifyTurns and classifyViaLLM (no more context.Background)
+- GitHub Actions SHA-pinned across ci.yml and release.yml
+
+### Changed
+- MCP NewManager accepts version parameter, reported in MCP handshake (was hardcoded "0.1.0")
+- Qdrant ports bound to 127.0.0.1 in docker-compose (was exposed to all interfaces)
+- goreleaser before-hook uses `go mod verify` instead of `go mod tidy`
+
 ## [0.4.0] - 2026-03-27
 
 Phase 4 "Trust Hardening." Closes the security and trust gaps flagged by adversarial reviews.
