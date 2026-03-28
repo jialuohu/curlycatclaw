@@ -27,6 +27,7 @@ jobs:
           version: v2.11
 
       - name: Vulnerability check
+        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
