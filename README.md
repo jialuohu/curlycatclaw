@@ -18,7 +18,8 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Claude-powered** ... streaming responses with tool use, 120s timeout per request
 - **Conversation memory** ... SQLite with WAL mode, sliding window context (25 turns, ~150K tokens)
 - **MCP tool integration** ... connect any MCP server (search, filesystem, APIs) via stdio
-- **Built-in skills** ... web search, save/search notes, reminders, semantic search
+- **Built-in skills** ... web search, save/search notes, reminders, semantic search, persistent user facts
+- **Hierarchical memory** ... three-tier: user facts always in system prompt, conversation summaries relevance-retrieved via Qdrant, sliding window for current conversation (opt-in)
 - **Smart context** ... prompt budget manager classifies turn relevance via Haiku (opt-in)
 - **Vector search** ... semantic memory via Qdrant with pluggable embeddings: FNV (offline), Ollama (free local), Voyage AI (paid) (opt-in)
 - **Reminders** ... "remind me at 3pm" with persistent scheduler, timezone-aware, recurring
@@ -127,6 +128,8 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 | Context | `internal/memory/context.go` | Sliding window context builder |
 | MCP | `internal/mcp/manager.go` | MCP server lifecycle, tool namespacing |
 | Skills | `skills/` | Built-in skill implementations |
+| Facts | `internal/memory/facts.go` | Persistent user facts (CRUD, sanitization, IDOR protection) |
+| Summarizer | `internal/memory/summarizer.go` | Conversation summarization via Claude |
 | Budget | `internal/memory/budget.go` | Prompt budget manager (Haiku classification) |
 | Embedder | `internal/memory/embedder.go` | Pluggable embedding providers (FNV, Ollama, Voyage AI) |
 | Vector | `internal/memory/vectorstore.go` | Qdrant vector search |
@@ -147,6 +150,9 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 | `list_reminders` | List your pending/fired reminders |
 | `cancel_reminder` | Cancel a scheduled reminder |
 | `semantic_search` | Search conversation history and notes by meaning (requires Qdrant) |
+| `remember_fact` | Save a persistent fact about you, remembered across all conversations (requires `[memory]`) |
+| `forget_fact` | Remove a previously saved fact by ID |
+| `list_facts` | List all persistent facts Claude remembers about you |
 
 Skills are registered alongside MCP tools. Claude sees them all as available tools and picks the right one. Wasm plugins are loaded from `~/.curlycatclaw/skills/*.wasm` when enabled.
 
