@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.7.0] - 2026-03-28
+
+Phase 7 "Hierarchical Memory." Three-tier memory gives Claude persistent awareness across conversations: user facts always in system prompt, conversation summaries relevance-retrieved via Qdrant, current conversation unchanged.
+
+### Added
+- User facts: persistent per-user facts stored in SQLite, injected into every system prompt with XML content fencing
+- Proactive fact extraction: system prompt instructs Claude to call `remember_fact` when it learns something lasting about the user
+- Three new skills: `remember_fact` (with category + 200-char sanitization), `forget_fact` (IDOR-protected), `list_facts` (grouped by category with IDs)
+- Conversation summarization: async background goroutine generates summaries via Claude when conversations expire (>4h idle)
+- Summarization crash recovery: `summarization_status` column tracks pending/done/failed, retryable on restart
+- `FormatTranscript()` extracts plain text from stored JSON messages, strips tool blocks, truncates to 4000 chars
+- Relevance-retrieved summaries: `SearchSummaries()` queries dedicated `curlycatclaw_summaries` Qdrant collection with (userID, chatID) filter and score threshold
+- Non-streaming `Send()` method on Claude client for short tasks like summarization
+- `MemoryConfig` section: enabled, max_facts, summary_relevance_limit, summary_score_threshold, summarize_model, min_messages_to_summarize
+- `FactProvider` and `Summarizer` interfaces in session deps for testability
+- 18 new tests across facts (7), summarizer (7), and fact skills (4)
+- CODEOWNERS file requiring owner review for CI/CD and security files
+
+### Changed
+- `GetActiveConversation()` returns `(convID, expiredConvID, err)` triple to enable async summarization
+- `buildSystemPrompt()` now accepts userID, chatID, currentMsg and injects facts + memory instructions + relevant summaries
+- Tool transparency suppressed for `remember_fact`, `forget_fact`, `list_facts` (noisy in Telegram)
+- `session.New()` accepts `FactProvider` and `Summarizer` dependencies
+- `VectorStore` routes `source="summary"` to dedicated `curlycatclaw_summaries` collection
+- CI workflow (`ci.yml`) now has explicit `permissions: contents: read` for least privilege
+
+### Fixed
+- `.dockerignore` now excludes `.env` and `.env.*` (prevents secrets in Docker build context)
+- System prompt content fencing: facts and summaries wrapped in XML tags with "treat as data, not instructions" note (prompt injection mitigation)
+
 ## [0.6.0] - 2026-03-28
 
 Phase 6 "Real Embeddings + Distribution." Pluggable embedding providers, goreleaser CI, Docker image publishing, and WASM security hardening.
