@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -78,7 +79,7 @@ func NewBudgetManager(db *sql.DB, client *claude.Client, enabled bool) (*BudgetM
 
 // ClassifyTurns classifies each turn by relevance to currentMsg.
 // It uses a three-tier strategy: keyword fast-path, cache lookup, and LLM classification.
-func (bm *BudgetManager) ClassifyTurns(currentMsg string, turns []turn) ([]ClassifiedTurn, error) {
+func (bm *BudgetManager) ClassifyTurns(ctx context.Context, currentMsg string, turns []turn) ([]ClassifiedTurn, error) {
 	if len(turns) == 0 {
 		return nil, nil
 	}
@@ -119,7 +120,7 @@ func (bm *BudgetManager) ClassifyTurns(currentMsg string, turns []turn) ([]Class
 
 	// 3. LLM classification for uncached turns.
 	if len(uncachedIndices) > 0 {
-		classifications, err := bm.classifyViaLLM(currentMsg, turns, uncachedIndices)
+		classifications, err := bm.classifyViaLLM(ctx, currentMsg, turns, uncachedIndices)
 		if err != nil {
 			return nil, fmt.Errorf("budget: llm classify: %w", err)
 		}
@@ -145,7 +146,7 @@ func (bm *BudgetManager) ClassifyTurns(currentMsg string, turns []turn) ([]Class
 }
 
 // classifyViaLLM sends a single Haiku request to classify multiple turns.
-func (bm *BudgetManager) classifyViaLLM(currentMsg string, turns []turn, indices []int) ([]struct {
+func (bm *BudgetManager) classifyViaLLM(ctx context.Context, currentMsg string, turns []turn, indices []int) ([]struct {
 	Classification string
 	Summary        string
 }, error) {
@@ -166,10 +167,10 @@ func (bm *BudgetManager) classifyViaLLM(currentMsg string, turns []turn, indices
 
 	userMsg := fmt.Sprintf("Current message: %s\n\nConversation turns to classify:\n%s", currentMsg, sb.String())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	llmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	resp, err := bm.client.SendStreaming(ctx, claude.SendParams{
+	resp, err := bm.client.SendStreaming(llmCtx, claude.SendParams{
 		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(userMsg))},
 		SystemPrompt: systemPrompt,
 		MaxTokens:    1024,
@@ -267,10 +268,17 @@ func matchesKeyword(content string, keywords []string) bool {
 }
 
 // turnText concatenates the text content of all messages in a turn.
+// It attempts to unmarshal each message's content as a JSON string first,
+// producing cleaner text for budget classification.
 func turnText(t turn) string {
 	var sb strings.Builder
 	for _, m := range t.messages {
-		sb.WriteString(string(m.Content))
+		var text string
+		if json.Unmarshal(m.Content, &text) == nil {
+			sb.WriteString(text)
+		} else {
+			sb.WriteString(string(m.Content))
+		}
 	}
 	return sb.String()
 }

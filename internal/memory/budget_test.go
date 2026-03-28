@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -121,7 +122,7 @@ func TestKeywordFastPath(t *testing.T) {
 		makeTurn("Book a meeting room", "Done, room 5 is reserved"),
 	}
 
-	classified, err := bm.ClassifyTurns("tell me about the meeting", turns)
+	classified, err := bm.ClassifyTurns(context.Background(),"tell me about the meeting", turns)
 	if err != nil {
 		t.Fatalf("ClassifyTurns: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestKeywordFastPath_MatchesSubstring(t *testing.T) {
 		makeTurn("What's for lunch?", "Pizza sounds good"),
 	}
 
-	classified, err := bm.ClassifyTurns("check deployment status", turns)
+	classified, err := bm.ClassifyTurns(context.Background(),"check deployment status", turns)
 	if err != nil {
 		t.Fatalf("ClassifyTurns: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestCacheHit(t *testing.T) {
 	}
 
 	// First call: should hit the LLM.
-	_, err := bm.ClassifyTurns("current question about def", turns)
+	_, err := bm.ClassifyTurns(context.Background(),"current question about def", turns)
 	if err != nil {
 		t.Fatalf("first ClassifyTurns: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestCacheHit(t *testing.T) {
 	}
 
 	// Second call with same inputs: should use cache.
-	classified, err := bm.ClassifyTurns("current question about def", turns)
+	classified, err := bm.ClassifyTurns(context.Background(),"current question about def", turns)
 	if err != nil {
 		t.Fatalf("second ClassifyTurns: %v", err)
 	}
@@ -240,7 +241,7 @@ func TestCacheTTL_Expired(t *testing.T) {
 	}
 
 	// ClassifyTurns should ignore the expired cache entry and call LLM.
-	classified, err := bm.ClassifyTurns(currentMsg, turns)
+	classified, err := bm.ClassifyTurns(context.Background(),currentMsg, turns)
 	if err != nil {
 		t.Fatalf("ClassifyTurns: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestFallback_LLMError(t *testing.T) {
 	}
 
 	// BuildContextWithBudget should fall back to standard BuildContext on LLM error.
-	msgs, err := cb.BuildContextWithBudget(convID, "something completely different")
+	msgs, err := cb.BuildContextWithBudget(context.Background(),convID, "something completely different")
 	if err != nil {
 		t.Fatalf("BuildContextWithBudget: %v", err)
 	}
@@ -411,7 +412,7 @@ func TestBuildContextWithBudget_ReducesMessages(t *testing.T) {
 	}
 
 	// Budget-aware returns fewer (turn 2 dropped, turn 3 summarized to 1 msg).
-	budgetMsgs, err := cb.BuildContextWithBudget(convID, "zzz_completely_different_zzz")
+	budgetMsgs, err := cb.BuildContextWithBudget(context.Background(),convID, "zzz_completely_different_zzz")
 	if err != nil {
 		t.Fatalf("BuildContextWithBudget: %v", err)
 	}
@@ -478,7 +479,7 @@ func TestBuildContextWithBudget_DisabledFallsBack(t *testing.T) {
 	}
 
 	// With budget disabled, should still return all messages.
-	msgs, err := cb.BuildContextWithBudget(convID, "hello")
+	msgs, err := cb.BuildContextWithBudget(context.Background(),convID, "hello")
 	if err != nil {
 		t.Fatalf("BuildContextWithBudget: %v", err)
 	}
@@ -512,7 +513,7 @@ func TestBuildContextWithBudget_NilBudgetFallsBack(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	msgs, err := cb.BuildContextWithBudget(convID, "hello")
+	msgs, err := cb.BuildContextWithBudget(context.Background(),convID, "hello")
 	if err != nil {
 		t.Fatalf("BuildContextWithBudget: %v", err)
 	}
