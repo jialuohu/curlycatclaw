@@ -46,6 +46,35 @@ changelog:
       - "^ci:"
       - "^chore:"
 
+dockers_v2:
+  - id: curlycatclaw
+    ids: [curlycatclaw]
+    dockerfile: Dockerfile.goreleaser
+    images:
+      - "ghcr.io/jialuohu/curlycatclaw"
+    tags:
+      - "{{ .Version }}"
+      - "{{ .Major }}.{{ .Minor }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    extra_files:
+      - config.toml.example
+
+# Homebrew tap (uncomment after creating jialuohu/homebrew-tap repo
+# and adding HOMEBREW_TAP_GITHUB_TOKEN secret):
+#
+# homebrew_casks:
+#   - name: curlycatclaw
+#     ids: [default]
+#     repository:
+#       owner: jialuohu
+#       name: homebrew-tap
+#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+#     homepage: "https://github.com/jialuohu/curlycatclaw"
+#     description: "Personal AI agent assistant daemon"
+
 release:
   github:
     owner: jialuohu

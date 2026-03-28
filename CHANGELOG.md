@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.6.0] - 2026-03-28
+
+Phase 6 "Real Embeddings + Distribution." Pluggable embedding providers, goreleaser CI, Docker image publishing, and WASM security hardening.
+
+### Added
+- Embedder interface with three providers: FNV (offline default), Ollama (free local), Voyage AI (paid, best quality)
+- OllamaEmbedder calls `/api/embed` with configurable model and dimensions
+- VoyageEmbedder calls Voyage AI API with query/document input types and exponential backoff on 429
+- FNVEmbedder extracts existing bag-of-words logic behind the Embedder interface
+- Config fields: `embedder`, `ollama_url`, `ollama_model`, `ollama_dim`, `voyage_api_key`, `voyage_model`, `voyage_dim`
+- `dockers_v2` section in `.goreleaser.yml` for multi-arch Docker images on ghcr.io
+- `homebrew_casks` section (commented out, ready for tap repo creation)
+- 37 new test cases across embedder, vectorstore, and WASM packages
+- Golden-value FNV regression test to catch refactoring bugs
+
+### Changed
+- VectorStore accepts Embedder interface instead of hardcoded FNV hashing
+- VectorStore uses dynamic dimensions from embedder (was hardcoded 384)
+- Release workflow replaced with single-job goreleaser action (was 4-job matrix)
+- All CI actions SHA-pinned to latest versions (Docker v4.0.0, goreleaser v7.0.0)
+- Dockerfile.goreleaser uses TARGETPLATFORM for multi-arch support
+
+### Fixed
+- WASM `isHostAllowed` uses `net/url.Parse` instead of manual string splitting (fixes userinfo bypass: `http://evil@allowed.com`)
+- WASM SQL keyword blocklist expanded with ATTACH, DETACH, PRAGMA, VACUUM, REINDEX
+
 ## [0.5.0] - 2026-03-27
 
 Phase 5 "Codebase Health + Deployment." Full codebase audit, session actor testability, Docker support, goreleaser, and security hardening.

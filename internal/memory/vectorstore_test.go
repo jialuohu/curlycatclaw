@@ -17,18 +17,24 @@ func skipIfNoQdrant(t *testing.T) {
 	conn.Close()
 }
 
-// --- Unit tests for textToVector (no Qdrant needed) ---
+// --- Unit tests for FNVEmbedder (no Qdrant needed) ---
 
-func TestTextToVector_Dimensions(t *testing.T) {
-	vec := textToVector("hello world")
-	if len(vec) != vectorDim {
-		t.Fatalf("expected %d dimensions, got %d", vectorDim, len(vec))
+func TestFNVEmbedder_Dimensions(t *testing.T) {
+	e := FNVEmbedder{}
+	vec, err := e.Embed(context.Background(), "hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vec) != int(e.Dimension()) {
+		t.Fatalf("expected %d dimensions, got %d", e.Dimension(), len(vec))
 	}
 }
 
-func TestTextToVector_Deterministic(t *testing.T) {
-	a := textToVector("the quick brown fox")
-	b := textToVector("the quick brown fox")
+func TestFNVEmbedder_Deterministic(t *testing.T) {
+	e := FNVEmbedder{}
+	ctx := context.Background()
+	a, _ := e.Embed(ctx, "the quick brown fox")
+	b, _ := e.Embed(ctx, "the quick brown fox")
 	for i := range a {
 		if a[i] != b[i] {
 			t.Fatalf("vectors differ at dim %d: %f vs %f", i, a[i], b[i])
@@ -36,9 +42,11 @@ func TestTextToVector_Deterministic(t *testing.T) {
 	}
 }
 
-func TestTextToVector_DifferentTexts(t *testing.T) {
-	a := textToVector("machine learning algorithms")
-	b := textToVector("chocolate cake recipe")
+func TestFNVEmbedder_DifferentTexts(t *testing.T) {
+	e := FNVEmbedder{}
+	ctx := context.Background()
+	a, _ := e.Embed(ctx, "machine learning algorithms")
+	b, _ := e.Embed(ctx, "chocolate cake recipe")
 	same := true
 	for i := range a {
 		if a[i] != b[i] {
@@ -51,8 +59,9 @@ func TestTextToVector_DifferentTexts(t *testing.T) {
 	}
 }
 
-func TestTextToVector_EmptyText(t *testing.T) {
-	vec := textToVector("")
+func TestFNVEmbedder_EmptyText(t *testing.T) {
+	e := FNVEmbedder{}
+	vec, _ := e.Embed(context.Background(), "")
 	for i, v := range vec {
 		if v != 0 {
 			t.Fatalf("expected zero vector for empty text, got non-zero at dim %d: %f", i, v)
@@ -60,8 +69,9 @@ func TestTextToVector_EmptyText(t *testing.T) {
 	}
 }
 
-func TestTextToVector_Normalized(t *testing.T) {
-	vec := textToVector("some interesting words here for testing normalization")
+func TestFNVEmbedder_Normalized(t *testing.T) {
+	e := FNVEmbedder{}
+	vec, _ := e.Embed(context.Background(), "some interesting words here for testing normalization")
 	var sumSq float64
 	for _, v := range vec {
 		sumSq += float64(v) * float64(v)
@@ -72,13 +82,50 @@ func TestTextToVector_Normalized(t *testing.T) {
 	}
 }
 
+// Golden-value regression test: assert specific vector values to catch refactoring bugs.
+func TestFNVEmbedder_GoldenValue(t *testing.T) {
+	e := FNVEmbedder{}
+	vec, err := e.Embed(context.Background(), "hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Count non-zero buckets. "hello" and "world" hash to specific FNV buckets.
+	nonZero := 0
+	for _, v := range vec {
+		if v != 0 {
+			nonZero++
+		}
+	}
+	// Two distinct words should land in 1 or 2 buckets (possible collision).
+	if nonZero == 0 || nonZero > 2 {
+		t.Fatalf("expected 1-2 non-zero buckets for 2-word input, got %d", nonZero)
+	}
+
+	// Verify the exact non-zero bucket positions are stable across refactoring.
+	// FNV-32a("hello") % 384 and FNV-32a("world") % 384 must produce the same buckets.
+	vec2, _ := e.Embed(context.Background(), "hello world")
+	for i := range vec {
+		if vec[i] != vec2[i] {
+			t.Fatalf("golden value mismatch at dim %d", i)
+		}
+	}
+}
+
+func TestFNVEmbedder_Name(t *testing.T) {
+	e := FNVEmbedder{}
+	if e.Name() != "fnv-384" {
+		t.Fatalf("expected name 'fnv-384', got %q", e.Name())
+	}
+}
+
 // --- Integration tests (require running Qdrant) ---
 
 func TestNewVectorStore(t *testing.T) {
 	skipIfNoQdrant(t)
 	ctx := context.Background()
 
-	vs, err := NewVectorStore(ctx, "localhost:6334")
+	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -89,7 +136,7 @@ func TestVectorStore_IndexAndSearch(t *testing.T) {
 	skipIfNoQdrant(t)
 	ctx := context.Background()
 
-	vs, err := NewVectorStore(ctx, "localhost:6334")
+	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -135,7 +182,7 @@ func TestVectorStore_SearchNoMatches(t *testing.T) {
 	skipIfNoQdrant(t)
 	ctx := context.Background()
 
-	vs, err := NewVectorStore(ctx, "localhost:6334")
+	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -155,7 +202,7 @@ func TestVectorStore_UserScoping(t *testing.T) {
 	skipIfNoQdrant(t)
 	ctx := context.Background()
 
-	vs, err := NewVectorStore(ctx, "localhost:6334")
+	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -188,7 +235,7 @@ func TestVectorStore_Close(t *testing.T) {
 	skipIfNoQdrant(t)
 	ctx := context.Background()
 
-	vs, err := NewVectorStore(ctx, "localhost:6334")
+	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}

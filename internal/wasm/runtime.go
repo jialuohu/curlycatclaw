@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -624,7 +625,7 @@ func isSelectOnly(query string) bool {
 	}
 	// Reject statements that contain mutating keywords as standalone words.
 	// This avoids false positives like WHERE action = 'DELETE_REQUEST'.
-	for _, kw := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE"} {
+	for _, kw := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "ATTACH", "DETACH", "PRAGMA", "VACUUM", "REINDEX"} {
 		if containsWord(upper, kw) {
 			return false
 		}
@@ -737,24 +738,17 @@ func stripSQLComments(sql string) string {
 }
 
 // isHostAllowed checks whether the given URL matches any entry in the
-// allowed hosts list. Each entry is compared as a prefix of the URL's
-// host component.
+// allowed hosts list using net/url.Parse for correct host extraction.
 func isHostAllowed(rawURL string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return false
 	}
 
-	// Extract host from URL.
-	host := rawURL
-	if idx := strings.Index(host, "://"); idx != -1 {
-		host = host[idx+3:]
+	u, err := neturl.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
 	}
-	if idx := strings.Index(host, "/"); idx != -1 {
-		host = host[:idx]
-	}
-	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
+	host := u.Hostname() // strips port, handles userinfo correctly
 
 	for _, h := range allowed {
 		if h == "*" {

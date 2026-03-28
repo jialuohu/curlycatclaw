@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -13,7 +12,6 @@ import (
 )
 
 const (
-	vectorDim          = 384
 	collectionMessages = "curlycatclaw_messages"
 	collectionNotes    = "curlycatclaw_notes"
 )
@@ -29,11 +27,13 @@ type SearchResult struct {
 
 // VectorStore provides vector search backed by Qdrant.
 type VectorStore struct {
-	client *qdrant.Client
+	client   *qdrant.Client
+	embedder Embedder
 }
 
 // NewVectorStore connects to Qdrant at addr and ensures required collections exist.
-func NewVectorStore(ctx context.Context, addr string) (*VectorStore, error) {
+// The embedder determines vector dimensions and embedding strategy.
+func NewVectorStore(ctx context.Context, addr string, embedder Embedder) (*VectorStore, error) {
 	host, port, err := parseAddr(addr)
 	if err != nil {
 		return nil, fmt.Errorf("vectorstore: parse addr: %w", err)
@@ -48,7 +48,7 @@ func NewVectorStore(ctx context.Context, addr string) (*VectorStore, error) {
 		return nil, fmt.Errorf("vectorstore: connect: %w", err)
 	}
 
-	vs := &VectorStore{client: client}
+	vs := &VectorStore{client: client, embedder: embedder}
 	if err := vs.ensureCollection(ctx, collectionMessages); err != nil {
 		client.Close()
 		return nil, err
@@ -65,7 +65,10 @@ func NewVectorStore(ctx context.Context, addr string) (*VectorStore, error) {
 // source must be "message" or "note".
 func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID int64, chatID int64, source string) error {
 	collection := collectionForSource(source)
-	vec := textToVector(text)
+	vec, err := vs.embedder.Embed(ctx, text)
+	if err != nil {
+		return fmt.Errorf("vectorstore: embed: %w", err)
+	}
 
 	payload := qdrant.NewValueMap(map[string]any{
 		"user_id":    userID,
@@ -74,7 +77,7 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 		"created_at": time.Now().UTC().Format(time.RFC3339),
 	})
 
-	_, err := vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+	_, err = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: collection,
 		Points: []*qdrant.PointStruct{
 			{
@@ -93,7 +96,10 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 // Search queries both collections for documents matching the query,
 // filtered by userID, and returns the top limit results.
 func (vs *VectorStore) Search(ctx context.Context, query string, userID int64, limit int) ([]SearchResult, error) {
-	vec := textToVector(query)
+	vec, err := vs.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: embed query: %w", err)
+	}
 	if limit <= 0 {
 		limit = 5
 	}
@@ -175,7 +181,7 @@ func (vs *VectorStore) ensureCollection(ctx context.Context, name string) error 
 	err = vs.client.CreateCollection(ctx, &qdrant.CreateCollection{
 		CollectionName: name,
 		VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
-			Size:     vectorDim,
+			Size:     vs.embedder.Dimension(),
 			Distance: qdrant.Distance_Cosine,
 		}),
 	})
@@ -183,37 +189,6 @@ func (vs *VectorStore) ensureCollection(ctx context.Context, name string) error 
 		return fmt.Errorf("vectorstore: create collection %s: %w", name, err)
 	}
 	return nil
-}
-
-// textToVector converts text into a 384-dimensional normalized vector
-// using FNV hashing of words into dimension buckets.
-func textToVector(text string) []float32 {
-	vec := make([]float32, vectorDim)
-	words := strings.Fields(strings.ToLower(text))
-	if len(words) == 0 {
-		return vec
-	}
-
-	for _, w := range words {
-		h := fnv.New32a()
-		h.Write([]byte(w))
-		bucket := h.Sum32() % vectorDim
-		vec[bucket] += 1.0
-	}
-
-	// L2 normalize.
-	var norm float64
-	for _, v := range vec {
-		norm += float64(v) * float64(v)
-	}
-	if norm > 0 {
-		norm = math.Sqrt(norm)
-		for i := range vec {
-			vec[i] = float32(float64(vec[i]) / norm)
-		}
-	}
-
-	return vec
 }
 
 // collectionForSource returns the collection name for a given source type.
