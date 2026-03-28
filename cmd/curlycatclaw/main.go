@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -271,7 +270,7 @@ func run(configPath string) error {
 
 	// Start health server if enabled.
 	if cfg.Health.Enabled {
-		startHealthServer(ctx, cfg.Health.Port, store.DB())
+		startHealthServer(ctx, cfg.Health.Port)
 	}
 
 	slog.Info("curlycatclaw started")
@@ -341,16 +340,13 @@ func setupLogging(cfg config.LoggingConfig) error {
 }
 
 // newHealthHandler returns an HTTP handler that checks process liveness
-// (context not cancelled) and database reachability (SELECT 1).
-func newHealthHandler(ctx context.Context, db *sql.DB) http.Handler {
+// (context not cancelled). Does not probe SQLite to avoid blocking the
+// single-connection pool during slow writes.
+func newHealthHandler(ctx context.Context) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		if ctx.Err() != nil {
 			http.Error(w, "shutting down", http.StatusServiceUnavailable)
-			return
-		}
-		if err := db.PingContext(r.Context()); err != nil {
-			http.Error(w, "database unreachable", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -360,14 +356,18 @@ func newHealthHandler(ctx context.Context, db *sql.DB) http.Handler {
 }
 
 // startHealthServer runs an HTTP health endpoint in a background goroutine.
-func startHealthServer(ctx context.Context, port int, db *sql.DB) {
+// Binds to localhost only and sets conservative timeouts to prevent slowloris.
+func startHealthServer(ctx context.Context, port int) {
 	srv := &http.Server{
-		Addr:    net.JoinHostPort("", fmt.Sprintf("%d", port)),
-		Handler: newHealthHandler(ctx, db),
+		Addr:              net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)),
+		Handler:           newHealthHandler(ctx),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
 
 	go func() {
-		slog.Info("health server started", "port", port)
+		slog.Info("health server started", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("health server failed", "err", err)
 		}

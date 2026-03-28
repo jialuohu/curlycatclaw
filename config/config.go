@@ -166,7 +166,7 @@ func Load(path string) (*Config, error) {
 			Enabled: false,
 		},
 		Health: HealthConfig{
-			Enabled: false,
+			Enabled: true,
 			Port:    8080,
 		},
 	}
@@ -212,6 +212,9 @@ func (c *Config) validate() error {
 	}
 	if c.Wasm.Enabled && c.Wasm.SkillsDir == "" {
 		return fmt.Errorf("config: wasm.skills_dir is required when wasm is enabled")
+	}
+	if c.Health.Enabled && (c.Health.Port < 1 || c.Health.Port > 65535) {
+		return fmt.Errorf("config: health.port must be between 1 and 65535")
 	}
 	return nil
 }

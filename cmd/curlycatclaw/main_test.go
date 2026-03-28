@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/jialuohu/curlycatclaw/config"
-	_ "modernc.org/sqlite"
 )
 
 func TestSetupLogging_DefaultStderr(t *testing.T) {
@@ -88,17 +86,10 @@ func TestSetupLogging_FileHandler(t *testing.T) {
 }
 
 func TestHealthHandler_Returns200(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "health_test.db")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	srv := httptest.NewServer(newHealthHandler(ctx, db))
+	srv := httptest.NewServer(newHealthHandler(ctx))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/health")
@@ -113,19 +104,11 @@ func TestHealthHandler_Returns200(t *testing.T) {
 }
 
 func TestHealthHandler_Returns503OnShutdown(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "health_test.db")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-
 	ctx, cancel := context.WithCancel(context.Background())
 
-	srv := httptest.NewServer(newHealthHandler(ctx, db))
+	srv := httptest.NewServer(newHealthHandler(ctx))
 	defer srv.Close()
 
-	// Cancel context to simulate shutdown.
 	cancel()
 
 	resp, err := http.Get(srv.URL + "/health")
