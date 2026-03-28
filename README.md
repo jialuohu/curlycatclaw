@@ -16,6 +16,8 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - **Telegram-native** ... message your bot like you'd message a friend
 - **Claude-powered** ... streaming responses with tool use, 120s timeout per request
+- **Streaming to Telegram** ... text streams in real-time via message edits, debounced at 500ms, new messages per tool-use round
+- **Image support** ... send photos to your bot, Claude sees them via vision (photos downloaded and sent as base64 image blocks)
 - **Conversation memory** ... SQLite with WAL mode, sliding window context (25 turns, ~150K tokens)
 - **MCP tool integration** ... connect any MCP server (search, filesystem, APIs) via stdio
 - **Built-in skills** ... web search, save/search notes, reminders, semantic search, persistent user facts

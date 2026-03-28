@@ -29,7 +29,9 @@ Test expectations:
 
 - **Actor model**: each component (Telegram, session, etc.) runs in its own goroutine with typed message channels
 - **Supervision**: panic/recover with exponential backoff, resets after 60s healthy run, WaitGroup drain with 30s timeout on shutdown
-- **Claude client**: streaming + tool_use state machine, 120s per-request timeout
+- **Claude client**: streaming + tool_use state machine, 120s per-request timeout, `OnPartialText` callback for real-time streaming
+- **Streaming responses**: text deltas streamed to Telegram via message edits (500ms debounce), tool_use transitions start new messages, error mid-stream appends notice
+- **Image support**: Telegram photos downloaded by channel actor, sent to Claude as base64 image blocks, stored as file_id references (not inline)
 - **MCP manager**: persistent stdio server connections, tool namespacing (server__tool), allowlist-based env filtering, user context injection
 - **Memory**: SQLite WAL mode, sliding window context (25 turns, ~150K tokens), conversations keyed by (userID, chatID)
 - **Hierarchical memory**: three-tier (user facts in system prompt, conversation summaries via Qdrant relevance search, current conversation sliding window), opt-in via `[memory]` config
@@ -38,7 +40,7 @@ Test expectations:
 - **Budget manager**: Haiku-powered context classification (keyword fast-path + cache + LLM), budget-aware context building via `BuildContextWithBudget`, opt-in
 - **Vector search**: Qdrant gRPC for semantic search, pluggable Embedder interface (FNV offline / Ollama local / Voyage AI paid)
 - **Skills**: built-in Go skills (search, note, remind, semantic_search, remember_fact, forget_fact, list_facts) + Wasm plugin runtime
-- **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload, chat-scoped send_message, db_read user scoping via `:user_id` placeholder, HTTP private IP blocklist (SSRF prevention)
+- **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload, chat-scoped send_message, db_read user scoping via `:user_id` placeholder, HTTP private IP blocklist (SSRF prevention), connect-time IP verification (DNS rebinding protection), sanitized DB errors
 - **Tool transparency**: `[tool]` lines sent to user in Telegram, opt-out via `show_tool_calls`
 - **Tool confirmation**: `confirm_tools` prefix list for sensitive operations, stateless via Claude re-ask
 - **Logging**: configurable level/format/file via `[logging]` config, lumberjack rotation

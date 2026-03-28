@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.8.0] - 2026-03-28
+
+Phase 8 "Streaming, Vision & Hardening." Real-time streaming responses to Telegram, image/photo support via Claude vision, and a comprehensive security + reliability audit fixing 10 verified bugs.
+
+### Added
+- Streaming responses: text deltas streamed to Telegram via message edits with 500ms debounce, new messages per tool-use round, error mid-stream appends "[error: response incomplete]" notice
+- `OutgoingMessage.MessageID` for Telegram message editing, `ResultCh` for message ID feedback
+- `streamState` in session actor manages debounce timer, current message ID, and tool_use transitions
+- Image/photo support: `IncomingMessage.Photos` carries downloaded image data from Telegram
+- Channel actor downloads best-quality photo from Telegram API, attaches to incoming messages
+- Claude vision: user messages with photos get `ImageBlockParam` content blocks with base64-encoded data
+- `handleUpdate` now accepts photo-only messages and photos with captions
+- `bgCtx()` method on session actor for shutdown-aware background goroutines
+- DNS rebinding protection: connect-time IP verification via custom `net.Dialer.DialContext` in Wasm HTTP client
+- `golangci-lint` and `govulncheck` steps in CI pipeline
+- Docker compose `depends_on` with health condition for Qdrant, healthcheck for curlycatclaw service
+- Regression tests: Wasm DB error sanitization, HTTP response limits, web search limits, streaming, images
+
+### Changed
+- `UpdateLastReferenced` goroutine now tracked by `indexWg` for clean shutdown
+- All async operations (`asyncSummarize`, vector indexing, summary search) derive context from actor's root context via `bgCtx()` instead of `context.Background()`
+- `SetSummarizationStatus` errors now logged via `slog.Warn` instead of silently suppressed
+- Wasm `hostDBQuery` returns generic "query failed" instead of raw SQLite errors (prevents schema disclosure)
+- Wasm HTTP response reading uses `io.LimitReader` instead of manual loop (prevents 1MB overshoot)
+- `web_search` skill uses dedicated HTTP client with 30s timeout and 2MB body limit
+- Session actor `toolUseLoop` wires `OnPartialText` callback for streaming, with fallback for non-streaming LLM clients
+
+### Fixed
+- Untracked goroutine in `buildSystemPrompt` could race with store close on shutdown
+- `context.Background()` in async ops prevented shutdown signaling to background goroutines
+- Wasm DB error messages leaked SQLite table names to guest plugins
+- DNS rebinding TOCTOU: `isPrivateIP` check could be bypassed via DNS rebinding between lookup and connection
+- Wasm HTTP response read loop could exceed 1MB limit due to Go slice growth
+- `web_search` used `http.DefaultClient` with no explicit timeout
+- `web_search` used `io.ReadAll` with no body size limit
+- Docker compose curlycatclaw started without waiting for Qdrant health
+- `handleUpdate` silently dropped all photo-only Telegram messages
+
 ## [0.7.0] - 2026-03-28
 
 Phase 7 "Hierarchical Memory." Three-tier memory gives Claude persistent awareness across conversations: user facts always in system prompt, conversation summaries relevance-retrieved via Qdrant, current conversation unchanged.
