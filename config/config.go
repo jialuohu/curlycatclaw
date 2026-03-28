@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -218,6 +219,7 @@ func (c *Config) validate() error {
 func defaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
+		slog.Warn("HOME not set, using relative data directory", "fallback", ".curlycatclaw")
 		return ".curlycatclaw"
 	}
 	return filepath.Join(home, ".curlycatclaw")

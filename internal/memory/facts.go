@@ -71,9 +71,15 @@ func (fs *FactStore) AddFact(userID int64, fact, category, source string) (int64
 		source = "explicit"
 	}
 
-	// Check max_facts limit.
+	// Check max_facts limit and insert atomically within a transaction.
+	tx, err := fs.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("facts: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
 	var count int
-	if err := fs.db.QueryRow(`SELECT COUNT(*) FROM user_facts WHERE user_id = ?`, userID).Scan(&count); err != nil {
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM user_facts WHERE user_id = ?`, userID).Scan(&count); err != nil {
 		return 0, fmt.Errorf("facts: count: %w", err)
 	}
 	if count >= fs.maxFacts {
@@ -81,12 +87,15 @@ func (fs *FactStore) AddFact(userID int64, fact, category, source string) (int64
 	}
 
 	now := time.Now().UTC()
-	result, err := fs.db.Exec(
+	result, err := tx.Exec(
 		`INSERT INTO user_facts (user_id, fact, category, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		userID, fact, category, source, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("facts: insert: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("facts: commit: %w", err)
 	}
 	return result.LastInsertId()
 }

@@ -43,9 +43,10 @@ type Actor struct {
 	summarizer  Summarizer
 	vectorStore *memory.VectorStore // direct reference for SearchSummaries
 
-	// runCtx is the actor's root context from Run(), used by background goroutines
-	// so they can be cancelled on shutdown.
-	runCtx context.Context
+	// runCtx stores the actor's root context from Run(), used by background
+	// goroutines. Stored as atomic.Value to avoid data race between Run()
+	// (writer) and bgCtx() callers from async goroutines (readers).
+	runCtx atomic.Value // holds context.Context
 
 	// indexWg tracks in-flight vector/summarization goroutines for clean shutdown.
 	indexWg  sync.WaitGroup
@@ -94,14 +95,14 @@ func (a *Actor) Name() string { return "session" }
 // bgCtx returns the actor's root context for background goroutines.
 // Falls back to context.Background() if Run() hasn't been called (tests).
 func (a *Actor) bgCtx() context.Context {
-	if a.runCtx != nil {
-		return a.runCtx
+	if v := a.runCtx.Load(); v != nil {
+		return v.(context.Context)
 	}
 	return context.Background()
 }
 
 func (a *Actor) Run(ctx context.Context) error {
-	a.runCtx = ctx
+	a.runCtx.Store(ctx)
 	slog.Info("session actor started")
 
 	defer func() {
