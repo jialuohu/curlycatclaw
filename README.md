@@ -27,11 +27,13 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Reminders** ... "remind me at 3pm" with persistent scheduler, timezone-aware, recurring
 - **Wasm plugins** ... extend with custom skills via WebAssembly, capability-based security (opt-in)
 - **Actor model** ... each component runs in its own goroutine with typed message channels
-- **Supervision** ... automatic restart with exponential backoff, graceful shutdown with 30s drain timeout
+- **Health endpoint** ... `GET /health` on localhost for Docker/monitoring liveness checks (enabled by default, opt-out via `[health]`)
+- **Supervision** ... automatic restart with exponential backoff (configurable), graceful shutdown with 30s drain timeout
 - **Configurable logging** ... level, format (text/json), file output with rotation via lumberjack
 - **Landlock sandbox** ... Linux filesystem restriction with BestEffort degradation (opt-in)
 - **Tool transparency** ... see what tools Claude calls before seeing the response
-- **Secure defaults** ... Telegram bot fails closed on empty user allowlist, MCP env filtering, Wasm private IP blocklist + DNS rebinding protection
+- **Config validation** ... startup checks for required fields (db_path, MCP server name/command, qdrant_addr when vector enabled, wasm skills_dir when wasm enabled)
+- **Secure defaults** ... Telegram bot fails closed on empty user allowlist, MCP env filtering, Wasm private IP blocklist + DNS rebinding protection, Wasm module size cap (50 MiB)
 - **Encrypted credentials** ... AES-256-GCM for MCP server secrets
 - **Docker ready** ... Dockerfile + docker-compose with Qdrant, one command to run
 - **Goreleaser** ... automated multi-platform binary releases with checksums and Docker images on ghcr.io
@@ -82,6 +84,11 @@ command = "npx"
 args    = ["-y", "@anthropic/mcp-server-brave-search"]
 [mcp.servers.env]
 BRAVE_API_KEY = "encrypted:ref:brave_api_key"
+
+# Health check endpoint (enabled by default, localhost only)
+[health]
+enabled = true
+port    = 8080
 ```
 
 For encrypted MCP credentials, set the `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
