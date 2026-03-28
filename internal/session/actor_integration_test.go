@@ -55,8 +55,24 @@ type toolLog struct {
 	isError bool
 }
 
-func (m *mockStore) GetActiveConversation(_, _ int64) (string, error) {
-	return m.convID, nil
+func (m *mockStore) GetActiveConversation(_, _ int64) (string, string, error) {
+	return m.convID, "", nil
+}
+
+func (m *mockStore) GetConversationMessages(_ string) ([]memory.Message, error) {
+	return nil, nil
+}
+
+func (m *mockStore) SaveSummary(_ string, _, _ int64, _ string, _ int, _, _ time.Time) error {
+	return nil
+}
+
+func (m *mockStore) SetSummarizationStatus(_ string, _ string) error {
+	return nil
+}
+
+func (m *mockStore) ConversationMeta(_ string) (int64, int64, int, time.Time, time.Time, error) {
+	return 0, 0, 0, time.Time{}, time.Time{}, nil
 }
 
 func (m *mockStore) AppendMessage(convID, role string, content json.RawMessage) error {
