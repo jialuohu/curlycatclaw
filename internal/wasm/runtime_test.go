@@ -154,6 +154,18 @@ func TestIsSelectOnly(t *testing.T) {
 		// String literals with comment-like content preserved.
 		{"SELECT * FROM t WHERE name = '-- comment'", true},
 		{"SELECT * FROM t WHERE name = 'O''Brien'", true},
+		// New keywords: ATTACH, DETACH, PRAGMA, VACUUM, REINDEX.
+		{"SELECT * FROM t WHERE x = 'ATTACH'", false}, // conservative: blocks keyword even in string
+		{"SELECT 1; ATTACH DATABASE 'x' AS y", false},
+		{"SELECT * FROM t UNION SELECT ATTACH FROM y", false},
+		{"SELECT * FROM t WHERE DETACH = 1", false},
+		{"SELECT * FROM t; PRAGMA table_info(x)", false},
+		{"SELECT * FROM t; VACUUM", false},
+		{"SELECT * FROM t; REINDEX", false},
+		// Word-boundary: keywords inside identifiers should NOT trigger.
+		{"SELECT ATTACHED_FILE FROM t", true},
+		{"SELECT DETACHED FROM t", true},
+		{"SELECT REINDEXED FROM t", true},
 	}
 
 	for _, tt := range tests {
@@ -184,6 +196,20 @@ func TestIsHostAllowed(t *testing.T) {
 		{"https://anything.com/v1", []string{"*"}, true},
 		// Case insensitive.
 		{"https://API.Example.COM/v1", []string{"api.example.com"}, true},
+		// Userinfo bypass: must be rejected (net/url strips userinfo).
+		{"http://evil@allowed.com/path", []string{"allowed.com"}, true},
+		{"http://evil@allowed.com/path", []string{"evil.com"}, false},
+		{"http://evil@allowed.com/path", []string{"*.allowed.com"}, false},
+		// IPv6 address.
+		{"http://[::1]:8080/path", []string{"::1"}, true},
+		{"http://[::1]/path", []string{"::1"}, true},
+		{"http://[::1]/path", []string{"127.0.0.1"}, false},
+		// URL with port (host extraction strips port).
+		{"https://api.example.com:9090/v1", []string{"api.example.com"}, true},
+		// Malformed URL.
+		{"://bad", []string{"*"}, false},
+		{"", []string{"*"}, false},
+		{"not-a-url", []string{"not-a-url"}, false},
 	}
 
 	for _, tt := range tests {
