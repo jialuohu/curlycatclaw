@@ -108,8 +108,8 @@ func makeSearchNotesExecute(db *sql.DB) func(ctx context.Context, input json.Raw
 				return "", fmt.Errorf("scan note: %w", err)
 			}
 			count++
-			sb.WriteString(fmt.Sprintf("--- %s ---\n", title))
-			sb.WriteString(fmt.Sprintf("Created: %s\n", createdAt.Format("2006-01-02 15:04")))
+			fmt.Fprintf(&sb, "--- %s ---\n", title)
+			fmt.Fprintf(&sb, "Created: %s\n", createdAt.Format("2006-01-02 15:04"))
 			sb.WriteString(content)
 			sb.WriteString("\n\n")
 		}

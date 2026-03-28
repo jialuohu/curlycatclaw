@@ -71,9 +71,9 @@ func executeWebSearch(ctx context.Context, input json.RawMessage) (string, error
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Search results for: %s\n\n", params.Query))
+	fmt.Fprintf(&sb, "Search results for: %s\n\n", params.Query)
 	for i, r := range results {
-		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Snippet))
+		fmt.Fprintf(&sb, "%d. %s\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Snippet)
 	}
 	return sb.String(), nil
 }

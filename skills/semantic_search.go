@@ -49,13 +49,13 @@ func makeSemanticSearchExecute(vs *memory.VectorStore) func(ctx context.Context,
 		}
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Found %d results for: %s\n\n", len(results), params.Query))
+		fmt.Fprintf(&sb, "Found %d results for: %s\n\n", len(results), params.Query)
 		for i, r := range results {
-			sb.WriteString(fmt.Sprintf("%d. [%s] (score: %.2f)\n", i+1, r.Source, r.Score))
+			fmt.Fprintf(&sb, "%d. [%s] (score: %.2f)\n", i+1, r.Source, r.Score)
 			if r.CreatedAt != "" {
-				sb.WriteString(fmt.Sprintf("   Time: %s\n", r.CreatedAt))
+				fmt.Fprintf(&sb, "   Time: %s\n", r.CreatedAt)
 			}
-			sb.WriteString(fmt.Sprintf("   %s\n\n", r.Text))
+			fmt.Fprintf(&sb, "   %s\n\n", r.Text)
 		}
 		return strings.TrimSpace(sb.String()), nil
 	}
