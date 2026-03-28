@@ -62,18 +62,21 @@ dockers_v2:
     extra_files:
       - config.toml.example
 
-# Homebrew tap (uncomment after creating jialuohu/homebrew-tap repo
-# and adding HOMEBREW_TAP_GITHUB_TOKEN secret):
-#
-# homebrew_casks:
-#   - name: curlycatclaw
-#     ids: [default]
-#     repository:
-#       owner: jialuohu
-#       name: homebrew-tap
-#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-#     homepage: "https://github.com/jialuohu/curlycatclaw"
-#     description: "Personal AI agent assistant daemon"
+brews:
+  - repository:
+      owner: jialuohu
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    name: curlycatclaw
+    homepage: "https://github.com/jialuohu/curlycatclaw"
+    description: "Personal AI agent assistant daemon"
+    license: "MIT"
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    install: |
+      bin.install "curlycatclaw"
+    test: |
+      system "#{bin}/curlycatclaw", "--version"
 
 release:
   github:
