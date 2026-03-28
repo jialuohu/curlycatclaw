@@ -20,7 +20,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **MCP tool integration** ... connect any MCP server (search, filesystem, APIs) via stdio
 - **Built-in skills** ... web search, save/search notes, reminders, semantic search
 - **Smart context** ... prompt budget manager classifies turn relevance via Haiku (opt-in)
-- **Vector search** ... semantic memory via Qdrant for "what did I say about X?" (opt-in)
+- **Vector search** ... semantic memory via Qdrant with pluggable embeddings: FNV (offline), Ollama (free local), Voyage AI (paid) (opt-in)
 - **Reminders** ... "remind me at 3pm" with persistent scheduler, timezone-aware, recurring
 - **Wasm plugins** ... extend with custom skills via WebAssembly, capability-based security (opt-in)
 - **Actor model** ... each component runs in its own goroutine with typed message channels
@@ -31,7 +31,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Secure defaults** ... Telegram bot fails closed on empty user allowlist, MCP env filtering
 - **Encrypted credentials** ... AES-256-GCM for MCP server secrets
 - **Docker ready** ... Dockerfile + docker-compose with Qdrant, one command to run
-- **Goreleaser** ... automated multi-platform binary releases with checksums
+- **Goreleaser** ... automated multi-platform binary releases with checksums and Docker images on ghcr.io
 
 ## Quick Start
 
@@ -128,6 +128,7 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 | MCP | `internal/mcp/manager.go` | MCP server lifecycle, tool namespacing |
 | Skills | `skills/` | Built-in skill implementations |
 | Budget | `internal/memory/budget.go` | Prompt budget manager (Haiku classification) |
+| Embedder | `internal/memory/embedder.go` | Pluggable embedding providers (FNV, Ollama, Voyage AI) |
 | Vector | `internal/memory/vectorstore.go` | Qdrant vector search |
 | Wasm | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | Credentials | `internal/security/credential.go` | AES-256-GCM encrypted credential store |
