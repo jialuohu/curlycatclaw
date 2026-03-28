@@ -35,6 +35,7 @@ type ToolDef struct {
 type Manager struct {
 	servers map[string]*serverConn // name -> connection
 	mu      sync.RWMutex
+	version string
 }
 
 // serverConn holds the state for a single connected MCP server.
@@ -45,9 +46,14 @@ type serverConn struct {
 }
 
 // NewManager creates a new Manager with no active connections.
-func NewManager() *Manager {
+// The version string is reported to MCP servers during handshake.
+func NewManager(version string) *Manager {
+	if version == "" {
+		version = "dev"
+	}
 	return &Manager{
 		servers: make(map[string]*serverConn),
+		version: version,
 	}
 }
 
@@ -98,7 +104,7 @@ func (m *Manager) startServer(ctx context.Context, srv config.MCPServerConfig, e
 	client := mcp.NewClient(
 		&mcp.Implementation{
 			Name:    "curlycatclaw",
-			Version: "0.1.0",
+			Version: m.version,
 		},
 		nil,
 	)
