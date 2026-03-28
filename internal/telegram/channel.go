@@ -3,7 +3,9 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,19 +27,34 @@ const (
 	channelBuffer = 64
 )
 
-// IncomingMessage represents a text message received from a Telegram user.
+// IncomingMessage represents a message received from a Telegram user.
+// It may contain text, photos, or both (photo with caption).
 type IncomingMessage struct {
 	ChatID    int64
 	UserID    int64
 	Text      string
 	MessageID int
+	// Photos contains base64-encoded image data from attached photos.
+	// The channel actor downloads the best-quality photo from Telegram.
+	Photos []Photo
+}
+
+// Photo represents an image attached to a message.
+type Photo struct {
+	Data      []byte // raw image bytes (downloaded from Telegram)
+	MimeType  string // e.g. "image/jpeg"
+	FileID    string // Telegram file_id for reference storage
+	Width     int
+	Height    int
 }
 
 // OutgoingMessage represents a message to be sent to a Telegram chat.
 type OutgoingMessage struct {
-	ChatID  int64
-	Text    string
-	ReplyTo int // 0 means no reply
+	ChatID    int64
+	Text      string
+	ReplyTo   int      // 0 means no reply
+	MessageID int      // nonzero = edit existing message instead of sending new
+	ResultCh  chan int  // if non-nil, the created/edited MessageID is sent back
 }
 
 // Channel is the Telegram transport actor. It bridges the Telegram Bot API
@@ -114,7 +131,7 @@ func (ch *Channel) Run(ctx context.Context) error {
 			if !ok {
 				return fmt.Errorf("telegram: update channel closed")
 			}
-			ch.handleUpdate(upd)
+			ch.handleUpdate(upd, bot)
 
 		case msg := <-ch.inbox:
 			ch.sendMessage(bot, msg, rateTick)
@@ -123,8 +140,15 @@ func (ch *Channel) Run(ctx context.Context) error {
 }
 
 // handleUpdate filters and forwards a single Telegram update.
-func (ch *Channel) handleUpdate(upd tgbotapi.Update) {
-	if upd.Message == nil || upd.Message.Text == "" || upd.Message.From == nil {
+func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
+	if upd.Message == nil || upd.Message.From == nil {
+		return
+	}
+
+	// Accept messages with text, photos, or both (caption).
+	hasText := upd.Message.Text != "" || upd.Message.Caption != ""
+	hasPhoto := upd.Message.Photo != nil && len(upd.Message.Photo) > 0
+	if !hasText && !hasPhoto {
 		return
 	}
 
@@ -136,12 +160,66 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update) {
 		return
 	}
 
-	ch.updates <- IncomingMessage{
+	text := upd.Message.Text
+	if text == "" && upd.Message.Caption != "" {
+		text = upd.Message.Caption
+	}
+
+	msg := IncomingMessage{
 		ChatID:    upd.Message.Chat.ID,
 		UserID:    userID,
-		Text:      upd.Message.Text,
+		Text:      text,
 		MessageID: upd.Message.MessageID,
 	}
+
+	// Download photos if present (use the largest available size).
+	if hasPhoto {
+		photos := upd.Message.Photo
+		best := photos[len(photos)-1] // last = largest
+		photo, err := ch.downloadPhoto(bot, best)
+		if err != nil {
+			slog.Warn("telegram: failed to download photo", "err", err)
+		} else {
+			msg.Photos = append(msg.Photos, photo)
+		}
+	}
+
+	ch.updates <- msg
+}
+
+// downloadPhoto fetches photo data from Telegram servers.
+func (ch *Channel) downloadPhoto(bot *tgbotapi.BotAPI, ps tgbotapi.PhotoSize) (Photo, error) {
+	fileConfig := tgbotapi.FileConfig{FileID: ps.FileID}
+	file, err := bot.GetFile(fileConfig)
+	if err != nil {
+		return Photo{}, fmt.Errorf("get file: %w", err)
+	}
+
+	fileURL := file.Link(bot.Token)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(fileURL) //nolint:gosec // URL from Telegram API
+	if err != nil {
+		return Photo{}, fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20)) // 20MB max
+	if err != nil {
+		return Photo{}, fmt.Errorf("read body: %w", err)
+	}
+
+	mime := resp.Header.Get("Content-Type")
+	if mime == "" {
+		mime = "image/jpeg"
+	}
+
+	return Photo{
+		Data:     data,
+		MimeType: mime,
+		FileID:   ps.FileID,
+		Width:    ps.Width,
+		Height:   ps.Height,
+	}, nil
 }
 
 // isAllowed reports whether the given user ID is permitted to interact
@@ -154,10 +232,34 @@ func (ch *Channel) isAllowed(userID int64) bool {
 	return ok
 }
 
-// sendMessage sends a single OutgoingMessage, splitting it into chunks if
-// it exceeds Telegram's 4096-character limit. It respects the rate ticker
-// between consecutive chunks.
+// sendMessage sends or edits an OutgoingMessage. If MessageID is set, it
+// edits the existing message instead of creating a new one. If ResultCh is
+// set, it sends the message ID of the created/edited message back.
+// For new messages that exceed 4096 chars, it splits into chunks.
 func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTick *time.Ticker) {
+	// Edit existing message (streaming update path).
+	if msg.MessageID != 0 {
+		// Telegram edit limit is 4096 chars; truncate if needed.
+		text := msg.Text
+		if utf8.RuneCountInString(text) > maxMessageLen {
+			r := []rune(text)
+			text = string(r[:maxMessageLen-3]) + "..."
+		}
+		edit := tgbotapi.NewEditMessageText(msg.ChatID, msg.MessageID, text)
+		if _, err := bot.Send(edit); err != nil {
+			slog.Warn("telegram: failed to edit message",
+				"chat_id", msg.ChatID,
+				"message_id", msg.MessageID,
+				"err", err,
+			)
+		}
+		if msg.ResultCh != nil {
+			msg.ResultCh <- msg.MessageID
+		}
+		return
+	}
+
+	// New message path (with chunking for long messages).
 	chunks := chunkMessage(msg.Text)
 
 	for i, chunk := range chunks {
@@ -168,13 +270,22 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 			mc.ReplyToMessageID = msg.ReplyTo
 		}
 
-		if _, err := bot.Send(mc); err != nil {
+		sent, err := bot.Send(mc)
+		if err != nil {
 			slog.Error("telegram: failed to send message",
 				"chat_id", msg.ChatID,
 				"chunk", i+1,
 				"err", err,
 			)
+			if msg.ResultCh != nil {
+				msg.ResultCh <- 0
+			}
 			return
+		}
+
+		// Send back the message ID of the first chunk (for streaming).
+		if i == 0 && msg.ResultCh != nil {
+			msg.ResultCh <- sent.MessageID
 		}
 
 		// Wait for the rate-limit ticker before sending the next chunk.
