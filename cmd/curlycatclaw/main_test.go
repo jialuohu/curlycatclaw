@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -49,7 +50,7 @@ func TestSetupLogging_LevelParsing(t *testing.T) {
 		if err := setupLogging(cfg); err != nil {
 			t.Fatalf("setupLogging(%q): %v", tc.input, err)
 		}
-		if !slog.Default().Enabled(nil, tc.want) {
+		if !slog.Default().Enabled(context.Background(), tc.want) {
 			t.Errorf("level %q: expected %v to be enabled", tc.input, tc.want)
 		}
 	}

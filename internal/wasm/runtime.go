@@ -772,7 +772,7 @@ func stripSQLComments(sql string) string {
 		// Block comment: skip until closing */.
 		if i+1 < len(sql) && ch == '/' && sql[i+1] == '*' {
 			i += 2
-			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
+			for i+1 < len(sql) && (sql[i] != '*' || sql[i+1] != '/') {
 				i++
 			}
 			if i+1 < len(sql) {
@@ -803,14 +803,14 @@ func userScopedTableAccessed(query string) bool {
 // Requests to these ranges are blocked to prevent SSRF attacks from Wasm plugins.
 var privateIPNets = func() []*net.IPNet {
 	cidrs := []string{
-		"127.0.0.0/8",     // loopback
-		"10.0.0.0/8",      // RFC 1918
-		"172.16.0.0/12",   // RFC 1918
-		"192.168.0.0/16",  // RFC 1918
-		"169.254.0.0/16",  // link-local
-		"::1/128",         // IPv6 loopback
-		"fc00::/7",        // IPv6 unique local
-		"fe80::/10",       // IPv6 link-local
+		"127.0.0.0/8",    // loopback
+		"10.0.0.0/8",     // RFC 1918
+		"172.16.0.0/12",  // RFC 1918
+		"192.168.0.0/16", // RFC 1918
+		"169.254.0.0/16", // link-local
+		"::1/128",        // IPv6 loopback
+		"fc00::/7",       // IPv6 unique local
+		"fe80::/10",      // IPv6 link-local
 	}
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, cidr := range cidrs {
@@ -942,4 +942,3 @@ var ExportedForTesting = struct {
 	WriteString:    writeString,
 	WasmPathToName: wasmPathToName,
 }
-

@@ -100,15 +100,15 @@ func makeListFactsExecute(fs *memory.FactStore) func(ctx context.Context, input 
 		}
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Saved facts (%d total):\n", len(facts)))
+		fmt.Fprintf(&sb, "Saved facts (%d total):\n", len(facts))
 		for _, cat := range []string{"identity", "preference", "project", "general"} {
 			items, ok := grouped[cat]
 			if !ok {
 				continue
 			}
-			sb.WriteString(fmt.Sprintf("\n**%s**\n", cat))
+			fmt.Fprintf(&sb, "\n**%s**\n", cat)
 			for _, f := range items {
-				sb.WriteString(fmt.Sprintf("  [id=%d] %s\n", f.ID, f.Fact))
+				fmt.Fprintf(&sb, "  [id=%d] %s\n", f.ID, f.Fact)
 			}
 		}
 		return sb.String(), nil

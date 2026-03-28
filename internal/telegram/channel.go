@@ -147,7 +147,7 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 
 	// Accept messages with text, photos, or both (caption).
 	hasText := upd.Message.Text != "" || upd.Message.Caption != ""
-	hasPhoto := upd.Message.Photo != nil && len(upd.Message.Photo) > 0
+	hasPhoto := len(upd.Message.Photo) > 0
 	if !hasText && !hasPhoto {
 		return
 	}

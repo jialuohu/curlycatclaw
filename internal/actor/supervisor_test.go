@@ -30,9 +30,7 @@ func TestSupervise_RestartOnPanic(t *testing.T) {
 		name: "panicker",
 		runFunc: func(ctx context.Context) error {
 			// Only panic on the first run.
-			if a := int32(0); !(&atomic.Int32{}).CompareAndSwap(a, a) {
-				// This branch is never reached; see below.
-			}
+			// Deliberately empty — just verifies actor can run without panic.
 			return nil
 		},
 	}
@@ -59,10 +57,8 @@ func TestSupervise_RestartOnPanic(t *testing.T) {
 
 	// Wait until the actor has been run at least twice (restarted after panic).
 	deadline := time.After(4 * time.Second)
-	for {
-		if a.runCount.Load() >= 2 {
-			break
-		}
+	for a.runCount.Load() < 2 {
+
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for restart; runCount = %d", a.runCount.Load())
@@ -104,10 +100,8 @@ func TestSupervise_RestartOnError(t *testing.T) {
 	}()
 
 	deadline := time.After(4 * time.Second)
-	for {
-		if a.runCount.Load() >= 2 {
-			break
-		}
+	for a.runCount.Load() < 2 {
+
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for restart; runCount = %d", a.runCount.Load())
@@ -193,10 +187,8 @@ func TestSupervise_BackoffResetAfterHealthyPeriod(t *testing.T) {
 
 	// Wait for at least 4 runs (need 3 gaps to measure 2 intervals).
 	deadline := time.After(14 * time.Second)
-	for {
-		if idx.Load() >= 4 {
-			break
-		}
+	for idx.Load() < 4 {
+
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for 4 runs; got %d", idx.Load())

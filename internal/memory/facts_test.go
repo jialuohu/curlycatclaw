@@ -54,7 +54,7 @@ func TestFactStore_AddFact_Sanitization(t *testing.T) {
 	fs := NewFactStore(s.DB(), 50)
 
 	// Control characters should be stripped.
-	id, err := fs.AddFact(1, "hello\x00world\x07test", "general", "")
+	_, err := fs.AddFact(1, "hello\x00world\x07test", "general", "")
 	if err != nil {
 		t.Fatalf("AddFact with control chars: %v", err)
 	}
@@ -72,11 +72,10 @@ func TestFactStore_AddFact_Sanitization(t *testing.T) {
 
 	// Long fact should be truncated to 200 characters.
 	longFact := strings.Repeat("a", 300)
-	id, err = fs.AddFact(2, longFact, "general", "")
+	_, err = fs.AddFact(2, longFact, "general", "")
 	if err != nil {
 		t.Fatalf("AddFact long: %v", err)
 	}
-	_ = id
 
 	facts2, err := fs.GetFacts(2)
 	if err != nil {

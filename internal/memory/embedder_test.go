@@ -110,7 +110,7 @@ func TestVoyageEmbedder_HappyPath(t *testing.T) {
 	defer server.Close()
 
 	e := newTestVoyageEmbedder(server.URL, "test-key")
-	e.VoyageEmbedder.dim = 3
+	e.dim = 3
 	vec, err := e.Embed(context.Background(), "hello")
 	if err != nil {
 		t.Fatal(err)
