@@ -1,0 +1,35 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    exclude-functions:
+      - (io.Closer).Close
+      - (*database/sql.DB).Close
+      - (*database/sql.Rows).Close
+      - fmt.Fprint
+      - fmt.Fprintf
+      - fmt.Fprintln
+      - (net/http.ResponseWriter).Write
+
+issues:
+  exclude-dirs:
+    - vendor
+  exclude-rules:
+    # Test files: allow unchecked errors for cleanup and test helpers.
+    - path: _test\.go
+      linters:
+        - errcheck
+    # Allow unchecked Close() calls in defer statements (cleanup code).
+    - text: "Error return value of .*.Close.*is not checked"
+      linters:
+        - errcheck
