@@ -19,6 +19,7 @@ type Config struct {
 	Budget   BudgetConfig  `toml:"budget"`
 	Vector   VectorConfig  `toml:"vector"`
 	Wasm     WasmConfig    `toml:"wasm"`
+	Memory       MemoryConfig  `toml:"memory"`
 	Logging      LoggingConfig `toml:"logging"`
 	Sandbox      SandboxConfig `toml:"sandbox"`
 	ConfirmTools []string      `toml:"confirm_tools"`
@@ -83,6 +84,15 @@ type LoggingConfig struct {
 	Format     string `toml:"format"`
 }
 
+type MemoryConfig struct {
+	Enabled              bool   `toml:"enabled"`
+	MaxFacts             int    `toml:"max_facts"`
+	SummaryRelevanceLimit int    `toml:"summary_relevance_limit"`
+	SummaryScoreThreshold float64 `toml:"summary_score_threshold"`
+	SummarizeModel       string `toml:"summarize_model"`
+	MinMsgToSummarize    int    `toml:"min_messages_to_summarize"`
+}
+
 type SandboxConfig struct {
 	Enabled      bool     `toml:"enabled"`
 	ExtraPaths   []string `toml:"extra_paths"`
@@ -135,6 +145,13 @@ func Load(path string) (*Config, error) {
 			MaxAge:     14,
 			MaxBackups: 3,
 			Format:     "text",
+		},
+		Memory: MemoryConfig{
+			Enabled:              false,
+			MaxFacts:             50,
+			SummaryRelevanceLimit: 3,
+			SummaryScoreThreshold: 0.3,
+			MinMsgToSummarize:    4,
 		},
 		Sandbox: SandboxConfig{
 			Enabled: false,

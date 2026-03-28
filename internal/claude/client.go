@@ -137,6 +137,39 @@ func (c *Client) SendStreaming(ctx context.Context, params SendParams) (*Respons
 	return buildResponse(&msg), nil
 }
 
+// Send performs a single non-streaming request-response cycle against the
+// Claude API. Used for short tasks like summarization where streaming is
+// unnecessary. It does NOT loop on tool_use.
+func (c *Client) Send(ctx context.Context, params SendParams) (*Response, error) {
+	maxTokens := params.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxTokens
+	}
+
+	reqParams := anthropic.MessageNewParams{
+		Model:     c.model,
+		MaxTokens: maxTokens,
+		Messages:  params.Messages,
+	}
+
+	if params.SystemPrompt != "" {
+		reqParams.System = []anthropic.TextBlockParam{
+			{Text: params.SystemPrompt},
+		}
+	}
+
+	if len(params.Tools) > 0 {
+		reqParams.Tools = params.Tools
+	}
+
+	msg, err := c.sdk.Messages.New(ctx, reqParams)
+	if err != nil {
+		return nil, wrapAPIError(err)
+	}
+
+	return buildResponse(msg), nil
+}
+
 // buildResponse converts the accumulated SDK Message into our Response type.
 func buildResponse(msg *anthropic.Message) *Response {
 	resp := &Response{
