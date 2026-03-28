@@ -17,6 +17,7 @@ allowed_user_ids = []
 # WARNING: ~ does not expand in TOML values; use an absolute path.
 # db_path = "~/.curlycatclaw/curlycatclaw.db"
 db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
+# Docker: use "/data/curlycatclaw.db" (the /data volume is mounted by docker-compose).
 
 # MCP server configurations
 [[mcp.servers]]
@@ -32,7 +33,8 @@ BRAVE_API_KEY = "encrypted:ref:brave_api_key"
 # model   = "claude-haiku-4-5-20251001"
 
 # Vector search via Qdrant (requires Qdrant server running)
-# docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+# Bare metal: docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+# Docker Compose: Qdrant starts automatically; use qdrant_addr = "qdrant:6334"
 # [vector]
 # enabled    = true
 # qdrant_addr = "localhost:6334"

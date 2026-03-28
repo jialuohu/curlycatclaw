@@ -1,0 +1,6 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/curlycatclaw /usr/bin/curlycatclaw
+COPY config.toml.example /etc/curlycatclaw/config.toml.example
+ENTRYPOINT ["/usr/bin/curlycatclaw"]
+CMD ["--config", "/etc/curlycatclaw/config.toml"]

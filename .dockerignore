@@ -1,0 +1,7 @@
+.git
+.github
+.gstack
+*.md
+!CHANGELOG.md
+deploy/
+dist/
