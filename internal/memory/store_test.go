@@ -178,12 +178,15 @@ func TestGetActiveConversation_CreatesNew(t *testing.T) {
 	s := newTestStore(t)
 
 	// No conversations exist yet, should create a new one.
-	id, err := s.GetActiveConversation(42, 100)
+	id, expiredID, err := s.GetActiveConversation(42, 100)
 	if err != nil {
 		t.Fatalf("GetActiveConversation: %v", err)
 	}
 	if id == "" {
 		t.Fatal("expected non-empty conversation ID")
+	}
+	if expiredID != "" {
+		t.Errorf("expected empty expiredConvID for new conversation, got %q", expiredID)
 	}
 }
 
@@ -196,13 +199,16 @@ func TestGetActiveConversation_ReturnsExisting(t *testing.T) {
 		t.Fatalf("CreateConversation: %v", err)
 	}
 
-	active, err := s.GetActiveConversation(42, 100)
+	active, expiredID, err := s.GetActiveConversation(42, 100)
 	if err != nil {
 		t.Fatalf("GetActiveConversation: %v", err)
 	}
 
 	if active != created {
 		t.Errorf("GetActiveConversation returned %q, want %q", active, created)
+	}
+	if expiredID != "" {
+		t.Errorf("expected empty expiredConvID for active conversation, got %q", expiredID)
 	}
 }
 
@@ -223,13 +229,16 @@ func TestGetActiveConversation_StaleCreatesNew(t *testing.T) {
 		t.Fatalf("update timestamp: %v", err)
 	}
 
-	active, err := s.GetActiveConversation(42, 100)
+	active, expiredID, err := s.GetActiveConversation(42, 100)
 	if err != nil {
 		t.Fatalf("GetActiveConversation: %v", err)
 	}
 
 	if active == old {
 		t.Error("expected a new conversation ID, got the stale one")
+	}
+	if expiredID != old {
+		t.Errorf("expected expiredConvID = %q, got %q", old, expiredID)
 	}
 }
 
@@ -238,17 +247,174 @@ func TestGetActiveConversation_DifferentChatIDs(t *testing.T) {
 
 	const userID int64 = 42
 
-	id1, err := s.GetActiveConversation(userID, 100)
+	id1, _, err := s.GetActiveConversation(userID, 100)
 	if err != nil {
 		t.Fatalf("GetActiveConversation(chatID=100): %v", err)
 	}
 
-	id2, err := s.GetActiveConversation(userID, 200)
+	id2, _, err := s.GetActiveConversation(userID, 200)
 	if err != nil {
 		t.Fatalf("GetActiveConversation(chatID=200): %v", err)
 	}
 
 	if id1 == id2 {
 		t.Errorf("same user with different chatIDs got the same conversation %q", id1)
+	}
+}
+
+func TestGetConversationMessages(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(1, 1)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	c1, _ := json.Marshal("Hello")
+	c2, _ := json.Marshal("Hi there")
+	if err := s.AppendMessage(convID, "user", c1); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if err := s.AppendMessage(convID, "assistant", c2); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	msgs, err := s.GetConversationMessages(convID)
+	if err != nil {
+		t.Fatalf("GetConversationMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].Role != "user" {
+		t.Errorf("msgs[0].Role = %q, want %q", msgs[0].Role, "user")
+	}
+	if msgs[1].Role != "assistant" {
+		t.Errorf("msgs[1].Role = %q, want %q", msgs[1].Role, "assistant")
+	}
+}
+
+func TestGetConversationMessages_Empty(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(1, 1)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	msgs, err := s.GetConversationMessages(convID)
+	if err != nil {
+		t.Fatalf("GetConversationMessages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("got %d messages, want 0", len(msgs))
+	}
+}
+
+func TestSaveSummary(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	now := time.Now().UTC()
+	err = s.SaveSummary(convID, 42, 100, "test summary", 5, now.Add(-time.Hour), now)
+	if err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+
+	// Insert again with same convID should not error (INSERT OR IGNORE).
+	err = s.SaveSummary(convID, 42, 100, "duplicate summary", 5, now.Add(-time.Hour), now)
+	if err != nil {
+		t.Fatalf("SaveSummary duplicate: %v", err)
+	}
+}
+
+func TestSetSummarizationStatus(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	if err := s.SetSummarizationStatus(convID, "pending"); err != nil {
+		t.Fatalf("SetSummarizationStatus: %v", err)
+	}
+
+	// Verify via PendingSummarizations.
+	ids, err := s.PendingSummarizations()
+	if err != nil {
+		t.Fatalf("PendingSummarizations: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != convID {
+		t.Errorf("PendingSummarizations = %v, want [%s]", ids, convID)
+	}
+
+	// Mark as done and verify it's no longer pending.
+	if err := s.SetSummarizationStatus(convID, "done"); err != nil {
+		t.Fatalf("SetSummarizationStatus(done): %v", err)
+	}
+	ids, err = s.PendingSummarizations()
+	if err != nil {
+		t.Fatalf("PendingSummarizations after done: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 pending after done, got %d", len(ids))
+	}
+}
+
+func TestPendingSummarizations_Empty(t *testing.T) {
+	s := newTestStore(t)
+
+	ids, err := s.PendingSummarizations()
+	if err != nil {
+		t.Fatalf("PendingSummarizations: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 pending, got %d", len(ids))
+	}
+}
+
+func TestConversationMeta(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	c1, _ := json.Marshal("Hello")
+	c2, _ := json.Marshal("Hi there")
+	if err := s.AppendMessage(convID, "user", c1); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if err := s.AppendMessage(convID, "assistant", c2); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	userID, chatID, msgCount, firstAt, lastAt, err := s.ConversationMeta(convID)
+	if err != nil {
+		t.Fatalf("ConversationMeta: %v", err)
+	}
+	if userID != 42 {
+		t.Errorf("userID = %d, want 42", userID)
+	}
+	if chatID != 100 {
+		t.Errorf("chatID = %d, want 100", chatID)
+	}
+	if msgCount != 2 {
+		t.Errorf("msgCount = %d, want 2", msgCount)
+	}
+	if firstAt.IsZero() {
+		t.Error("firstAt should not be zero")
+	}
+	if lastAt.IsZero() {
+		t.Error("lastAt should not be zero")
+	}
+	if lastAt.Before(firstAt) {
+		t.Errorf("lastAt (%v) should not be before firstAt (%v)", lastAt, firstAt)
 	}
 }

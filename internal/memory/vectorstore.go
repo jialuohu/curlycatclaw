@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	collectionMessages = "curlycatclaw_messages"
-	collectionNotes    = "curlycatclaw_notes"
+	collectionMessages  = "curlycatclaw_messages"
+	collectionNotes     = "curlycatclaw_notes"
+	collectionSummaries = "curlycatclaw_summaries"
 )
 
 // SearchResult holds a single vector search result.
@@ -54,6 +55,10 @@ func NewVectorStore(ctx context.Context, addr string, embedder Embedder) (*Vecto
 		return nil, err
 	}
 	if err := vs.ensureCollection(ctx, collectionNotes); err != nil {
+		client.Close()
+		return nil, err
+	}
+	if err := vs.ensureCollection(ctx, collectionSummaries); err != nil {
 		client.Close()
 		return nil, err
 	}
@@ -163,6 +168,62 @@ func (vs *VectorStore) Search(ctx context.Context, query string, userID int64, l
 	return allResults, nil
 }
 
+// SearchSummaries queries the summaries collection for documents matching the query,
+// filtered by (userID, chatID), returning up to limit results above the score threshold.
+func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID, chatID int64, limit int, scoreThreshold float32) ([]SearchResult, error) {
+	vec, err := vs.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: embed query: %w", err)
+	}
+	if limit <= 0 {
+		limit = 3
+	}
+	queryLimit := uint64(limit)
+
+	filter := &qdrant.Filter{
+		Must: []*qdrant.Condition{
+			qdrant.NewMatchInt("user_id", userID),
+			qdrant.NewMatchInt("chat_id", chatID),
+		},
+	}
+
+	scored, err := vs.client.Query(ctx, &qdrant.QueryPoints{
+		CollectionName: collectionSummaries,
+		Query:          qdrant.NewQueryDense(vec),
+		Filter:         filter,
+		Limit:          &queryLimit,
+		WithPayload:    qdrant.NewWithPayload(true),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: query summaries: %w", err)
+	}
+
+	var results []SearchResult
+	for _, sp := range scored {
+		if sp.Score < scoreThreshold {
+			continue
+		}
+		r := SearchResult{
+			Source: "summary",
+			Score:  sp.Score,
+		}
+		if sp.Id != nil {
+			if uuid := sp.Id.GetUuid(); uuid != "" {
+				r.ID = uuid
+			}
+		}
+		if v, ok := sp.Payload["text"]; ok {
+			r.Text = v.GetStringValue()
+		}
+		if v, ok := sp.Payload["created_at"]; ok {
+			r.CreatedAt = v.GetStringValue()
+		}
+		results = append(results, r)
+	}
+
+	return results, nil
+}
+
 // Close tears down the gRPC connection.
 func (vs *VectorStore) Close() error {
 	return vs.client.Close()
@@ -193,10 +254,14 @@ func (vs *VectorStore) ensureCollection(ctx context.Context, name string) error 
 
 // collectionForSource returns the collection name for a given source type.
 func collectionForSource(source string) string {
-	if source == "note" {
+	switch source {
+	case "note":
 		return collectionNotes
+	case "summary":
+		return collectionSummaries
+	default:
+		return collectionMessages
 	}
-	return collectionMessages
 }
 
 // toUUID converts an arbitrary string ID to a valid UUID format using FNV-128 hashing.

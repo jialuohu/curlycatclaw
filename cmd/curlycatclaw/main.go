@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/actor"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
@@ -216,11 +217,41 @@ func run(configPath string) error {
 		}
 	}
 
+	// Initialize hierarchical memory (optional).
+	var factStore *memory.FactStore
+	var summarizer *memory.ConversationSummarizer
+	if cfg.Memory.Enabled {
+		factStore = memory.NewFactStore(store.DB(), cfg.Memory.MaxFacts)
+		for _, s := range skills.InitFactSkills(factStore) {
+			skillReg.Register(s)
+		}
+
+		// Create a dedicated client for summarization (may use a different model).
+		sumModel := cfg.Claude.Model
+		if cfg.Memory.SummarizeModel != "" {
+			sumModel = cfg.Memory.SummarizeModel
+		}
+		sumClient := claude.NewClient(cfg.Claude.APIKey, sumModel)
+		summarizer = memory.NewSummarizer(func(ctx context.Context, system, user string) (string, error) {
+			resp, err := sumClient.Send(ctx, claude.SendParams{
+				SystemPrompt: system,
+				Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(user))},
+				MaxTokens:    512,
+			})
+			if err != nil {
+				return "", err
+			}
+			return resp.TextContent, nil
+		})
+
+		slog.Info("hierarchical memory enabled", "max_facts", cfg.Memory.MaxFacts)
+	}
+
 	// Create reminder actor.
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh)
 
 	// Create session actor.
-	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore)
+	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, summarizer)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.

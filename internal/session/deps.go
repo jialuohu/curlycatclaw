@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/jialuohu/curlycatclaw/internal/claude"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
@@ -17,10 +18,25 @@ type LLMClient interface {
 
 // MessageStore abstracts storage operations used by the session actor.
 type MessageStore interface {
-	GetActiveConversation(userID, chatID int64) (string, error)
+	GetActiveConversation(userID, chatID int64) (convID string, expiredConvID string, err error)
 	AppendMessage(convID, role string, content json.RawMessage) error
 	LogToolCall(convID, callID, name string, input json.RawMessage) error
 	CompleteToolCall(callID string, output json.RawMessage, isError bool) error
+	GetConversationMessages(convID string) ([]memory.Message, error)
+	SaveSummary(convID string, userID, chatID int64, summary string, msgCount int, firstAt, lastAt time.Time) error
+	SetSummarizationStatus(convID string, status string) error
+	ConversationMeta(convID string) (userID, chatID int64, msgCount int, firstAt, lastAt time.Time, err error)
+}
+
+// FactProvider abstracts user fact retrieval for the session actor.
+type FactProvider interface {
+	GetFacts(userID int64) ([]memory.Fact, error)
+	UpdateLastReferenced(factIDs []int64) error
+}
+
+// Summarizer abstracts conversation summarization.
+type Summarizer interface {
+	Summarize(ctx context.Context, messages []memory.Message) (string, error)
 }
 
 // ContextProvider abstracts conversation context building.

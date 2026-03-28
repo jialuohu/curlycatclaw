@@ -179,28 +179,133 @@ func (s *Store) CompleteToolCall(callID string, output json.RawMessage, isError 
 
 // GetActiveConversation returns the most recent conversation for userID and chatID.
 // If no conversation exists or the most recent one is older than 4 hours,
-// a new conversation is created.
-func (s *Store) GetActiveConversation(userID int64, chatID int64) (string, error) {
+// a new conversation is created. When an expired conversation is replaced,
+// expiredConvID returns the old conversation's ID (for summarization).
+func (s *Store) GetActiveConversation(userID int64, chatID int64) (convID string, expiredConvID string, err error) {
 	var id string
 	var updatedAt time.Time
 
-	err := s.db.QueryRow(
+	qErr := s.db.QueryRow(
 		`SELECT id, updated_at FROM conversations WHERE user_id = ? AND chat_id = ? ORDER BY updated_at DESC LIMIT 1`,
 		userID, chatID,
 	).Scan(&id, &updatedAt)
 
-	if err == sql.ErrNoRows {
-		return s.CreateConversation(userID, chatID)
+	if qErr == sql.ErrNoRows {
+		newID, cErr := s.CreateConversation(userID, chatID)
+		return newID, "", cErr
 	}
-	if err != nil {
-		return "", fmt.Errorf("memory: get active conversation: %w", err)
+	if qErr != nil {
+		return "", "", fmt.Errorf("memory: get active conversation: %w", qErr)
 	}
 
 	if time.Since(updatedAt) > 4*time.Hour {
-		return s.CreateConversation(userID, chatID)
+		newID, cErr := s.CreateConversation(userID, chatID)
+		return newID, id, cErr
 	}
 
-	return id, nil
+	return id, "", nil
+}
+
+// GetConversationMessages loads all messages for a conversation, oldest first.
+func (s *Store) GetConversationMessages(convID string) ([]Message, error) {
+	rows, err := s.db.Query(
+		`SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id ASC`,
+		convID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get conversation messages: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []Message
+	for rows.Next() {
+		var m Message
+		var content string
+		if err := rows.Scan(&m.Role, &content); err != nil {
+			return nil, fmt.Errorf("memory: scan message: %w", err)
+		}
+		m.Content = json.RawMessage(content)
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// SaveSummary stores a conversation summary.
+func (s *Store) SaveSummary(convID string, userID, chatID int64, summary string, msgCount int, firstAt, lastAt time.Time) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO conversation_summaries
+		 (conversation_id, user_id, chat_id, summary, message_count, first_message_at, last_message_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		convID, userID, chatID, summary, msgCount, firstAt, lastAt, now,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: save summary: %w", err)
+	}
+	return nil
+}
+
+// SetSummarizationStatus updates the summarization status on a conversation.
+func (s *Store) SetSummarizationStatus(convID string, status string) error {
+	_, err := s.db.Exec(
+		`UPDATE conversations SET summarization_status = ? WHERE id = ?`,
+		status, convID,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: set summarization status: %w", err)
+	}
+	return nil
+}
+
+// PendingSummarizations returns conversation IDs that have summarization_status = 'pending'.
+func (s *Store) PendingSummarizations() ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT id FROM conversations WHERE summarization_status = 'pending'`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: pending summarizations: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ConversationMeta returns the userID, chatID, and message count for a conversation.
+func (s *Store) ConversationMeta(convID string) (userID, chatID int64, msgCount int, firstAt, lastAt time.Time, err error) {
+	var firstStr, lastStr string
+	err = s.db.QueryRow(
+		`SELECT c.user_id, c.chat_id,
+		        COUNT(m.id),
+		        COALESCE(MIN(m.created_at), c.created_at),
+		        COALESCE(MAX(m.created_at), c.updated_at)
+		 FROM conversations c
+		 LEFT JOIN messages m ON m.conversation_id = c.id
+		 WHERE c.id = ?
+		 GROUP BY c.id`,
+		convID,
+	).Scan(&userID, &chatID, &msgCount, &firstStr, &lastStr)
+	if err != nil {
+		err = fmt.Errorf("memory: conversation meta: %w", err)
+		return
+	}
+	firstAt, err = parseTimeStr(firstStr)
+	if err != nil {
+		err = fmt.Errorf("memory: parse firstAt %q: %w", firstStr, err)
+		return
+	}
+	lastAt, err = parseTimeStr(lastStr)
+	if err != nil {
+		err = fmt.Errorf("memory: parse lastAt %q: %w", lastStr, err)
+	}
+	return
 }
 
 // migrate creates the schema tables if they do not exist.
@@ -241,10 +346,65 @@ func (s *Store) migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_tool_calls_conversation
 		ON tool_calls (conversation_id);
+
+	CREATE TABLE IF NOT EXISTS user_facts (
+		id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id            INTEGER NOT NULL,
+		fact               TEXT NOT NULL,
+		category           TEXT NOT NULL DEFAULT 'general',
+		source             TEXT NOT NULL DEFAULT 'explicit',
+		last_referenced_at DATETIME,
+		created_at         DATETIME NOT NULL,
+		updated_at         DATETIME NOT NULL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_user_facts_user ON user_facts (user_id);
+
+	CREATE TABLE IF NOT EXISTS conversation_summaries (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		conversation_id  TEXT NOT NULL UNIQUE,
+		user_id          INTEGER NOT NULL,
+		chat_id          INTEGER NOT NULL DEFAULT 0,
+		summary          TEXT NOT NULL,
+		message_count    INTEGER NOT NULL DEFAULT 0,
+		first_message_at DATETIME,
+		last_message_at  DATETIME,
+		created_at       DATETIME NOT NULL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_conv_summaries_user_chat
+		ON conversation_summaries (user_id, chat_id, created_at DESC);
 	`
 
-	_, err := s.db.Exec(schema)
-	return err
+	// After running the main schema, add the summarization_status column
+	// to conversations if it doesn't exist (safe for existing databases).
+	const addSummarizationStatus = `
+	ALTER TABLE conversations ADD COLUMN summarization_status TEXT;
+	`
+
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Safe migration: add column if it doesn't exist (ALTER TABLE errors are ignored).
+	s.db.Exec(addSummarizationStatus) //nolint:errcheck // column may already exist
+	return nil
+}
+
+// parseTimeStr attempts to parse a time string returned by SQLite in various formats.
+func parseTimeStr(s string) (time.Time, error) {
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized time format: %q", s)
 }
 
 // newUUID generates a version-4 UUID using crypto/rand.

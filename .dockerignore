@@ -5,3 +5,5 @@
 !CHANGELOG.md
 deploy/
 dist/
+.env
+.env.*
