@@ -1,0 +1,4 @@
+# Require owner review for CI/CD and security-sensitive files
+/.github/ @jialuohu
+/internal/security/ @jialuohu
+/deploy/ @jialuohu
