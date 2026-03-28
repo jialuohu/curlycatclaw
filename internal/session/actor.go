@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -41,6 +42,10 @@ type Actor struct {
 	facts       FactProvider
 	summarizer  Summarizer
 	vectorStore *memory.VectorStore // direct reference for SearchSummaries
+
+	// runCtx is the actor's root context from Run(), used by background goroutines
+	// so they can be cancelled on shutdown.
+	runCtx context.Context
 
 	// indexWg tracks in-flight vector/summarization goroutines for clean shutdown.
 	indexWg  sync.WaitGroup
@@ -86,7 +91,17 @@ func New(
 func (a *Actor) Name() string { return "session" }
 
 // Run starts the session actor's event loop.
+// bgCtx returns the actor's root context for background goroutines.
+// Falls back to context.Background() if Run() hasn't been called (tests).
+func (a *Actor) bgCtx() context.Context {
+	if a.runCtx != nil {
+		return a.runCtx
+	}
+	return context.Background()
+}
+
 func (a *Actor) Run(ctx context.Context) error {
+	a.runCtx = ctx
 	slog.Info("session actor started")
 
 	defer func() {
@@ -138,21 +153,22 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 		a.asyncSummarize(expiredConvID)
 	}
 
-	// Store the user message. Marshal cannot fail for a Go string.
-	userContent, _ := json.Marshal(msg.Text)
+	// Store the user message (text only; image refs stored separately).
+	userContent, _ := json.Marshal(msg.Text) // Marshal cannot fail for a Go string.
 	if err := a.store.AppendMessage(convID, "user", userContent); err != nil {
 		return fmt.Errorf("store user message: %w", err)
 	}
 
 	// Index user message in vector store asynchronously.
-	if a.vector != nil {
+	indexText := msg.Text
+	if a.vector != nil && indexText != "" {
 		a.indexWg.Add(1)
 		go func() {
 			defer a.indexWg.Done()
-			indexCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			indexCtx, cancel := context.WithTimeout(a.bgCtx(), 5*time.Second)
 			defer cancel()
 			msgID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), a.indexSeq.Add(1))
-			if err := a.vector.Index(indexCtx, convID+":"+msgID, msg.Text, msg.UserID, msg.ChatID, "message"); err != nil {
+			if err := a.vector.Index(indexCtx, convID+":"+msgID, indexText, msg.UserID, msg.ChatID, "message"); err != nil {
 				slog.Warn("vector index failed", "err", err)
 			}
 		}()
@@ -166,6 +182,23 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// Convert memory messages to Anthropic SDK messages.
 	messages := toAnthropicMessages(history)
+
+	// Replace the last user message with one that includes image blocks
+	// from the current message (images in history are too expensive to replay).
+	if len(msg.Photos) > 0 && len(messages) > 0 {
+		var blocks []anthropic.ContentBlockParamUnion
+		if msg.Text != "" {
+			blocks = append(blocks, anthropic.NewTextBlock(msg.Text))
+		}
+		for _, photo := range msg.Photos {
+			blocks = append(blocks, anthropic.NewImageBlockBase64(
+				photo.MimeType,
+				base64.StdEncoding.EncodeToString(photo.Data),
+			))
+		}
+		// Replace the last user message with our multimodal one.
+		messages[len(messages)-1] = anthropic.NewUserMessage(blocks...)
+	}
 
 	// Build system prompt with timezone, user facts, and relevant summaries.
 	systemPrompt := a.buildSystemPrompt(msg.UserID, msg.ChatID, msg.Text)
@@ -194,12 +227,16 @@ func (a *Actor) asyncSummarize(expiredConvID string) {
 		userID, chatID, msgCount, firstAt, lastAt, err := a.store.ConversationMeta(expiredConvID)
 		if err != nil {
 			slog.Warn("summarize: get meta", "err", err)
-			a.store.SetSummarizationStatus(expiredConvID, "failed") //nolint:errcheck
+			if serr := a.store.SetSummarizationStatus(expiredConvID, "failed"); serr != nil {
+				slog.Warn("summarize: set status failed", "conv", expiredConvID, "err", serr)
+			}
 			return
 		}
 
 		if msgCount < a.cfg.Memory.MinMsgToSummarize {
-			a.store.SetSummarizationStatus(expiredConvID, "done") //nolint:errcheck
+			if serr := a.store.SetSummarizationStatus(expiredConvID, "done"); serr != nil {
+				slog.Warn("summarize: set status done", "conv", expiredConvID, "err", serr)
+			}
 			return
 		}
 
@@ -207,45 +244,156 @@ func (a *Actor) asyncSummarize(expiredConvID string) {
 		msgs, err := a.store.GetConversationMessages(expiredConvID)
 		if err != nil {
 			slog.Warn("summarize: get messages", "err", err)
-			a.store.SetSummarizationStatus(expiredConvID, "failed") //nolint:errcheck
+			if serr := a.store.SetSummarizationStatus(expiredConvID, "failed"); serr != nil {
+				slog.Warn("summarize: set status failed", "conv", expiredConvID, "err", serr)
+			}
 			return
 		}
 
 		// Generate summary with 30s timeout.
-		sumCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		sumCtx, cancel := context.WithTimeout(a.bgCtx(), 30*time.Second)
 		defer cancel()
 
 		summary, err := a.summarizer.Summarize(sumCtx, msgs)
 		if err != nil {
 			slog.Warn("summarize: generate", "err", err, "conv", expiredConvID)
-			a.store.SetSummarizationStatus(expiredConvID, "failed") //nolint:errcheck
+			if serr := a.store.SetSummarizationStatus(expiredConvID, "failed"); serr != nil {
+				slog.Warn("summarize: set status failed", "conv", expiredConvID, "err", serr)
+			}
 			return
 		}
 
 		if summary == "" {
-			a.store.SetSummarizationStatus(expiredConvID, "done") //nolint:errcheck
+			if serr := a.store.SetSummarizationStatus(expiredConvID, "done"); serr != nil {
+				slog.Warn("summarize: set status done", "conv", expiredConvID, "err", serr)
+			}
 			return
 		}
 
 		// Store summary.
 		if err := a.store.SaveSummary(expiredConvID, userID, chatID, summary, msgCount, firstAt, lastAt); err != nil {
 			slog.Warn("summarize: save", "err", err)
-			a.store.SetSummarizationStatus(expiredConvID, "failed") //nolint:errcheck
+			if serr := a.store.SetSummarizationStatus(expiredConvID, "failed"); serr != nil {
+				slog.Warn("summarize: set status failed", "conv", expiredConvID, "err", serr)
+			}
 			return
 		}
 
 		// Index in Qdrant for semantic search.
 		if a.vector != nil {
-			indexCtx, indexCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			indexCtx, indexCancel := context.WithTimeout(a.bgCtx(), 5*time.Second)
 			defer indexCancel()
 			if err := a.vector.Index(indexCtx, "summary:"+expiredConvID, summary, userID, chatID, "summary"); err != nil {
 				slog.Warn("summarize: vector index", "err", err)
 			}
 		}
 
-		a.store.SetSummarizationStatus(expiredConvID, "done") //nolint:errcheck
+		if serr := a.store.SetSummarizationStatus(expiredConvID, "done"); serr != nil {
+			slog.Warn("summarize: set status done", "conv", expiredConvID, "err", serr)
+		}
 		slog.Info("conversation summarized", "conv", expiredConvID, "messages", msgCount)
 	}()
+}
+
+// streamDebounce is the minimum interval between Telegram message edits
+// during streaming. This prevents hitting Telegram's rate limits.
+const streamDebounce = 500 * time.Millisecond
+
+// streamState tracks the state of a streaming response to Telegram.
+type streamState struct {
+	chatID    int64
+	msgID     int    // Telegram message ID being edited (0 = not started)
+	text      string // accumulated text so far
+	lastFlush time.Time
+	mu        sync.Mutex
+	tg        TelegramTransport
+}
+
+// onDelta handles a text delta from Claude's stream. It accumulates text
+// and debounce-flushes to Telegram via message edits.
+func (ss *streamState) onDelta(delta string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	ss.text += delta
+
+	// If accumulated text exceeds Telegram's 4096-char edit limit,
+	// finalize the current message and start a new one for overflow.
+	if len([]rune(ss.text)) > 3900 {
+		ss.flush()
+		// Reset for a new message (next flush will create a new one).
+		ss.msgID = 0
+		ss.text = ""
+		return
+	}
+
+	// Debounce: only flush at most once per streamDebounce interval.
+	if time.Since(ss.lastFlush) < streamDebounce {
+		return
+	}
+	ss.flush()
+}
+
+// flush sends the current accumulated text to Telegram. Must be called
+// with ss.mu held.
+func (ss *streamState) flush() {
+	if ss.text == "" {
+		return
+	}
+	ss.lastFlush = time.Now()
+
+	if ss.msgID == 0 {
+		// First flush: send a new message and get the ID back.
+		resultCh := make(chan int, 1)
+		select {
+		case ss.tg.Inbox() <- telegram.OutgoingMessage{
+			ChatID:   ss.chatID,
+			Text:     ss.text,
+			ResultCh: resultCh,
+		}:
+		default:
+			slog.Warn("telegram inbox full, dropping stream message", "chat_id", ss.chatID)
+			return
+		}
+		// Wait for the message ID (with timeout to avoid deadlock if channel is down).
+		select {
+		case id := <-resultCh:
+			ss.msgID = id
+		case <-time.After(5 * time.Second):
+			slog.Warn("timeout waiting for telegram message ID", "chat_id", ss.chatID)
+			// Set a sentinel to prevent duplicate new-message sends on retry.
+			// -1 means "we tried to send but couldn't get the ID back."
+			ss.msgID = -1
+		}
+	} else {
+		// Subsequent flush: edit the existing message.
+		select {
+		case ss.tg.Inbox() <- telegram.OutgoingMessage{
+			ChatID:    ss.chatID,
+			Text:      ss.text,
+			MessageID: ss.msgID,
+		}:
+		default:
+			slog.Warn("telegram inbox full, dropping stream edit", "chat_id", ss.chatID)
+		}
+	}
+}
+
+// finalFlush sends any remaining accumulated text. Called after the stream
+// completes. Thread-safe.
+func (ss *streamState) finalFlush() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.flush()
+}
+
+// reset clears the stream state for a new message (e.g. after tool execution).
+func (ss *streamState) reset() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.msgID = 0
+	ss.text = ""
+	ss.lastFlush = time.Time{}
 }
 
 func (a *Actor) toolUseLoop(
@@ -257,17 +405,36 @@ func (a *Actor) toolUseLoop(
 	systemPrompt string,
 	tools []anthropic.ToolUnionParam,
 ) error {
+	ss := &streamState{chatID: chatID, tg: a.tg}
+
 	for i := 0; i < maxToolRounds; i++ {
+		// Reset stream state for each new Claude call (new message per round).
+		ss.reset()
+
 		claudeCtx, claudeCancel := context.WithTimeout(ctx, claudeTimeout)
 		resp, err := a.claude.SendStreaming(claudeCtx, claude.SendParams{
 			Messages:     messages,
 			SystemPrompt: systemPrompt,
 			Tools:        tools,
+			OnPartialText: func(delta string) {
+				ss.onDelta(delta)
+			},
 		})
 		claudeCancel()
+
 		if err != nil {
+			// If we already streamed partial text, append an error notice.
+			ss.mu.Lock()
+			if ss.msgID != 0 {
+				ss.text += "\n\n[error: response incomplete]"
+				ss.flush()
+			}
+			ss.mu.Unlock()
 			return fmt.Errorf("claude send: %w", err)
 		}
+
+		// Final flush to ensure all streamed text reaches Telegram.
+		ss.finalFlush()
 
 		// Store assistant response.
 		assistantContent, err := json.Marshal(resp)
@@ -278,9 +445,13 @@ func (a *Actor) toolUseLoop(
 			slog.Error("failed to store assistant message", "err", err)
 		}
 
-		// If no tool calls, send the text response and we're done.
+		// If no tool calls, we're done. If streaming didn't produce output
+		// (e.g. OnPartialText not called), send the full text as a fallback.
 		if len(resp.ToolCalls) == 0 {
-			if resp.TextContent != "" {
+			ss.mu.Lock()
+			streamed := ss.msgID != 0
+			ss.mu.Unlock()
+			if !streamed && resp.TextContent != "" {
 				a.trySend(telegram.OutgoingMessage{
 					ChatID: chatID,
 					Text:   resp.TextContent,
@@ -440,7 +611,11 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 					fmt.Fprintf(&sb, "[id=%d] %s (%s)\n", f.ID, f.Fact, f.Category)
 				}
 				sb.WriteString("</user_facts>\n")
-				go a.facts.UpdateLastReferenced(ids) //nolint:errcheck
+				a.indexWg.Add(1)
+				go func() {
+					defer a.indexWg.Done()
+					a.facts.UpdateLastReferenced(ids) //nolint:errcheck
+				}()
 			}
 
 			sb.WriteString("\n## Memory instructions\n")
@@ -454,7 +629,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 
 	// Tier 2: Relevant conversation summaries (via Qdrant).
 	if a.cfg.Memory.Enabled && a.vectorStore != nil && currentMsg != "" {
-		sumCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		sumCtx, cancel := context.WithTimeout(a.bgCtx(), 2*time.Second)
 		defer cancel()
 		results, err := a.vectorStore.SearchSummaries(
 			sumCtx, currentMsg, userID, chatID,

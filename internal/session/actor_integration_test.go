@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,16 +20,43 @@ import (
 
 // --- Mock implementations ---
 
+// mockLLMEntry is a single queued mock response with optional streaming deltas
+// and error injection.
+type mockLLMEntry struct {
+	resp   *claude.Response
+	deltas []string // if non-empty, OnPartialText is called with each delta before returning
+	err    error    // if non-nil, returned instead of resp (after deltas are fired)
+}
+
 type mockLLM struct {
-	mu        sync.Mutex
-	responses []*claude.Response // queued responses, shifted on each call
-	calls     []claude.SendParams
+	mu      sync.Mutex
+	entries []mockLLMEntry        // rich entries (preferred)
+	responses []*claude.Response  // legacy simple responses, used when entries is empty
+	calls   []claude.SendParams
 }
 
 func (m *mockLLM) SendStreaming(_ context.Context, params claude.SendParams) (*claude.Response, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, params)
+
+	// Prefer rich entries if available.
+	if len(m.entries) > 0 {
+		entry := m.entries[0]
+		m.entries = m.entries[1:]
+		// Fire streaming deltas before returning, simulating the real client.
+		if params.OnPartialText != nil {
+			for _, d := range entry.deltas {
+				params.OnPartialText(d)
+			}
+		}
+		if entry.err != nil {
+			return nil, entry.err
+		}
+		return entry.resp, nil
+	}
+
+	// Legacy path: simple responses without streaming.
 	if len(m.responses) == 0 {
 		return nil, fmt.Errorf("no more mock responses queued")
 	}
@@ -157,6 +186,32 @@ func newMockTelegram() *mockTelegram {
 func (m *mockTelegram) Inbox() chan<- telegram.OutgoingMessage  { return m.inbox }
 func (m *mockTelegram) Updates() <-chan telegram.IncomingMessage { return m.updates }
 
+// drainInbox runs a goroutine that reads from inbox and responds to ResultCh
+// with a fake message ID, simulating the real Channel actor behavior.
+// It also forwards messages to the returned channel for test assertions.
+func (m *mockTelegram) drainInbox(ctx context.Context) <-chan telegram.OutgoingMessage {
+	out := make(chan telegram.OutgoingMessage, 64)
+	go func() {
+		msgIDCounter := 1000
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-m.inbox:
+				if !ok {
+					return
+				}
+				if msg.ResultCh != nil {
+					msgIDCounter++
+					msg.ResultCh <- msgIDCounter
+				}
+				out <- msg
+			}
+		}
+	}()
+	return out
+}
+
 func defaultCfg() *config.Config {
 	return &config.Config{
 		Timezone: "UTC",
@@ -188,6 +243,9 @@ func TestHandleMessage_BasicFlow(t *testing.T) {
 	ctxb := &mockContextProvider{}
 	router := &mockToolRouter{}
 	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
 
 	actor := newTestActor(llm, store, ctxb, router, nil, tg)
 
@@ -218,7 +276,7 @@ func TestHandleMessage_BasicFlow(t *testing.T) {
 
 	// Verify response sent to Telegram.
 	select {
-	case out := <-tg.inbox:
+	case out := <-outbox:
 		if out.Text != "Hello! How can I help?" {
 			t.Errorf("telegram text = %q, want %q", out.Text, "Hello! How can I help?")
 		}
@@ -253,6 +311,9 @@ func TestHandleMessage_ToolUseLoop(t *testing.T) {
 		},
 	}
 	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
 
 	actor := newTestActor(llm, store, ctxb, router, nil, tg)
 
@@ -277,7 +338,7 @@ func TestHandleMessage_ToolUseLoop(t *testing.T) {
 
 	// Final response should be sent to Telegram.
 	select {
-	case out := <-tg.inbox:
+	case out := <-outbox:
 		if out.Text != "Here are the results!" {
 			t.Errorf("telegram text = %q, want %q", out.Text, "Here are the results!")
 		}
@@ -302,6 +363,9 @@ func TestHandleMessage_MaxToolRounds(t *testing.T) {
 	ctxb := &mockContextProvider{}
 	router := &mockToolRouter{}
 	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
 
 	actor := newTestActor(llm, store, ctxb, router, nil, tg)
 
@@ -319,7 +383,7 @@ func TestHandleMessage_MaxToolRounds(t *testing.T) {
 
 	// Should send the "stuck in loop" message.
 	select {
-	case out := <-tg.inbox:
+	case out := <-outbox:
 		if out.Text == "" {
 			t.Error("expected non-empty loop-limit message")
 		}
@@ -343,6 +407,9 @@ func TestHandleMessage_ToolConfirmation(t *testing.T) {
 	ctxb := &mockContextProvider{}
 	router := &mockToolRouter{}
 	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
 
 	actor := newTestActor(llm, store, ctxb, router, nil, tg)
 	actor.cfg.ConfirmTools = []string{"cancel_reminder"}
@@ -361,7 +428,7 @@ func TestHandleMessage_ToolConfirmation(t *testing.T) {
 
 	// Should have sent confirmation preview to Telegram.
 	select {
-	case out := <-tg.inbox:
+	case out := <-outbox:
 		if len(out.Text) == 0 {
 			t.Error("expected confirmation preview message")
 		}
@@ -474,4 +541,316 @@ func (m *slowVectorIndexer) Index(_ context.Context, _, text string, _, _ int64,
 	defer m.mu.Unlock()
 	m.indexed = append(m.indexed, text)
 	return nil
+}
+
+// --- Streaming & Image Tests ---
+
+// collectOutbox drains messages from the outbox channel until timeout,
+// returning all collected messages.
+func collectOutbox(outbox <-chan telegram.OutgoingMessage, timeout time.Duration) []telegram.OutgoingMessage {
+	var msgs []telegram.OutgoingMessage
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case msg := <-outbox:
+			msgs = append(msgs, msg)
+			// Reset timer after each message to catch any trailing edits.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(timeout)
+		case <-timer.C:
+			return msgs
+		}
+	}
+}
+
+func TestHandleMessage_StreamingText(t *testing.T) {
+	// Mock LLM fires OnPartialText with multiple deltas, then returns the
+	// full text. The session's streamState should produce an initial send
+	// (getting a message ID back via ResultCh) followed by edits to that
+	// same message ID.
+	llm := &mockLLM{
+		entries: []mockLLMEntry{
+			{
+				deltas: []string{"Hello", ", ", "world", "!"},
+				resp:   &claude.Response{TextContent: "Hello, world!"},
+			},
+		},
+	}
+	store := &mockStore{convID: "conv-stream-1"}
+	ctxb := &mockContextProvider{}
+	router := &mockToolRouter{}
+	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
+
+	actor := newTestActor(llm, store, ctxb, router, nil, tg)
+
+	msg := telegram.IncomingMessage{ChatID: 200, UserID: 42, Text: "stream test"}
+	if err := actor.handleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	// Collect all outgoing messages (initial send + edits).
+	msgs := collectOutbox(outbox, 500*time.Millisecond)
+	if len(msgs) == 0 {
+		t.Fatal("expected at least 1 outgoing message from streaming")
+	}
+
+	// The first message should be a fresh send (MessageID == 0) with ResultCh.
+	first := msgs[0]
+	if first.MessageID != 0 {
+		t.Errorf("first message should be a new send (MessageID=0), got %d", first.MessageID)
+	}
+	if first.ChatID != 200 {
+		t.Errorf("first message ChatID = %d, want 200", first.ChatID)
+	}
+
+	// If there are subsequent messages, they should be edits to the same ID.
+	// The drainInbox helper assigned incrementing IDs starting at 1001.
+	// The first ResultCh gets 1001, so edits should reference 1001.
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].MessageID == 0 {
+			t.Errorf("message[%d] should be an edit (MessageID != 0), got 0", i)
+		}
+	}
+
+	// The final message text should contain the full accumulated content.
+	last := msgs[len(msgs)-1]
+	if last.Text != "Hello, world!" {
+		t.Errorf("final message text = %q, want %q", last.Text, "Hello, world!")
+	}
+
+	// Verify no fallback trySend happened (streaming covered the output).
+	// The outbox should be drained at this point.
+	select {
+	case extra := <-outbox:
+		t.Errorf("unexpected extra message: %q", extra.Text)
+	case <-time.After(100 * time.Millisecond):
+		// Good, no extra messages.
+	}
+}
+
+func TestHandleMessage_StreamingWithToolUse(t *testing.T) {
+	// First Claude call: streams text deltas + returns tool call.
+	// Second Claude call: returns final text (new message).
+	llm := &mockLLM{
+		entries: []mockLLMEntry{
+			{
+				deltas: []string{"Let me ", "search..."},
+				resp: &claude.Response{
+					TextContent: "Let me search...",
+					ToolCalls: []claude.ToolCall{
+						{ID: "tc-stream-1", Name: "search__web", Input: json.RawMessage(`{"q":"test"}`)},
+					},
+				},
+			},
+			{
+				deltas: []string{"Here ", "are results."},
+				resp:   &claude.Response{TextContent: "Here are results."},
+			},
+		},
+	}
+	store := &mockStore{convID: "conv-stream-2"}
+	ctxb := &mockContextProvider{}
+	router := &mockToolRouter{
+		callFn: func(_ context.Context, name string, _ map[string]any) (string, error) {
+			return "some results", nil
+		},
+	}
+	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
+
+	actor := newTestActor(llm, store, ctxb, router, nil, tg)
+
+	msg := telegram.IncomingMessage{ChatID: 300, UserID: 42, Text: "search something"}
+	if err := actor.handleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	// Collect all outgoing messages.
+	msgs := collectOutbox(outbox, 500*time.Millisecond)
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 outgoing messages (first round + second round), got %d", len(msgs))
+	}
+
+	// Claude should have been called twice.
+	llm.mu.Lock()
+	if len(llm.calls) != 2 {
+		t.Fatalf("expected 2 Claude calls, got %d", len(llm.calls))
+	}
+	llm.mu.Unlock()
+
+	// Tool should have been called once.
+	router.mu.Lock()
+	if router.callCount != 1 {
+		t.Errorf("expected 1 tool call, got %d", router.callCount)
+	}
+	router.mu.Unlock()
+
+	// Find messages from the second round (after tool execution).
+	// The stream resets between rounds, so the second round produces
+	// a new send (MessageID == 0) with fresh text.
+	var secondRoundMsgs []telegram.OutgoingMessage
+	seenFirstSend := false
+	for _, m := range msgs {
+		if m.MessageID == 0 && m.ResultCh != nil {
+			if seenFirstSend {
+				secondRoundMsgs = append(secondRoundMsgs, m)
+			}
+			seenFirstSend = true
+		} else if seenFirstSend && len(secondRoundMsgs) > 0 {
+			secondRoundMsgs = append(secondRoundMsgs, m)
+		}
+	}
+
+	// The final message from the second round should contain the final answer.
+	lastMsg := msgs[len(msgs)-1]
+	if lastMsg.Text != "Here are results." {
+		t.Errorf("final text = %q, want %q", lastMsg.Text, "Here are results.")
+	}
+}
+
+func TestHandleMessage_StreamingError(t *testing.T) {
+	// Mock LLM fires some deltas, then returns an error.
+	// The partial text should get "[error: response incomplete]" appended.
+	llm := &mockLLM{
+		entries: []mockLLMEntry{
+			{
+				deltas: []string{"Partial ", "response"},
+				err:    fmt.Errorf("connection reset"),
+			},
+		},
+	}
+	store := &mockStore{convID: "conv-stream-err"}
+	ctxb := &mockContextProvider{}
+	router := &mockToolRouter{}
+	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
+
+	actor := newTestActor(llm, store, ctxb, router, nil, tg)
+
+	msg := telegram.IncomingMessage{ChatID: 400, UserID: 42, Text: "error test"}
+	err := actor.handleMessage(context.Background(), msg)
+	if err == nil {
+		t.Fatal("expected error from handleMessage when Claude fails mid-stream")
+	}
+
+	// Collect outgoing messages. Should include the partial text + error notice.
+	msgs := collectOutbox(outbox, 500*time.Millisecond)
+	if len(msgs) == 0 {
+		t.Fatal("expected at least 1 outgoing message with error notice")
+	}
+
+	// The last message should contain the error marker appended to partial text.
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last.Text, "[error: response incomplete]") {
+		t.Errorf("expected error notice in text, got %q", last.Text)
+	}
+	if !strings.Contains(last.Text, "Partial response") {
+		t.Errorf("expected partial text preserved, got %q", last.Text)
+	}
+}
+
+func TestHandleMessage_ImageMessage(t *testing.T) {
+	// Send a message with Photos populated. Verify Claude receives content
+	// blocks containing both text and image.
+	llm := &mockLLM{
+		responses: []*claude.Response{
+			{TextContent: "Nice photo!"},
+		},
+	}
+	store := &mockStore{convID: "conv-img-1"}
+	ctxb := &mockContextProvider{
+		// Provide a history message so toAnthropicMessages produces a
+		// user message that handleMessage can replace with multimodal blocks.
+		history: []memory.Message{
+			{Role: "user", Content: json.RawMessage(`"describe this image"`)},
+		},
+	}
+	router := &mockToolRouter{}
+	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
+
+	actor := newTestActor(llm, store, ctxb, router, nil, tg)
+
+	// Construct a message with a photo.
+	photoData := []byte("fake-jpeg-data-for-test")
+	msg := telegram.IncomingMessage{
+		ChatID: 500,
+		UserID: 42,
+		Text:   "describe this image",
+		Photos: []telegram.Photo{
+			{
+				Data:     photoData,
+				MimeType: "image/jpeg",
+				FileID:   "file-123",
+				Width:    800,
+				Height:   600,
+			},
+		},
+	}
+	if err := actor.handleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	// Verify Claude was called with multimodal content blocks.
+	llm.mu.Lock()
+	defer llm.mu.Unlock()
+	if len(llm.calls) != 1 {
+		t.Fatalf("expected 1 Claude call, got %d", len(llm.calls))
+	}
+
+	call := llm.calls[0]
+	if len(call.Messages) == 0 {
+		t.Fatal("expected at least 1 message in Claude call")
+	}
+
+	// The last message should be the user message with multimodal blocks.
+	lastMsg := call.Messages[len(call.Messages)-1]
+
+	// Serialize to JSON for inspection since the SDK types use union wrappers.
+	msgJSON, err := json.Marshal(lastMsg)
+	if err != nil {
+		t.Fatalf("failed to marshal message: %v", err)
+	}
+	msgStr := string(msgJSON)
+
+	// Verify the message contains a text block with the user's text.
+	if !strings.Contains(msgStr, "describe this image") {
+		t.Errorf("expected text block in message, got %s", msgStr)
+	}
+
+	// Verify the message contains base64-encoded image data.
+	expectedB64 := base64.StdEncoding.EncodeToString(photoData)
+	if !strings.Contains(msgStr, expectedB64) {
+		t.Errorf("expected base64 image data in message, got %s", msgStr)
+	}
+
+	// Verify the message contains the mime type.
+	if !strings.Contains(msgStr, "image/jpeg") {
+		t.Errorf("expected image/jpeg mime type in message, got %s", msgStr)
+	}
+
+	// Verify response was sent to Telegram.
+	select {
+	case out := <-outbox:
+		if out.Text != "Nice photo!" {
+			t.Errorf("telegram text = %q, want %q", out.Text, "Nice photo!")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected telegram message within 1s")
+	}
 }

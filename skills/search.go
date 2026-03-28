@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // NewWebSearchSkill returns a web search skill using DuckDuckGo HTML search.
@@ -47,13 +48,14 @@ func executeWebSearch(ctx context.Context, input json.RawMessage) (string, error
 	}
 	req.Header.Set("User-Agent", "curlycatclaw/1.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("search request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 2MB max
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}

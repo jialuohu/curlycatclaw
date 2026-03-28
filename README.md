@@ -16,6 +16,8 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - **Telegram-native** ... message your bot like you'd message a friend
 - **Claude-powered** ... streaming responses with tool use, 120s timeout per request
+- **Streaming to Telegram** ... text streams in real-time via message edits, debounced at 500ms, new messages per tool-use round
+- **Image support** ... send photos to your bot, Claude sees them via vision (photos downloaded and sent as base64 image blocks)
 - **Conversation memory** ... SQLite with WAL mode, sliding window context (25 turns, ~150K tokens)
 - **MCP tool integration** ... connect any MCP server (search, filesystem, APIs) via stdio
 - **Built-in skills** ... web search, save/search notes, reminders, semantic search, persistent user facts
@@ -29,7 +31,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Configurable logging** ... level, format (text/json), file output with rotation via lumberjack
 - **Landlock sandbox** ... Linux filesystem restriction with BestEffort degradation (opt-in)
 - **Tool transparency** ... see what tools Claude calls before seeing the response
-- **Secure defaults** ... Telegram bot fails closed on empty user allowlist, MCP env filtering, Wasm private IP blocklist
+- **Secure defaults** ... Telegram bot fails closed on empty user allowlist, MCP env filtering, Wasm private IP blocklist + DNS rebinding protection
 - **Encrypted credentials** ... AES-256-GCM for MCP server secrets
 - **Docker ready** ... Dockerfile + docker-compose with Qdrant, one command to run
 - **Goreleaser** ... automated multi-platform binary releases with checksums and Docker images on ghcr.io
@@ -120,10 +122,10 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 | Component | File | What it does |
 |-----------|------|-------------|
 | Entrypoint | `cmd/curlycatclaw/main.go` | Config loading, actor bootstrap, signal handling |
-| Session | `internal/session/actor.go` | Wires Telegram, Claude, MCP, memory, and skills |
+| Session | `internal/session/actor.go` | Wires Telegram, Claude, MCP, memory, skills, streaming |
 | Interfaces | `internal/session/deps.go` | Testability interfaces for session dependencies |
 | Claude client | `internal/claude/client.go` | Streaming API client with tool_use state machine |
-| Telegram | `internal/telegram/channel.go` | Long-polling channel actor |
+| Telegram | `internal/telegram/channel.go` | Long-polling channel actor, streaming edits, photo downloads |
 | Memory | `internal/memory/store.go` | SQLite storage, conversation management |
 | Context | `internal/memory/context.go` | Sliding window context builder |
 | MCP | `internal/mcp/manager.go` | MCP server lifecycle, tool namespacing |

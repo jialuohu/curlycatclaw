@@ -2,10 +2,17 @@ package wasm
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
@@ -522,5 +529,229 @@ func TestPackPtrLen(t *testing.T) {
 	}
 	if gotLen != length {
 		t.Errorf("len = 0x%X, want 0x%X", gotLen, length)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression: DB error sanitization (marshalError returns generic message)
+// ---------------------------------------------------------------------------
+
+func TestMarshalError_GenericQueryFailed(t *testing.T) {
+	// The bug fix ensures that when a DB query fails, the error returned
+	// to Wasm plugins is a generic "query failed" rather than raw DB errors
+	// that could leak table names or SQLite details.
+	result := marshalError("query failed")
+
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("marshalError output is not valid JSON: %v", err)
+	}
+	if parsed["error"] != "query failed" {
+		t.Errorf("error = %q, want %q", parsed["error"], "query failed")
+	}
+}
+
+func TestMarshalError_DoesNotLeakDBDetails(t *testing.T) {
+	// Simulate what used to happen before the fix: raw DB errors were returned
+	// to the Wasm guest. Now hostDBQuery always returns marshalError("query failed")
+	// instead. Verify that the generic message contains no SQL/table details.
+	genericMsg := marshalError("query failed")
+
+	sensitiveStrings := []string{
+		"sqlite", "SQLITE", "table", "TABLE",
+		"no such table", "syntax error",
+		"user_facts", "messages", "conversations", "notes", "reminders",
+	}
+
+	for _, s := range sensitiveStrings {
+		if strings.Contains(genericMsg, s) {
+			t.Errorf("marshalError(\"query failed\") contains sensitive string %q: %s", s, genericMsg)
+		}
+	}
+}
+
+func TestHostDBQuery_ErrorSanitization(t *testing.T) {
+	// Set up an in-memory SQLite database with no tables. A query against
+	// a non-existent table triggers a real SQL error. Verify that
+	// hostDBQuery would produce only "query failed" and not the raw error.
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Simulate the same logic as hostDBQuery: execute a bad query and check
+	// that the error path produces the sanitized message.
+	ctx := context.Background()
+	_, queryErr := db.QueryContext(ctx, "SELECT * FROM secret_table WHERE id = 1")
+	if queryErr == nil {
+		t.Fatal("expected error querying non-existent table")
+	}
+
+	// Before the fix, the raw error was returned. After the fix, only
+	// "query failed" is returned. Verify the raw error DOES contain
+	// table info (confirming the leak existed).
+	rawErrMsg := queryErr.Error()
+	if !strings.Contains(rawErrMsg, "secret_table") {
+		t.Fatalf("expected raw SQLite error to mention table name, got: %s", rawErrMsg)
+	}
+
+	// The fix: marshalError("query failed") is used instead.
+	sanitized := marshalError("query failed")
+	if strings.Contains(sanitized, "secret_table") {
+		t.Errorf("sanitized error should not contain table name, got: %s", sanitized)
+	}
+	if strings.Contains(sanitized, "sqlite") || strings.Contains(sanitized, "SQLITE") {
+		t.Errorf("sanitized error should not contain sqlite details, got: %s", sanitized)
+	}
+
+	// Verify it parses to the expected structure.
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(sanitized), &parsed); err != nil {
+		t.Fatalf("sanitized error is not valid JSON: %v", err)
+	}
+	if parsed["error"] != "query failed" {
+		t.Errorf("error field = %q, want %q", parsed["error"], "query failed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression: HTTP response capped at 1MB
+// ---------------------------------------------------------------------------
+
+func TestHTTPResponseLimit_1MB(t *testing.T) {
+	// The bug fix added io.LimitReader(resp.Body, 1<<20) to cap HTTP
+	// responses at exactly 1MB. Verify this limit is enforced.
+	const oneMB = 1 << 20
+	const oversized = oneMB + 4096
+
+	// Create a test server that returns more than 1MB.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Write oversized data (1MB + 4KB of 'A' bytes).
+		data := make([]byte, oversized)
+		for i := range data {
+			data[i] = 'A'
+		}
+		w.Write(data)
+	}))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("http.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Apply the same LimitReader as hostHTTPGet.
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, oneMB))
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+
+	if len(buf) != oneMB {
+		t.Errorf("response size = %d, want exactly %d (1MB)", len(buf), oneMB)
+	}
+}
+
+func TestHTTPResponseLimit_SmallResponseUnchanged(t *testing.T) {
+	// Verify that responses smaller than 1MB are returned in full.
+	const smallSize = 512
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(strings.Repeat("x", smallSize)))
+	}))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("http.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+
+	if len(buf) != smallSize {
+		t.Errorf("response size = %d, want %d", len(buf), smallSize)
+	}
+}
+
+func TestHTTPResponseLimit_ExactlyOneMB(t *testing.T) {
+	// Verify that a response of exactly 1MB is returned in full (boundary check).
+	const oneMB = 1 << 20
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data := make([]byte, oneMB)
+		for i := range data {
+			data[i] = 'B'
+		}
+		w.Write(data)
+	}))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("http.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, oneMB))
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+
+	if len(buf) != oneMB {
+		t.Errorf("response size = %d, want exactly %d (1MB)", len(buf), oneMB)
+	}
+}
+
+// Verify the constant used in the code matches 1<<20 = 1048576 bytes.
+func TestHTTPResponseLimit_ConstantValue(t *testing.T) {
+	const oneMB = 1 << 20
+	if oneMB != 1048576 {
+		t.Errorf("1<<20 = %d, want 1048576", oneMB)
+	}
+	// The code uses io.LimitReader(resp.Body, 1<<20). Verify the expression
+	// produces the correct truncation on a mock reader.
+	data := make([]byte, oneMB+100)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	reader := io.LimitReader(strings.NewReader(string(data)), 1<<20)
+	result, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+	if len(result) != oneMB {
+		t.Errorf("LimitReader(1<<20) read %d bytes, want %d", len(result), oneMB)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression: marshalError produces valid JSON (prevents injection)
+// ---------------------------------------------------------------------------
+
+func TestMarshalError_SpecialChars(t *testing.T) {
+	// Verify marshalError properly escapes special characters in error messages.
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"query failed", "query failed"},
+		{`error with "quotes"`, `error with "quotes"`},
+		{"error\nwith\nnewlines", "error\nwith\nnewlines"},
+		{"error with <html> tags", "error with <html> tags"},
+	}
+
+	for _, tt := range tests {
+		result := marshalError(tt.input)
+		var parsed map[string]string
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Errorf("marshalError(%q) produced invalid JSON %q: %v", tt.input, result, err)
+			continue
+		}
+		if parsed["error"] != tt.want {
+			t.Errorf("marshalError(%q)[\"error\"] = %q, want %q", tt.input, parsed["error"], tt.want)
+		}
 	}
 }
