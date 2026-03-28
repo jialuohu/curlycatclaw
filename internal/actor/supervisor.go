@@ -13,13 +13,49 @@ const (
 	healthyPeriod  = 60 * time.Second
 )
 
-// Supervise runs an actor in a supervision loop. If the actor panics or
-// returns an error, it is restarted with exponential backoff. The backoff
-// resets after the actor runs for longer than healthyPeriod (60s).
-//
-// Supervise blocks until ctx is cancelled.
+// SupervisorConfig holds tunable parameters for the supervision loop.
+// Zero values fall back to package defaults.
+type SupervisorConfig struct {
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+	HealthyPeriod  time.Duration
+}
+
+func (c SupervisorConfig) initialOrDefault() time.Duration {
+	if c.InitialBackoff > 0 {
+		return c.InitialBackoff
+	}
+	return initialBackoff
+}
+
+func (c SupervisorConfig) maxOrDefault() time.Duration {
+	if c.MaxBackoff > 0 {
+		return c.MaxBackoff
+	}
+	return maxBackoff
+}
+
+func (c SupervisorConfig) healthyOrDefault() time.Duration {
+	if c.HealthyPeriod > 0 {
+		return c.HealthyPeriod
+	}
+	return healthyPeriod
+}
+
+// Supervise runs an actor in a supervision loop with default backoff parameters.
 func Supervise(ctx context.Context, a Actor) {
-	backoff := initialBackoff
+	SuperviseWithConfig(ctx, a, SupervisorConfig{})
+}
+
+// SuperviseWithConfig runs an actor in a supervision loop with configurable
+// backoff parameters. If the actor panics or returns an error, it is restarted
+// with exponential backoff. The backoff resets after the actor runs for longer
+// than the healthy period.
+//
+// SuperviseWithConfig blocks until ctx is cancelled.
+func SuperviseWithConfig(ctx context.Context, a Actor, cfg SupervisorConfig) {
+	backoff := cfg.initialOrDefault()
+	initial := backoff
 
 	for {
 		startedAt := time.Now()
@@ -42,9 +78,9 @@ func Supervise(ctx context.Context, a Actor) {
 			}
 		}()
 
-		// Reset backoff if the actor ran healthily for >60s.
-		if time.Since(startedAt) > healthyPeriod {
-			backoff = initialBackoff
+		// Reset backoff if the actor ran healthily for the configured period.
+		if time.Since(startedAt) > cfg.healthyOrDefault() {
+			backoff = initial
 		}
 
 		select {
@@ -53,7 +89,7 @@ func Supervise(ctx context.Context, a Actor) {
 		case <-time.After(backoff):
 		}
 
-		backoff = min(backoff*2, maxBackoff)
+		backoff = min(backoff*2, cfg.maxOrDefault())
 		slog.Info("restarting actor", "actor", a.Name(), "backoff", backoff)
 	}
 }

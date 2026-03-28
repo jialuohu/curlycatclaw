@@ -43,9 +43,10 @@ type Actor struct {
 	summarizer  Summarizer
 	vectorStore *memory.VectorStore // direct reference for SearchSummaries
 
-	// runCtx is the actor's root context from Run(), used by background goroutines
-	// so they can be cancelled on shutdown.
-	runCtx context.Context
+	// runCtx stores the actor's root context from Run(), used by background
+	// goroutines. Stored as atomic.Value to avoid data race between Run()
+	// (writer) and bgCtx() callers from async goroutines (readers).
+	runCtx atomic.Value // holds context.Context
 
 	// indexWg tracks in-flight vector/summarization goroutines for clean shutdown.
 	indexWg  sync.WaitGroup
@@ -94,14 +95,14 @@ func (a *Actor) Name() string { return "session" }
 // bgCtx returns the actor's root context for background goroutines.
 // Falls back to context.Background() if Run() hasn't been called (tests).
 func (a *Actor) bgCtx() context.Context {
-	if a.runCtx != nil {
-		return a.runCtx
+	if v := a.runCtx.Load(); v != nil {
+		return v.(context.Context)
 	}
 	return context.Background()
 }
 
 func (a *Actor) Run(ctx context.Context) error {
-	a.runCtx = ctx
+	a.runCtx.Store(ctx)
 	slog.Info("session actor started")
 
 	defer func() {
@@ -442,7 +443,9 @@ func (a *Actor) toolUseLoop(
 			return fmt.Errorf("marshal assistant response: %w", err)
 		}
 		if err := a.store.AppendMessage(convID, "assistant", assistantContent); err != nil {
-			slog.Error("failed to store assistant message", "err", err)
+			slog.Error("failed to store assistant message",
+				"err", err, "conversation_id", convID, "role", "assistant",
+				"content_len", len(assistantContent), "data_loss", true)
 		}
 
 		// If no tool calls, we're done. If streaming didn't produce output
@@ -556,7 +559,9 @@ func (a *Actor) toolUseLoop(
 			return fmt.Errorf("marshal tool results: %w", err)
 		}
 		if err := a.store.AppendMessage(convID, "tool_result", toolResultContent); err != nil {
-			slog.Error("failed to store tool result message", "err", err)
+			slog.Error("failed to store tool result message",
+				"err", err, "conversation_id", convID, "role", "tool_result",
+				"content_len", len(toolResultContent), "data_loss", true)
 		}
 
 		// Append assistant message + tool results and loop.
@@ -629,7 +634,11 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 
 	// Tier 2: Relevant conversation summaries (via Qdrant).
 	if a.cfg.Memory.Enabled && a.vectorStore != nil && currentMsg != "" {
-		sumCtx, cancel := context.WithTimeout(a.bgCtx(), 2*time.Second)
+		searchTimeoutSec := a.cfg.Memory.VectorSearchTimeoutSec
+		if searchTimeoutSec <= 0 {
+			searchTimeoutSec = 5
+		}
+		sumCtx, cancel := context.WithTimeout(a.bgCtx(), time.Duration(searchTimeoutSec)*time.Second)
 		defer cancel()
 		results, err := a.vectorStore.SearchSummaries(
 			sumCtx, currentMsg, userID, chatID,

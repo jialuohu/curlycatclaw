@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -22,6 +23,7 @@ type Config struct {
 	Memory       MemoryConfig  `toml:"memory"`
 	Logging      LoggingConfig `toml:"logging"`
 	Sandbox      SandboxConfig `toml:"sandbox"`
+	Health       HealthConfig  `toml:"health"`
 	ConfirmTools []string      `toml:"confirm_tools"`
 }
 
@@ -85,18 +87,24 @@ type LoggingConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled              bool   `toml:"enabled"`
-	MaxFacts             int    `toml:"max_facts"`
-	SummaryRelevanceLimit int    `toml:"summary_relevance_limit"`
-	SummaryScoreThreshold float64 `toml:"summary_score_threshold"`
-	SummarizeModel       string `toml:"summarize_model"`
-	MinMsgToSummarize    int    `toml:"min_messages_to_summarize"`
+	Enabled              bool          `toml:"enabled"`
+	MaxFacts             int           `toml:"max_facts"`
+	SummaryRelevanceLimit int           `toml:"summary_relevance_limit"`
+	SummaryScoreThreshold float64       `toml:"summary_score_threshold"`
+	SummarizeModel       string        `toml:"summarize_model"`
+	MinMsgToSummarize    int           `toml:"min_messages_to_summarize"`
+	VectorSearchTimeoutSec int `toml:"vector_search_timeout_seconds"`
 }
 
 type SandboxConfig struct {
 	Enabled      bool     `toml:"enabled"`
 	ExtraPaths   []string `toml:"extra_paths"`
 	ExtraPathsRW []string `toml:"extra_paths_rw"`
+}
+
+type HealthConfig struct {
+	Enabled bool `toml:"enabled"`
+	Port    int  `toml:"port"`
 }
 
 // Location returns the parsed timezone location.
@@ -152,9 +160,14 @@ func Load(path string) (*Config, error) {
 			SummaryRelevanceLimit: 3,
 			SummaryScoreThreshold: 0.3,
 			MinMsgToSummarize:    4,
+			VectorSearchTimeoutSec: 5,
 		},
 		Sandbox: SandboxConfig{
 			Enabled: false,
+		},
+		Health: HealthConfig{
+			Enabled: true,
+			Port:    8080,
 		},
 	}
 
@@ -183,12 +196,33 @@ func (c *Config) validate() error {
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
 		return fmt.Errorf("config: invalid timezone %q: %w", c.Timezone, err)
 	}
+	if c.Storage.DBPath == "" {
+		return fmt.Errorf("config: storage.db_path is required")
+	}
+	for i, srv := range c.MCP.Servers {
+		if srv.Name == "" {
+			return fmt.Errorf("config: mcp.servers[%d].name is required", i)
+		}
+		if srv.Command == "" {
+			return fmt.Errorf("config: mcp.servers[%d].command is required", i)
+		}
+	}
+	if c.Vector.Enabled && c.Vector.QdrantAddr == "" {
+		return fmt.Errorf("config: vector.qdrant_addr is required when vector is enabled")
+	}
+	if c.Wasm.Enabled && c.Wasm.SkillsDir == "" {
+		return fmt.Errorf("config: wasm.skills_dir is required when wasm is enabled")
+	}
+	if c.Health.Enabled && (c.Health.Port < 1 || c.Health.Port > 65535) {
+		return fmt.Errorf("config: health.port must be between 1 and 65535")
+	}
 	return nil
 }
 
 func defaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
+		slog.Warn("HOME not set, using relative data directory", "fallback", ".curlycatclaw")
 		return ".curlycatclaw"
 	}
 	return filepath.Join(home, ".curlycatclaw")

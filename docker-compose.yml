@@ -10,9 +10,9 @@ services:
       qdrant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "pgrep", "-x", "curlycatclaw"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 3
 
   qdrant:

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -266,6 +268,11 @@ func run(configPath string) error {
 		os.Exit(1)
 	}()
 
+	// Start health server if enabled.
+	if cfg.Health.Enabled {
+		startHealthServer(ctx, cfg.Health.Port)
+	}
+
 	slog.Info("curlycatclaw started")
 
 	// Run actors under supervision.
@@ -330,4 +337,46 @@ func setupLogging(cfg config.LoggingConfig) error {
 
 	slog.SetDefault(slog.New(handler))
 	return nil
+}
+
+// newHealthHandler returns an HTTP handler that checks process liveness
+// (context not cancelled). Does not probe SQLite to avoid blocking the
+// single-connection pool during slow writes.
+func newHealthHandler(ctx context.Context) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		if ctx.Err() != nil {
+			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "ok")
+	})
+	return mux
+}
+
+// startHealthServer runs an HTTP health endpoint in a background goroutine.
+// Binds to localhost only and sets conservative timeouts to prevent slowloris.
+func startHealthServer(ctx context.Context, port int) {
+	srv := &http.Server{
+		Addr:              net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)),
+		Handler:           newHealthHandler(ctx),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+
+	go func() {
+		slog.Info("health server started", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("health server failed", "err", err)
+		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx) //nolint:errcheck
+	}()
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -80,5 +82,42 @@ func TestSetupLogging_FileHandler(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Fatalf("%s is not a directory", dir)
+	}
+}
+
+func TestHealthHandler_Returns200(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := httptest.NewServer(newHealthHandler(ctx))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestHealthHandler_Returns503OnShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	srv := httptest.NewServer(newHealthHandler(ctx))
+	defer srv.Close()
+
+	cancel()
+
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 during shutdown, got %d", resp.StatusCode)
 	}
 }

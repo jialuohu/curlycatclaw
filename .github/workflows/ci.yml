@@ -27,10 +27,23 @@ jobs:
           version: v2.11
 
       - name: Vulnerability check
-        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          # GO-2026-4773: MCP SDK v0.8.0 has a cross-site tool execution vuln
+          # fixed in v1.4.1. We use stdio transport (not HTTP), so this is
+          # unexploitable in our usage. Upgrade blocked on SDK API changes.
+          # Fail on any NEW vuln, allow only this known one.
+          govulncheck ./... 2>&1 | tee /tmp/vulncheck.out || true
+          if grep -q "Vulnerability #" /tmp/vulncheck.out; then
+            # Check if ALL findings are the known MCP SDK vuln.
+            UNKNOWN=$(grep "Vulnerability #" /tmp/vulncheck.out | grep -v "GO-2026-4773" || true)
+            if [ -n "$UNKNOWN" ]; then
+              echo "::error::New vulnerability found (not in known-accept list)"
+              cat /tmp/vulncheck.out
+              exit 1
+            fi
+            echo "Only known-accepted vulnerabilities found (GO-2026-4773)"
+          fi
 
       - name: Test
         run: go test ./... -count=1 -race

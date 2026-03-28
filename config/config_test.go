@@ -244,10 +244,62 @@ func TestValidate_AllValid(t *testing.T) {
 		Timezone: "UTC",
 		Claude:   ClaudeConfig{APIKey: "sk-key"},
 		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
 	}
 
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("validate with valid config returned error: %v", err)
+	}
+}
+
+func TestValidate_EmptyDBPath(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: ""},
+	}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error for empty db_path")
+	}
+}
+
+func TestValidate_MCPServerMissingCommand(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		MCP:      MCPConfig{Servers: []MCPServerConfig{{Name: "test", Command: ""}}},
+	}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error for empty mcp command")
+	}
+}
+
+func TestValidate_VectorEnabledMissingAddr(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Vector:   VectorConfig{Enabled: true, QdrantAddr: ""},
+	}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error for vector enabled without qdrant_addr")
+	}
+}
+
+func TestValidate_WasmEnabledMissingDir(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Wasm:     WasmConfig{Enabled: true, SkillsDir: ""},
+	}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error for wasm enabled without skills_dir")
 	}
 }
 
@@ -345,6 +397,7 @@ func TestValidate_EmptyAllowlistWithAllowAll(t *testing.T) {
 		Timezone: "UTC",
 		Claude:   ClaudeConfig{APIKey: "sk-key"},
 		Telegram: TGConfig{Token: "tok", AllowedID: nil, AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -357,6 +410,7 @@ func TestValidate_PopulatedAllowlist(t *testing.T) {
 		Timezone: "UTC",
 		Claude:   ClaudeConfig{APIKey: "sk-key"},
 		Telegram: TGConfig{Token: "tok", AllowedID: []int64{42}},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
 	}
 
 	if err := cfg.validate(); err != nil {

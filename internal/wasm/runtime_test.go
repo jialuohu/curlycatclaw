@@ -755,3 +755,50 @@ func TestMarshalError_SpecialChars(t *testing.T) {
 		}
 	}
 }
+
+func TestReadWasmFile_ExceedsSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.wasm")
+
+	// Create a file just over the limit (write a sparse file header).
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seek to maxWasmSize+1 and write a byte to create a sparse file.
+	if _, err := f.Seek(maxWasmSize+1, io.SeekStart); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0}); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	_, err = readWasmFile(path)
+	if err == nil {
+		t.Fatal("expected error for oversized file")
+	}
+	if !strings.Contains(err.Error(), "exceeds size limit") {
+		t.Errorf("expected 'exceeds size limit' in error, got: %v", err)
+	}
+}
+
+func TestReadWasmFile_ValidFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "small.wasm")
+
+	content := []byte("fake wasm content")
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := readWasmFile(path)
+	if err != nil {
+		t.Fatalf("readWasmFile: %v", err)
+	}
+	if string(data) != string(content) {
+		t.Errorf("got %q, want %q", data, content)
+	}
+}

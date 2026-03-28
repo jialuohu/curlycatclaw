@@ -49,38 +49,34 @@ func TestSupervise_RestartOnPanic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	fastCfg := SupervisorConfig{InitialBackoff: 10 * time.Millisecond, MaxBackoff: 100 * time.Millisecond, HealthyPeriod: time.Hour}
+
 	done := make(chan struct{})
 	go func() {
-		Supervise(ctx, a)
+		SuperviseWithConfig(ctx, a, fastCfg)
 		close(done)
 	}()
 
-	// Wait until the actor has been run at least twice (restarted after panic).
-	deadline := time.After(4 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for a.runCount.Load() < 2 {
-
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for restart; runCount = %d", a.runCount.Load())
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(5 * time.Millisecond):
 		}
 	}
 
 	cancel()
 	<-done
 
-	count := a.runCount.Load()
-	if count < 2 {
-		t.Errorf("expected at least 2 runs after panic, got %d", count)
+	if a.runCount.Load() < 2 {
+		t.Errorf("expected at least 2 runs after panic, got %d", a.runCount.Load())
 	}
 }
 
 func TestSupervise_RestartOnError(t *testing.T) {
-	// Actor returns an error on the first call, then blocks until cancelled.
 	var firstDone atomic.Bool
-	a := &mockActor{
-		name: "errorer",
-	}
+	a := &mockActor{name: "errorer"}
 	a.runFunc = func(ctx context.Context) error {
 		if !firstDone.Load() {
 			firstDone.Store(true)
@@ -93,28 +89,28 @@ func TestSupervise_RestartOnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	fastCfg := SupervisorConfig{InitialBackoff: 10 * time.Millisecond, MaxBackoff: 100 * time.Millisecond, HealthyPeriod: time.Hour}
+
 	done := make(chan struct{})
 	go func() {
-		Supervise(ctx, a)
+		SuperviseWithConfig(ctx, a, fastCfg)
 		close(done)
 	}()
 
-	deadline := time.After(4 * time.Second)
+	deadline := time.After(2 * time.Second)
 	for a.runCount.Load() < 2 {
-
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for restart; runCount = %d", a.runCount.Load())
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(5 * time.Millisecond):
 		}
 	}
 
 	cancel()
 	<-done
 
-	count := a.runCount.Load()
-	if count < 2 {
-		t.Errorf("expected at least 2 runs after error, got %d", count)
+	if a.runCount.Load() < 2 {
+		t.Errorf("expected at least 2 runs after error, got %d", a.runCount.Load())
 	}
 }
 
@@ -152,22 +148,19 @@ func TestSupervise_StopsOnContextCancel(t *testing.T) {
 	}
 }
 
-func TestSupervise_BackoffResetAfterHealthyPeriod(t *testing.T) {
-	// We cannot override healthyPeriod (60s), so we test the backoff escalation
-	// behavior indirectly: when an actor fails quickly multiple times, the
-	// backoff grows. We verify this by observing that the gap between the
-	// second and third restarts is longer than the gap between the first and
-	// second restarts, confirming exponential backoff is in effect.
-	//
-	// Specifically: the first backoff wait is 1s (initialBackoff), then it
-	// doubles to 2s before the next restart. We measure the time between
-	// run #1 and run #2 (should be ~1s) vs run #2 and run #3 (should be ~2s).
+func TestSupervise_BackoffEscalation(t *testing.T) {
+	// Use fast backoff parameters to avoid wall-clock flakiness.
+	// Initial=10ms, so gaps should be ~10ms, ~20ms, ~40ms.
+	cfg := SupervisorConfig{
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     200 * time.Millisecond,
+		HealthyPeriod:  time.Hour, // effectively never resets
+	}
+
 	var timestamps [4]time.Time
 	var idx atomic.Int32
 
-	a := &mockActor{
-		name: "backoff-check",
-	}
+	a := &mockActor{name: "backoff-check"}
 	a.runFunc = func(ctx context.Context) error {
 		i := idx.Add(1)
 		if int(i) <= len(timestamps) {
@@ -176,54 +169,103 @@ func TestSupervise_BackoffResetAfterHealthyPeriod(t *testing.T) {
 		return errors.New("fail fast")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		Supervise(ctx, a)
+		SuperviseWithConfig(ctx, a, cfg)
 		close(done)
 	}()
 
-	// Wait for at least 4 runs (need 3 gaps to measure 2 intervals).
-	deadline := time.After(14 * time.Second)
+	// Wait for at least 4 runs.
+	deadline := time.After(3 * time.Second)
 	for idx.Load() < 4 {
-
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for 4 runs; got %d", idx.Load())
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(5 * time.Millisecond):
 		}
 	}
 
 	cancel()
 	<-done
 
-	// gap1: time between run 1 and run 2 (includes ~1s backoff).
-	// gap2: time between run 2 and run 3 (includes ~2s backoff).
-	// gap3: time between run 3 and run 4 (includes ~4s backoff).
 	gap1 := timestamps[1].Sub(timestamps[0])
 	gap2 := timestamps[2].Sub(timestamps[1])
 	gap3 := timestamps[3].Sub(timestamps[2])
 
-	// Verify backoff is increasing: each gap should be longer than the previous.
+	// Verify backoff is increasing.
 	if gap2 <= gap1 {
 		t.Errorf("expected gap2 > gap1 (exponential backoff), got gap1=%v gap2=%v", gap1, gap2)
 	}
 	if gap3 <= gap2 {
 		t.Errorf("expected gap3 > gap2 (exponential backoff), got gap2=%v gap3=%v", gap2, gap3)
 	}
+}
 
-	// Sanity check the rough magnitudes (allow generous margin for CI jitter).
-	// gap1 should be around 1s, gap2 around 2s, gap3 around 4s.
-	if gap1 < 800*time.Millisecond || gap1 > 3*time.Second {
-		t.Errorf("gap1 out of expected range: %v", gap1)
+func TestSupervise_BackoffResetsAfterHealthyRun(t *testing.T) {
+	// Use fast parameters. HealthyPeriod=50ms, so any run lasting >50ms resets backoff.
+	cfg := SupervisorConfig{
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     200 * time.Millisecond,
+		HealthyPeriod:  50 * time.Millisecond,
 	}
-	if gap2 < 1500*time.Millisecond || gap2 > 5*time.Second {
-		t.Errorf("gap2 out of expected range: %v", gap2)
+
+	var runDurations []time.Duration
+	var idx atomic.Int32
+	var timestamps [3]time.Time
+
+	a := &mockActor{name: "reset-check"}
+	a.runFunc = func(ctx context.Context) error {
+		i := idx.Add(1)
+		if int(i) <= len(timestamps) {
+			timestamps[i-1] = time.Now()
+		}
+		switch i {
+		case 1:
+			// Fail fast — backoff escalates.
+			return errors.New("fail")
+		case 2:
+			// Run "healthy" for longer than HealthyPeriod to reset backoff.
+			time.Sleep(80 * time.Millisecond)
+			return errors.New("fail after healthy")
+		default:
+			// Third run: record and block.
+			<-ctx.Done()
+			return ctx.Err()
+		}
 	}
-	if gap3 < 3*time.Second || gap3 > 8*time.Second {
-		t.Errorf("gap3 out of expected range: %v", gap3)
+	_ = runDurations
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		SuperviseWithConfig(ctx, a, cfg)
+		close(done)
+	}()
+
+	deadline := time.After(3 * time.Second)
+	for idx.Load() < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out; got %d runs", idx.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-done
+
+	// After healthy run #2, backoff should reset to initial (10ms).
+	// gap between run 2 and run 3 should be close to initial, not escalated.
+	gap := timestamps[2].Sub(timestamps[1])
+	// Subtract the ~80ms the healthy run took.
+	effectiveBackoff := gap - 80*time.Millisecond
+	if effectiveBackoff > 50*time.Millisecond {
+		t.Errorf("backoff after healthy run should be ~10ms (reset), got effective %v (raw gap %v)", effectiveBackoff, gap)
 	}
 }
 
