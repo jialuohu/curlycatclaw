@@ -166,7 +166,10 @@ func run(configPath string) error {
 	// Initialize vector store (optional).
 	var vectorStore *memory.VectorStore
 	if cfg.Vector.Enabled {
-		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr)
+		embedder := newEmbedder(cfg.Vector)
+		slog.Info("embedder configured", "name", embedder.Name(), "dim", embedder.Dimension())
+
+		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr, embedder)
 		if err != nil {
 			slog.Warn("vector store init failed, disabling", "err", err)
 		} else {
@@ -239,6 +242,17 @@ func run(configPath string) error {
 
 	slog.Info("curlycatclaw stopped")
 	return nil
+}
+
+func newEmbedder(cfg config.VectorConfig) memory.Embedder {
+	switch cfg.Embedder {
+	case "ollama":
+		return memory.NewOllamaEmbedder(cfg.OllamaURL, cfg.OllamaModel, cfg.OllamaDim)
+	case "voyage":
+		return memory.NewVoyageEmbedder(cfg.VoyageKey, cfg.VoyageModel, cfg.VoyageDim)
+	default:
+		return memory.FNVEmbedder{}
+	}
 }
 
 func defaultConfigPath() string {

@@ -60,6 +60,13 @@ type BudgetConfig struct {
 type VectorConfig struct {
 	Enabled    bool   `toml:"enabled"`
 	QdrantAddr string `toml:"qdrant_addr"`
+	Embedder   string `toml:"embedder"`    // "fnv" (default), "ollama", "voyage"
+	OllamaURL  string `toml:"ollama_url"`  // default "http://localhost:11434"
+	OllamaModel string `toml:"ollama_model"` // default "nomic-embed-text"
+	OllamaDim  uint64 `toml:"ollama_dim"`  // default 768
+	VoyageKey  string `toml:"voyage_api_key"`
+	VoyageModel string `toml:"voyage_model"` // default "voyage-3-lite"
+	VoyageDim  uint64 `toml:"voyage_dim"`  // default 512
 }
 
 type WasmConfig struct {
@@ -116,6 +123,7 @@ func Load(path string) (*Config, error) {
 		Vector: VectorConfig{
 			Enabled:    false,
 			QdrantAddr: "localhost:6334",
+			Embedder:   "fnv",
 		},
 		Wasm: WasmConfig{
 			Enabled:   false,

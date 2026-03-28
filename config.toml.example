@@ -36,8 +36,21 @@ BRAVE_API_KEY = "encrypted:ref:brave_api_key"
 # Bare metal: docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 # Docker Compose: Qdrant starts automatically; use qdrant_addr = "qdrant:6334"
 # [vector]
-# enabled    = true
+# enabled     = true
 # qdrant_addr = "localhost:6334"
+#
+# Embedding provider: "fnv" (default, offline), "ollama" (free, local), "voyage" (paid, best)
+# embedder = "fnv"
+#
+# Ollama settings (when embedder = "ollama")
+# ollama_url   = "http://localhost:11434"
+# ollama_model = "nomic-embed-text"
+# ollama_dim   = 768
+#
+# Voyage AI settings (when embedder = "voyage")
+# voyage_api_key = "pa-..."
+# voyage_model   = "voyage-3-lite"
+# voyage_dim     = 512
 
 # WebAssembly skill plugins
 # [wasm]
