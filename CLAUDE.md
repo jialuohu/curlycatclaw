@@ -33,7 +33,7 @@ Test expectations:
 - **MCP manager**: persistent stdio server connections, tool namespacing (server__tool), allowlist-based env filtering, user context injection
 - **Memory**: SQLite WAL mode, sliding window context (25 turns, ~150K tokens), conversations keyed by (userID, chatID)
 - **Budget manager**: Haiku-powered context classification (keyword fast-path + cache + LLM), budget-aware context building via `BuildContextWithBudget`, opt-in
-- **Vector search**: Qdrant gRPC for semantic search across messages and notes
+- **Vector search**: Qdrant gRPC for semantic search, pluggable Embedder interface (FNV offline / Ollama local / Voyage AI paid)
 - **Skills**: built-in Go skills (search, note, remind, semantic_search) + Wasm plugin runtime
 - **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload, chat-scoped send_message
 - **Tool transparency**: `[tool]` lines sent to user in Telegram, opt-out via `show_tool_calls`
@@ -53,6 +53,7 @@ Test expectations:
 | `internal/memory/store.go` | SQLite storage |
 | `internal/mcp/manager.go` | MCP server lifecycle |
 | `internal/memory/budget.go` | Prompt budget manager (Haiku classification) |
+| `internal/memory/embedder.go` | Embedder interface + FNV/Ollama/Voyage implementations |
 | `internal/memory/vectorstore.go` | Qdrant vector search |
 | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | `skills/` | Built-in skill implementations |
@@ -60,7 +61,7 @@ Test expectations:
 | `deploy/curlycatclaw.service` | systemd unit file with hardening |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Alpine) |
 | `docker-compose.yml` | curlycatclaw + Qdrant orchestration |
-| `.goreleaser.yml` | Release automation (binaries, checksums) |
+| `.goreleaser.yml` | Release automation (binaries, checksums, Docker images) |
 
 ## Configuration
 
