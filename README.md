@@ -30,6 +30,8 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Tool transparency** ... see what tools Claude calls before seeing the response
 - **Secure defaults** ... Telegram bot fails closed on empty user allowlist, MCP env filtering
 - **Encrypted credentials** ... AES-256-GCM for MCP server secrets
+- **Docker ready** ... Dockerfile + docker-compose with Qdrant, one command to run
+- **Goreleaser** ... automated multi-platform binary releases with checksums
 
 ## Quick Start
 
@@ -118,6 +120,7 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 |-----------|------|-------------|
 | Entrypoint | `cmd/curlycatclaw/main.go` | Config loading, actor bootstrap, signal handling |
 | Session | `internal/session/actor.go` | Wires Telegram, Claude, MCP, memory, and skills |
+| Interfaces | `internal/session/deps.go` | Testability interfaces for session dependencies |
 | Claude client | `internal/claude/client.go` | Streaming API client with tool_use state machine |
 | Telegram | `internal/telegram/channel.go` | Long-polling channel actor |
 | Memory | `internal/memory/store.go` | SQLite storage, conversation management |
@@ -147,6 +150,21 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 Skills are registered alongside MCP tools. Claude sees them all as available tools and picks the right one. Wasm plugins are loaded from `~/.curlycatclaw/skills/*.wasm` when enabled.
 
 ## Deployment
+
+### Docker (recommended)
+
+```bash
+# Copy and edit config
+cp config.toml.example config.toml
+# Set db_path = "/data/curlycatclaw.db" and qdrant_addr = "qdrant:6334"
+
+# Start curlycatclaw + Qdrant
+docker compose up -d
+docker compose cp config.toml curlycatclaw:/data/config.toml
+docker compose restart curlycatclaw
+```
+
+See [deploy/docker.md](deploy/docker.md) for details and MCP limitations.
 
 ### systemd (Linux)
 
@@ -184,10 +202,10 @@ See [deploy/UPGRADE.md](deploy/UPGRADE.md) for upgrade instructions.
 ## Testing
 
 ```bash
-go test ./... -count=1
+go test ./... -count=1 -race
 ```
 
-Tests cover all subsystems across 12 packages.
+Tests cover all subsystems across 11 packages with race detection.
 
 ## License
 
