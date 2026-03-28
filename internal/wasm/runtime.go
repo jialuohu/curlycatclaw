@@ -182,6 +182,7 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 	}
 
 	if _, err := hostBuilder.Instantiate(ctx); err != nil {
+		compiled.Close(ctx)
 		return fmt.Errorf("instantiate host module for %s: %w", manifest.Name, err)
 	}
 
@@ -191,6 +192,7 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 		WithStdout(os.Stdout).
 		WithStderr(os.Stderr))
 	if err != nil {
+		compiled.Close(ctx)
 		return fmt.Errorf("instantiate guest %s: %w", manifest.Name, err)
 	}
 
@@ -198,6 +200,7 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 	skillInfo, err := callSkillInfo(ctx, instance)
 	if err != nil {
 		instance.Close(ctx)
+		compiled.Close(ctx)
 		return fmt.Errorf("skill_info for %s: %w", manifest.Name, err)
 	}
 
@@ -218,6 +221,9 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 			// Thread the invoking chat ID into the Wasm context so
 			// hostSendMessage can validate message scope.
 			user := skills.GetUser(ctx)
+			if user.ChatID == 0 {
+				return "", fmt.Errorf("wasm: no chat context for %s execution", manifest.Name)
+			}
 			execCtx := context.WithValue(ctx, chatIDCtxKey{}, user.ChatID)
 			return callSkillExecute(execCtx, instance, input)
 		},
@@ -337,16 +343,25 @@ func (w *WasmRuntime) hostHTTPGet(ctx context.Context, mod api.Module, manifest 
 	rawURL := readString(mod, urlPtr, urlLen)
 
 	if !isHostAllowed(rawURL, manifest.AllowedHosts) {
-		errMsg := fmt.Sprintf(`{"error":"host not allowed: %s"}`, rawURL)
-		ptr, length := writeString(mod, errMsg)
+		ptr, length := writeString(mod, marshalError("host not allowed: "+rawURL))
 		return packPtrLen(ptr, length)
 	}
 
-	client := &http.Client{Timeout: httpTimeout}
+	client := &http.Client{
+		Timeout: httpTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if !isHostAllowed(req.URL.String(), manifest.AllowedHosts) {
+				return fmt.Errorf("redirect to disallowed host: %s", req.URL.Host)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
 	resp, err := client.Get(rawURL)
 	if err != nil {
-		errMsg := fmt.Sprintf(`{"error":"%s"}`, err.Error())
-		ptr, length := writeString(mod, errMsg)
+		ptr, length := writeString(mod, marshalError(err.Error()))
 		return packPtrLen(ptr, length)
 	}
 	defer resp.Body.Close()
@@ -374,8 +389,7 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 	query := readString(mod, queryPtr, queryLen)
 
 	if !isSelectOnly(query) {
-		errMsg := `{"error":"only SELECT statements are allowed"}`
-		ptr, length := writeString(mod, errMsg)
+		ptr, length := writeString(mod, marshalError("only SELECT statements are allowed"))
 		return packPtrLen(ptr, length)
 	}
 
@@ -384,16 +398,14 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 
 	rows, err := w.db.QueryContext(queryCtx, query)
 	if err != nil {
-		errMsg := fmt.Sprintf(`{"error":"%s"}`, err.Error())
-		ptr, length := writeString(mod, errMsg)
+		ptr, length := writeString(mod, marshalError(err.Error()))
 		return packPtrLen(ptr, length)
 	}
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		errMsg := fmt.Sprintf(`{"error":"%s"}`, err.Error())
-		ptr, length := writeString(mod, errMsg)
+		ptr, length := writeString(mod, marshalError(err.Error()))
 		return packPtrLen(ptr, length)
 	}
 
@@ -445,12 +457,16 @@ func (w *WasmRuntime) hostSendMessage(ctx context.Context, mod api.Module, ptr, 
 	}
 
 	// Validate chat scope: plugins may only send to the chat that invoked them.
-	if allowed, ok := ctx.Value(chatIDCtxKey{}).(int64); ok && allowed != 0 {
-		if payload.ChatID != allowed {
-			slog.Warn("wasm: send_message blocked, chat_id mismatch",
-				"requested", payload.ChatID, "allowed", allowed)
-			return
-		}
+	// Default-deny: if context is missing or zero, block the message.
+	allowed, ok := ctx.Value(chatIDCtxKey{}).(int64)
+	if !ok || allowed == 0 {
+		slog.Warn("wasm: send_message blocked, no chat scope in context")
+		return
+	}
+	if payload.ChatID != allowed {
+		slog.Warn("wasm: send_message blocked, chat_id mismatch",
+			"requested", payload.ChatID, "allowed", allowed)
+		return
 	}
 
 	select {
@@ -461,6 +477,13 @@ func (w *WasmRuntime) hostSendMessage(ctx context.Context, mod api.Module, ptr, 
 	default:
 		slog.Warn("wasm: telegram inbox full, dropping message", "chat_id", payload.ChatID)
 	}
+}
+
+// marshalError produces a properly escaped JSON error string for host function
+// error responses. This avoids injection via unescaped characters in error messages.
+func marshalError(msg string) string {
+	data, _ := json.Marshal(map[string]string{"error": msg})
+	return string(data)
 }
 
 // ---------------------------------------------------------------------------
@@ -586,7 +609,7 @@ func callSkillExecute(ctx context.Context, instance api.Module, input json.RawMe
 // ---------------------------------------------------------------------------
 
 // isSelectOnly returns true if the trimmed, uppercased query begins with
-// SELECT and does not contain dangerous keywords.
+// SELECT and does not contain dangerous keywords as standalone words.
 func isSelectOnly(query string) bool {
 	// Strip SQL comments (both -- line and /* block */ styles) to prevent
 	// hiding mutating keywords inside comments.
@@ -599,39 +622,116 @@ func isSelectOnly(query string) bool {
 	if strings.Contains(upper, ";") {
 		return false
 	}
-	// Reject statements that contain mutating keywords.
+	// Reject statements that contain mutating keywords as standalone words.
+	// This avoids false positives like WHERE action = 'DELETE_REQUEST'.
 	for _, kw := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE"} {
-		if strings.Contains(upper, kw) {
+		if containsWord(upper, kw) {
 			return false
 		}
 	}
 	return true
 }
 
-// stripSQLComments removes -- line comments and /* block */ comments from SQL.
+// containsWord checks if word appears as a standalone word in s (not as a substring
+// of a larger identifier). Word boundaries are non-alphanumeric/underscore characters.
+func containsWord(s, word string) bool {
+	for i := 0; i <= len(s)-len(word); i++ {
+		if s[i:i+len(word)] != word {
+			continue
+		}
+		// Check left boundary.
+		if i > 0 && isWordChar(s[i-1]) {
+			continue
+		}
+		// Check right boundary.
+		end := i + len(word)
+		if end < len(s) && isWordChar(s[end]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isWordChar(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+// stripSQLComments removes -- line comments and /* block */ comments from SQL,
+// while preserving comment-like sequences inside string literals.
 func stripSQLComments(sql string) string {
 	var b strings.Builder
 	b.Grow(len(sql))
 	i := 0
 	for i < len(sql) {
-		if i+1 < len(sql) && sql[i] == '-' && sql[i+1] == '-' {
-			// Skip until end of line.
+		ch := sql[i]
+
+		// Single-quoted string literal: consume until closing quote.
+		// Handles escaped quotes ('') by treating '' as two characters.
+		if ch == '\'' {
+			b.WriteByte(ch)
+			i++
+			for i < len(sql) {
+				if sql[i] == '\'' {
+					b.WriteByte(sql[i])
+					i++
+					// '' is an escaped quote, stay in string.
+					if i < len(sql) && sql[i] == '\'' {
+						b.WriteByte(sql[i])
+						i++
+						continue
+					}
+					break // End of string literal.
+				}
+				b.WriteByte(sql[i])
+				i++
+			}
+			continue
+		}
+
+		// Double-quoted identifier: consume until closing quote.
+		if ch == '"' {
+			b.WriteByte(ch)
+			i++
+			for i < len(sql) {
+				if sql[i] == '"' {
+					b.WriteByte(sql[i])
+					i++
+					if i < len(sql) && sql[i] == '"' {
+						b.WriteByte(sql[i])
+						i++
+						continue
+					}
+					break
+				}
+				b.WriteByte(sql[i])
+				i++
+			}
+			continue
+		}
+
+		// Line comment: skip until end of line.
+		if i+1 < len(sql) && ch == '-' && sql[i+1] == '-' {
 			for i < len(sql) && sql[i] != '\n' {
 				i++
 			}
-		} else if i+1 < len(sql) && sql[i] == '/' && sql[i+1] == '*' {
-			// Skip until closing */.
+			continue
+		}
+
+		// Block comment: skip until closing */.
+		if i+1 < len(sql) && ch == '/' && sql[i+1] == '*' {
 			i += 2
 			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
 				i++
 			}
 			if i+1 < len(sql) {
-				i += 2 // skip */
+				i += 2
 			}
-		} else {
-			b.WriteByte(sql[i])
-			i++
+			continue
 		}
+
+		b.WriteByte(ch)
+		i++
 	}
 	return b.String()
 }
