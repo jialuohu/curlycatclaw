@@ -6,6 +6,14 @@ services:
       - curlycatclaw-data:/data
     env_file:
       - .env
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "curlycatclaw"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
   qdrant:
     image: qdrant/qdrant:v1.14.0
