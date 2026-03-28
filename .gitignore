@@ -10,3 +10,4 @@ config.toml
 .DS_Store
 .gstack/
 .idea/
+.claude/

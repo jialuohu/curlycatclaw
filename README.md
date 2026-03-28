@@ -2,10 +2,16 @@
   <img src="assets/logo.png" alt="CurlyCatClaw" width="400" />
 </p>
 
-<h1 align="center">CurlyCatClaw</h1>
+<h1 align="center">🐈CurlyCatClaw🦞</h1>
 
 <p align="center">
   A personal AI assistant that lives in your Telegram. Built in Go.
+</p>
+
+<p align="center">
+  <a href="https://github.com/jialuohu/curlycatclaw/actions"><img src="https://github.com/jialuohu/curlycatclaw/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/jialuohu/curlycatclaw/releases"><img src="https://img.shields.io/github/v/release/jialuohu/curlycatclaw" alt="Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/jialuohu/curlycatclaw" alt="License" /></a>
 </p>
 
 ---
@@ -14,29 +20,40 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Features
 
-- **Telegram-native** ... message your bot like you'd message a friend
-- **Claude-powered** ... streaming responses with tool use, 120s timeout per request
-- **Streaming to Telegram** ... text streams in real-time via message edits, debounced at 500ms, new messages per tool-use round
-- **Image support** ... send photos to your bot, Claude sees them via vision (photos downloaded and sent as base64 image blocks)
-- **Conversation memory** ... SQLite with WAL mode, sliding window context (25 turns, ~150K tokens)
-- **MCP tool integration** ... connect any MCP server (search, filesystem, APIs) via stdio
-- **Built-in skills** ... web search, save/search notes, reminders, semantic search, persistent user facts
-- **Hierarchical memory** ... three-tier: user facts always in system prompt, conversation summaries relevance-retrieved via Qdrant, sliding window for current conversation (opt-in)
-- **Smart context** ... prompt budget manager classifies turn relevance via Haiku (opt-in)
-- **Vector search** ... semantic memory via Qdrant with pluggable embeddings: FNV (offline), Ollama (free local), Voyage AI (paid) (opt-in)
-- **Reminders** ... "remind me at 3pm" with persistent scheduler, timezone-aware, recurring
-- **Wasm plugins** ... extend with custom skills via WebAssembly, capability-based security (opt-in)
-- **Actor model** ... each component runs in its own goroutine with typed message channels
-- **Health endpoint** ... `GET /health` on localhost for Docker/monitoring liveness checks (enabled by default, opt-out via `[health]`)
-- **Supervision** ... automatic restart with exponential backoff (configurable), graceful shutdown with 30s drain timeout
-- **Configurable logging** ... level, format (text/json), file output with rotation via lumberjack
-- **Landlock sandbox** ... Linux filesystem restriction with BestEffort degradation (opt-in)
-- **Tool transparency** ... see what tools Claude calls before seeing the response
-- **Config validation** ... startup checks for required fields (db_path, MCP server name/command, qdrant_addr when vector enabled, wasm skills_dir when wasm enabled)
-- **Secure defaults** ... Telegram bot fails closed on empty user allowlist, MCP env filtering, Wasm private IP blocklist + DNS rebinding protection, Wasm module size cap (50 MiB)
-- **Encrypted credentials** ... AES-256-GCM for MCP server secrets
-- **Docker ready** ... Dockerfile + docker-compose with Qdrant, one command to run
-- **Goreleaser** ... automated multi-platform binary releases with checksums and Docker images on ghcr.io
+### Core
+
+- **Telegram-native** — message your bot like you'd message a friend
+- **Claude-powered** — streaming responses with tool use (120s per-request timeout)
+- **Real-time streaming** — text deltas streamed via message edits (500ms debounce), new messages per tool-use round
+- **Image understanding** — send photos, Claude sees them via vision
+
+### Memory & Context
+
+- **Conversation memory** — SQLite (WAL mode), sliding window context (25 turns, ~150K tokens)
+- **Hierarchical memory** — three tiers: user facts in system prompt, conversation summaries via Qdrant relevance search, current sliding window
+- **Smart context** — Haiku-powered prompt budget manager classifies turn relevance
+- **Vector search** — semantic retrieval via Qdrant with pluggable embeddings (FNV offline, Ollama local, Voyage AI)
+
+### Extensibility
+
+- **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio
+- **Built-in skills** — web search, notes, reminders, semantic search, persistent user facts
+- **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security
+
+### Operations
+
+- **Health endpoint** — `GET /health` on localhost for Docker/monitoring liveness checks
+- **Supervision** — automatic restart with exponential backoff, graceful 30s drain on shutdown
+- **Configurable logging** — level, format (text/json), file output with lumberjack rotation
+- **Docker ready** — Dockerfile + docker-compose with Qdrant, one command to run
+- **Goreleaser** — automated multi-platform releases with checksums and Docker images
+
+### Security
+
+- **Landlock sandbox** — Linux filesystem restriction (opt-in)
+- **Encrypted credentials** — AES-256-GCM for MCP server secrets
+- **Secure defaults** — empty allowlist = no access, MCP env filtering, Wasm SSRF/DNS-rebinding protection, 50 MiB module cap
+- **Tool transparency** — see what tools Claude calls; confirmation prompts for sensitive operations
 
 ## Quick Start
 
@@ -48,7 +65,7 @@ git clone https://github.com/jialuohu/curlycatclaw.git
 cd curlycatclaw
 go build -o curlycatclaw ./cmd/curlycatclaw
 
-# Set up config
+# Configure
 mkdir -p ~/.curlycatclaw
 cp config.toml.example ~/.curlycatclaw/config.toml
 # Edit ~/.curlycatclaw/config.toml with your API keys
@@ -72,12 +89,12 @@ model   = "claude-sonnet-4-6-20250514"
 
 [telegram]
 token = "123456:ABC-DEF..."
-allowed_user_ids = [123456789]  # your Telegram user ID (required unless allow_all = true)
+allowed_user_ids = [123456789]  # your Telegram user ID
 
 [storage]
 db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
 
-# Optional: add MCP servers for extra tools
+# Optional: MCP servers for extra tools
 [[mcp.servers]]
 name    = "search"
 command = "npx"
@@ -85,68 +102,137 @@ args    = ["-y", "@anthropic/mcp-server-brave-search"]
 [mcp.servers.env]
 BRAVE_API_KEY = "encrypted:ref:brave_api_key"
 
-# Health check endpoint (enabled by default, localhost only)
+# Health check (enabled by default)
 [health]
 enabled = true
 port    = 8080
 ```
 
-For encrypted MCP credentials, set the `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
+For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 
 ## Architecture
 
+### System Overview
+
 ```
-┌──────────────────────────────────────────────────────┐
-│                      Supervisor                      │
-│            (panic/recover, backoff, 30s drain)       │
-│                                                      │
-│   ┌─────────┐   ┌───────────┐   ┌───────────┐        │
-│   │ Channel │◄─►│  Session  │   │ Reminder  │        │
-│   │  Actor  │   │   Actor   │   │   Actor   │        │
-│   └────┬────┘   └─────┬─────┘   └─────┬─────┘        │
-│        │              │               │              │
-│        │              ├──► Claude API │              │
-│        │              │    stream + tool_use         │
-│        │              │               │              │
-│        │              ├──► Tools      │              │
-│        │              │    Skills     │              │
-│        │              │    MCP        │              │
-│        │              │    Wasm       │              │
-│        │              │               │              │
-│        │              └──► Memory ◄───┘              │
-│        │                   SQLite / Budget / Vector  │
-│        │                                             │
-│        │◄── [tool] lines + [confirm?] previews       │
-│        │                                             │
-└────────┼─────────────────────────────────────────────┘
-         │                  │
-    Telegram            Landlock
-    Bot API          (Linux sandbox)
+┌───────────────────────────────────────────────────────┐
+│                     Supervisor                        │
+│          (panic/recover, backoff, 30s drain)          │
+│                                                       │
+│  ┌──────────┐   ┌───────────┐   ┌───────────┐         │
+│  │ Channel  │◄─►│  Session  │   │ Reminder  │         │
+│  │  Actor   │   │   Actor   │   │   Actor   │         │
+│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘         │
+│       │               │               │               │
+│       │               ├──► Claude API │               │
+│       │               │    (stream + tool_use)        │
+│       │               │               │               │
+│       │               ├──► Tools      │               │
+│       │               │    Skills / MCP / Wasm        │
+│       │               │               │               │
+│       │               └──► Memory ◄───┘               │
+│       │                    SQLite / Budget / Vector   │
+│       │                                               │
+│       │◄── [tool] lines + [confirm?] previews         │
+│       │                                               │
+└───────┼───────────────────────────────────────────────┘
+        │                  │
+   Telegram            Landlock
+   Bot API          (Linux sandbox)
 ```
 
-Everything runs as goroutine-based actors under supervision. If an actor panics or errors, it restarts with exponential backoff (1s to 30s), resetting after 60s of healthy operation. On shutdown, actors get 30 seconds to drain in-flight work before forced exit.
+Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s → 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit.
 
-| Component | File | What it does |
-|-----------|------|-------------|
-| Entrypoint | `cmd/curlycatclaw/main.go` | Config loading, actor bootstrap, signal handling |
-| Session | `internal/session/actor.go` | Wires Telegram, Claude, MCP, memory, skills, streaming |
-| Interfaces | `internal/session/deps.go` | Testability interfaces for session dependencies |
-| Claude client | `internal/claude/client.go` | Streaming API client with tool_use state machine |
-| Telegram | `internal/telegram/channel.go` | Long-polling channel actor, streaming edits, photo downloads |
-| Memory | `internal/memory/store.go` | SQLite storage, conversation management |
-| Context | `internal/memory/context.go` | Sliding window context builder |
-| MCP | `internal/mcp/manager.go` | MCP server lifecycle, tool namespacing |
-| Skills | `skills/` | Built-in skill implementations |
-| Facts | `internal/memory/facts.go` | Persistent user facts (CRUD, sanitization, IDOR protection) |
-| Summarizer | `internal/memory/summarizer.go` | Conversation summarization via Claude |
-| Budget | `internal/memory/budget.go` | Prompt budget manager (Haiku classification) |
-| Embedder | `internal/memory/embedder.go` | Pluggable embedding providers (FNV, Ollama, Voyage AI) |
-| Vector | `internal/memory/vectorstore.go` | Qdrant vector search |
-| Wasm | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
-| Credentials | `internal/security/credential.go` | AES-256-GCM encrypted credential store |
-| Sandbox | `internal/security/sandbox_linux.go` | Landlock filesystem sandbox (Linux) |
-| Supervisor | `internal/actor/supervisor.go` | Panic recovery, graceful shutdown drain |
-| systemd | `deploy/curlycatclaw.service` | Service unit with hardening directives |
+### Streaming Pipeline
+
+```
+Telegram ──► Channel Actor ──► Session Actor ──► Claude API (streaming)
+               (long-poll,       (context,           │
+                photos)           tools)             │ content deltas
+                                                     ▼
+                                              onDelta() ── 500ms debounce
+                                                     │
+              Telegram ◄── send/edit ◄── flush() ◄───┘
+                                                     │
+                                              Tool calls? ─── No ──► done
+                                                     │
+                                                    Yes
+                                                     │
+                                              Execute tools, reset stream
+                                              state, loop (max 10 rounds)
+```
+
+Each tool round produces a distinct Telegram message. Text edits respect Telegram's 4096-char limit — long responses split automatically.
+
+### Memory System
+
+Three-tier hierarchical memory with smart context building:
+
+```
+Context Assembly (per request)
+┌──────────────────────────────────────────────────────────┐
+│  Tier 1 (always)    │ User Facts (SQLite)                │  system prompt
+│  Tier 2 (semantic)  │ Relevant Summaries (Qdrant)        │  cosine similarity
+│  Tier 3 (window)    │ Recent Messages (SQLite)           │  25 turns, ~150K tokens
+└──────────────────────────────────────────────────────────┘
+
+Budget Classification (per turn in Tier 3):
+  Keyword match ──hit──► "full" (include verbatim)
+       │ miss
+  SHA256 cache (7d TTL) ──hit──► cached result
+       │ miss
+  Haiku LLM (batch) ──► "full" | "summary" (1-line) | "none" (drop)
+
+Conversation Archival (>4h idle):
+  Expired conv ──► Load messages ──► Format (4K) ──► Claude summarize
+                                                           │
+                                          SQLite (text) ◄──┤
+                                          Qdrant (embed) ◄─┘
+```
+
+### Tool Execution
+
+Three tool sources unified under one routing layer:
+
+```
+Claude tool_use ──► skills.Registry.Get(name)
+                     ├─ Found ──► Built-in Skill (with UserInfo ctx)
+                     └─ Not found ──► MCP Manager (server__tool namespace)
+
+┌──────────────────┬───────────────────┬──────────────────────┐
+│  Built-in Skills │  MCP Servers      │  Wasm Plugins        │
+├──────────────────┼───────────────────┼──────────────────────┤
+│  web_search      │  Namespaced:      │  Capability-gated:   │
+│  save_note       │  server__tool     │  ├ http (SSRF block) │
+│  set_reminder    │                   │  ├ db_read (SELECT)  │
+│  remember_fact   │  Env filtered     │  └ send_message      │
+│  semantic_search │  via allowlist    │                      │
+│                  │                   │ Hot-reload (fsnotify)│
+│  Deps: FactStore │  _user_context    │  50 MiB module cap   │
+│  DB, VectorStore │  injected per call│                      │
+└──────────────────┴───────────────────┴──────────────────────┘
+                        │
+                        ▼
+               Tool result → Claude (next loop round)
+```
+
+### Vector Search
+
+Pluggable embeddings with three Qdrant collections:
+
+```
+Embedder Interface: Embed(text) → vector
+  ├─ FNV (384d, offline, no deps)
+  ├─ Ollama (768d, local, nomic-embed-text)
+  └─ Voyage AI (512d, API, voyage-3-lite)
+
+Qdrant (gRPC, cosine similarity, user_id tenant isolation):
+  ├─ curlycatclaw_messages   ◄── user messages
+  ├─ curlycatclaw_notes      ◄── saved notes
+  └─ curlycatclaw_summaries  ◄── archived conversations
+
+query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked results
+```
 
 ## Built-in Skills
 
@@ -156,25 +242,23 @@ Everything runs as goroutine-based actors under supervision. If an actor panics 
 | `save_note` | Save a note (user-scoped, persisted to SQLite) |
 | `search_notes` | Search saved notes by keyword |
 | `set_reminder` | Set a reminder with time and optional recurrence |
-| `list_reminders` | List your pending/fired reminders |
+| `list_reminders` | List pending/fired reminders |
 | `cancel_reminder` | Cancel a scheduled reminder |
 | `semantic_search` | Search conversation history and notes by meaning (requires Qdrant) |
-| `remember_fact` | Save a persistent fact about you, remembered across all conversations (requires `[memory]`) |
-| `forget_fact` | Remove a previously saved fact by ID |
+| `remember_fact` | Save a persistent fact about you across all conversations |
+| `forget_fact` | Remove a saved fact by ID |
 | `list_facts` | List all persistent facts Claude remembers about you |
 
-Skills are registered alongside MCP tools. Claude sees them all as available tools and picks the right one. Wasm plugins are loaded from `~/.curlycatclaw/skills/*.wasm` when enabled.
+Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
 
 ## Deployment
 
 ### Docker (recommended)
 
 ```bash
-# Copy and edit config
 cp config.toml.example config.toml
 # Set db_path = "/data/curlycatclaw.db" and qdrant_addr = "qdrant:6334"
 
-# Start curlycatclaw + Qdrant
 docker compose up -d
 docker compose cp config.toml curlycatclaw:/data/config.toml
 docker compose restart curlycatclaw
@@ -182,36 +266,26 @@ docker compose restart curlycatclaw
 
 See [deploy/docker.md](deploy/docker.md) for details and MCP limitations.
 
-### systemd (Linux)
+### systemd
 
-1. Create a system user:
+```bash
+# 1. Create system user
+sudo useradd --system --create-home --home-dir /var/lib/curlycatclaw curlycatclaw
 
-   ```bash
-   sudo useradd --system --create-home --home-dir /var/lib/curlycatclaw curlycatclaw
-   ```
+# 2. Install binary and config
+sudo cp curlycatclaw /usr/local/bin/
+sudo mkdir -p /etc/curlycatclaw
+sudo cp config.toml /etc/curlycatclaw/config.toml
+sudo chown -R curlycatclaw:curlycatclaw /etc/curlycatclaw
 
-2. Copy the binary and config:
+# 3. Enable service
+sudo cp deploy/curlycatclaw.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now curlycatclaw
 
-   ```bash
-   sudo cp curlycatclaw /usr/local/bin/
-   sudo mkdir -p /etc/curlycatclaw
-   sudo cp config.toml /etc/curlycatclaw/config.toml
-   sudo chown -R curlycatclaw:curlycatclaw /etc/curlycatclaw
-   ```
-
-3. Install and enable the service:
-
-   ```bash
-   sudo cp deploy/curlycatclaw.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now curlycatclaw
-   ```
-
-4. View logs:
-
-   ```bash
-   journalctl -u curlycatclaw -f
-   ```
+# 4. View logs
+journalctl -u curlycatclaw -f
+```
 
 See [deploy/UPGRADE.md](deploy/UPGRADE.md) for upgrade instructions.
 
@@ -221,8 +295,6 @@ See [deploy/UPGRADE.md](deploy/UPGRADE.md) for upgrade instructions.
 go test ./... -count=1 -race
 ```
 
-Tests cover all subsystems across 11 packages with race detection.
-
 ## License
 
-MIT
+[MIT](LICENSE)
