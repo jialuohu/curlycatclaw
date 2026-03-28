@@ -93,7 +93,7 @@ type MemoryConfig struct {
 	SummaryScoreThreshold float64       `toml:"summary_score_threshold"`
 	SummarizeModel       string        `toml:"summarize_model"`
 	MinMsgToSummarize    int           `toml:"min_messages_to_summarize"`
-	VectorSearchTimeout  time.Duration `toml:"vector_search_timeout"`
+	VectorSearchTimeoutSec int `toml:"vector_search_timeout_seconds"`
 }
 
 type SandboxConfig struct {
@@ -160,7 +160,7 @@ func Load(path string) (*Config, error) {
 			SummaryRelevanceLimit: 3,
 			SummaryScoreThreshold: 0.3,
 			MinMsgToSummarize:    4,
-			VectorSearchTimeout:  5 * time.Second,
+			VectorSearchTimeoutSec: 5,
 		},
 		Sandbox: SandboxConfig{
 			Enabled: false,

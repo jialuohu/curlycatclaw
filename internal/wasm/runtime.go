@@ -915,7 +915,7 @@ func readWasmFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("exceeds size limit (%d bytes > %d bytes)", info.Size(), maxWasmSize)
 	}
 
-	return io.ReadAll(io.LimitReader(f, maxWasmSize+1))
+	return io.ReadAll(io.LimitReader(f, info.Size()))
 }
 
 // wasmPathToManifest converts a .wasm file path to its sibling .manifest.json path.

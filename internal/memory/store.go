@@ -196,8 +196,9 @@ func (s *Store) CompleteToolCall(callID string, output json.RawMessage, isError 
 // a new conversation is created. When an expired conversation is replaced,
 // expiredConvID returns the old conversation's ID (for summarization).
 //
-// The check-and-create is wrapped in a BEGIN IMMEDIATE transaction for
-// defense-in-depth, even though the session actor is currently single-goroutine.
+// The check-and-create is wrapped in a transaction for defense-in-depth.
+// With MaxOpenConns(1), all operations are serialized through a single
+// connection, making this effectively exclusive even as a deferred transaction.
 func (s *Store) GetActiveConversation(userID int64, chatID int64) (convID string, expiredConvID string, err error) {
 	// With MaxOpenConns(1), all operations are serialized through the single
 	// connection. The transaction provides atomicity for check-then-create.

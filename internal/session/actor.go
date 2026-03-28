@@ -634,11 +634,11 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 
 	// Tier 2: Relevant conversation summaries (via Qdrant).
 	if a.cfg.Memory.Enabled && a.vectorStore != nil && currentMsg != "" {
-		searchTimeout := a.cfg.Memory.VectorSearchTimeout
-		if searchTimeout == 0 {
-			searchTimeout = 5 * time.Second
+		searchTimeoutSec := a.cfg.Memory.VectorSearchTimeoutSec
+		if searchTimeoutSec <= 0 {
+			searchTimeoutSec = 5
 		}
-		sumCtx, cancel := context.WithTimeout(a.bgCtx(), searchTimeout)
+		sumCtx, cancel := context.WithTimeout(a.bgCtx(), time.Duration(searchTimeoutSec)*time.Second)
 		defer cancel()
 		results, err := a.vectorStore.SearchSummaries(
 			sumCtx, currentMsg, userID, chatID,
