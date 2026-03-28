@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -354,8 +355,36 @@ func (w *WasmRuntime) hostHTTPGet(ctx context.Context, mod api.Module, manifest 
 		return packPtrLen(ptr, length)
 	}
 
+	// Use a custom dialer that verifies the resolved IP at connect time
+	// to prevent DNS rebinding attacks (TOCTOU between isPrivateIP check
+	// and actual connection).
+	dialer := &net.Dialer{Timeout: httpTimeout}
 	client := &http.Client{
 		Timeout: httpTimeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					return nil, err
+				}
+				for _, ip := range ips {
+					for _, n := range privateIPNets {
+						if n.Contains(ip.IP) {
+							return nil, fmt.Errorf("connection to private IP blocked: %s", ip.IP)
+						}
+					}
+				}
+				// Connect to the first resolved IP directly to prevent re-resolution.
+				if len(ips) > 0 {
+					return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+				}
+				return dialer.DialContext(ctx, network, addr)
+			},
+		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if !isHostAllowed(req.URL.String(), manifest.AllowedHosts) {
 				return fmt.Errorf("redirect to disallowed host: %s", req.URL.Host)
@@ -374,15 +403,10 @@ func (w *WasmRuntime) hostHTTPGet(ctx context.Context, mod api.Module, manifest 
 	defer resp.Body.Close()
 
 	// Read up to 1MB.
-	buf := make([]byte, 0, 1024)
-	limit := 1 << 20 // 1MB
-	for len(buf) < limit {
-		tmp := make([]byte, 4096)
-		n, err := resp.Body.Read(tmp)
-		buf = append(buf, tmp[:n]...)
-		if err != nil {
-			break
-		}
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		ptr, length := writeString(mod, marshalError(err.Error()))
+		return packPtrLen(ptr, length)
 	}
 
 	ptr, length := writeString(mod, string(buf))
@@ -423,14 +447,16 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 		rows, err = w.db.QueryContext(queryCtx, query)
 	}
 	if err != nil {
-		ptr, length := writeString(mod, marshalError(err.Error()))
+		slog.Warn("wasm: db_read query failed", "err", err, "user_id", userID)
+		ptr, length := writeString(mod, marshalError("query failed"))
 		return packPtrLen(ptr, length)
 	}
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		ptr, length := writeString(mod, marshalError(err.Error()))
+		slog.Warn("wasm: db_read columns failed", "err", err, "user_id", userID)
+		ptr, length := writeString(mod, marshalError("query failed"))
 		return packPtrLen(ptr, length)
 	}
 
