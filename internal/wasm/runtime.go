@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -32,6 +33,10 @@ const (
 // chatIDCtxKey is used to thread the invoking chat ID through Wasm execution
 // context for send_message scope validation.
 type chatIDCtxKey struct{}
+
+// userIDCtxKey threads the invoking user ID through Wasm execution
+// context for db_read user scoping.
+type userIDCtxKey struct{}
 
 // Manifest describes a wasm skill's metadata and permission grants.
 // It is loaded from a JSON file alongside the .wasm binary.
@@ -226,6 +231,7 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 				return "", fmt.Errorf("wasm: no chat context for %s execution", manifest.Name)
 			}
 			execCtx := context.WithValue(ctx, chatIDCtxKey{}, user.ChatID)
+			execCtx = context.WithValue(execCtx, userIDCtxKey{}, user.UserID)
 			return callSkillExecute(execCtx, instance, input)
 		},
 	}
@@ -385,7 +391,8 @@ func (w *WasmRuntime) hostHTTPGet(ctx context.Context, mod api.Module, manifest 
 
 // hostDBQuery executes a read-only SQL query on behalf of the guest.
 // Only SELECT statements are allowed, with a 1-second timeout and
-// a maximum of 100 rows.
+// a maximum of 100 rows. The placeholder :user_id is automatically
+// bound to the invoking user's ID for user-scoped queries.
 func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr, queryLen uint32) uint64 {
 	query := readString(mod, queryPtr, queryLen)
 
@@ -394,10 +401,27 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 		return packPtrLen(ptr, length)
 	}
 
+	// Extract user ID from execution context for user-scoped queries.
+	userID, _ := ctx.Value(userIDCtxKey{}).(int64)
+
+	// Warn if query touches user-scoped tables without :user_id placeholder.
+	if userScopedTableAccessed(query) && !strings.Contains(query, ":user_id") {
+		slog.Warn("wasm: db_read query accesses user-scoped table without :user_id filter",
+			"query", query, "user_id", userID)
+	}
+
 	queryCtx, cancel := context.WithTimeout(ctx, dbQueryTimeout)
 	defer cancel()
 
-	rows, err := w.db.QueryContext(queryCtx, query)
+	// Bind :user_id placeholder if present.
+	var rows *sql.Rows
+	var err error
+	if strings.Contains(query, ":user_id") {
+		bound := strings.ReplaceAll(query, ":user_id", "?")
+		rows, err = w.db.QueryContext(queryCtx, bound, userID)
+	} else {
+		rows, err = w.db.QueryContext(queryCtx, query)
+	}
 	if err != nil {
 		ptr, length := writeString(mod, marshalError(err.Error()))
 		return packPtrLen(ptr, length)
@@ -737,8 +761,72 @@ func stripSQLComments(sql string) string {
 	return b.String()
 }
 
+// userScopedTableAccessed returns true if the query references tables that
+// contain per-user data (conversations, messages, notes, user_facts, reminders).
+func userScopedTableAccessed(query string) bool {
+	q := strings.ToLower(query)
+	for _, table := range []string{"conversations", "messages", "notes", "user_facts", "reminders", "conversation_summaries", "tool_calls"} {
+		if strings.Contains(q, table) {
+			return true
+		}
+	}
+	return false
+}
+
+// privateIPNets contains CIDR ranges for private/internal networks.
+// Requests to these ranges are blocked to prevent SSRF attacks from Wasm plugins.
+var privateIPNets = func() []*net.IPNet {
+	cidrs := []string{
+		"127.0.0.0/8",     // loopback
+		"10.0.0.0/8",      // RFC 1918
+		"172.16.0.0/12",   // RFC 1918
+		"192.168.0.0/16",  // RFC 1918
+		"169.254.0.0/16",  // link-local
+		"::1/128",         // IPv6 loopback
+		"fc00::/7",        // IPv6 unique local
+		"fe80::/10",       // IPv6 link-local
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, n, _ := net.ParseCIDR(cidr)
+		nets = append(nets, n)
+	}
+	return nets
+}()
+
+// isPrivateIP returns true if the given hostname resolves to a private/internal IP.
+func isPrivateIP(hostname string) bool {
+	// Direct IP check (no DNS lookup needed).
+	if ip := net.ParseIP(hostname); ip != nil {
+		for _, n := range privateIPNets {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	// Hostname: resolve and check all IPs.
+	addrs, err := net.LookupHost(hostname)
+	if err != nil {
+		return false // can't resolve, let the HTTP call fail naturally
+	}
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			continue
+		}
+		for _, n := range privateIPNets {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // isHostAllowed checks whether the given URL matches any entry in the
 // allowed hosts list using net/url.Parse for correct host extraction.
+// Private/internal IP addresses are always blocked regardless of the allowlist.
 func isHostAllowed(rawURL string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return false
@@ -749,6 +837,11 @@ func isHostAllowed(rawURL string, allowed []string) bool {
 		return false
 	}
 	host := u.Hostname() // strips port, handles userinfo correctly
+
+	// Block private/internal IPs to prevent SSRF.
+	if isPrivateIP(host) {
+		return false
+	}
 
 	for _, h := range allowed {
 		if h == "*" {

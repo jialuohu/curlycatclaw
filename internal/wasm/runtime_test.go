@@ -200,10 +200,19 @@ func TestIsHostAllowed(t *testing.T) {
 		{"http://evil@allowed.com/path", []string{"allowed.com"}, true},
 		{"http://evil@allowed.com/path", []string{"evil.com"}, false},
 		{"http://evil@allowed.com/path", []string{"*.allowed.com"}, false},
-		// IPv6 address.
-		{"http://[::1]:8080/path", []string{"::1"}, true},
-		{"http://[::1]/path", []string{"::1"}, true},
+		// IPv6 loopback (blocked as private IP).
+		{"http://[::1]:8080/path", []string{"::1"}, false},
+		{"http://[::1]/path", []string{"::1"}, false},
 		{"http://[::1]/path", []string{"127.0.0.1"}, false},
+		// Private IPs blocked even with wildcard.
+		{"http://127.0.0.1/path", []string{"*"}, false},
+		{"http://10.0.0.1/path", []string{"*"}, false},
+		{"http://172.16.0.1/path", []string{"*"}, false},
+		{"http://192.168.1.1/path", []string{"*"}, false},
+		{"http://169.254.1.1/path", []string{"*"}, false},
+		// Public IPs still allowed.
+		{"http://8.8.8.8/path", []string{"*"}, true},
+		{"http://1.1.1.1/path", []string{"*"}, true},
 		// URL with port (host extraction strips port).
 		{"https://api.example.com:9090/v1", []string{"api.example.com"}, true},
 		// Malformed URL.
@@ -216,6 +225,72 @@ func TestIsHostAllowed(t *testing.T) {
 		got := isHostAllowed(tt.url, tt.allowed)
 		if got != tt.want {
 			t.Errorf("isHostAllowed(%q, %v) = %v, want %v", tt.url, tt.allowed, got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Private IP detection
+// ---------------------------------------------------------------------------
+
+func TestIsPrivateIP(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"127.0.0.255", true},
+		{"10.0.0.1", true},
+		{"10.255.255.255", true},
+		{"172.16.0.1", true},
+		{"172.31.255.255", true},
+		{"172.15.0.1", false},   // just outside 172.16/12
+		{"172.32.0.1", false},   // just outside 172.16/12
+		{"192.168.0.1", true},
+		{"192.168.255.255", true},
+		{"169.254.1.1", true},
+		{"8.8.8.8", false},
+		{"1.1.1.1", false},
+		{"93.184.216.34", false},
+		{"::1", true},           // IPv6 loopback
+		{"fe80::1", true},       // IPv6 link-local
+		{"fc00::1", true},       // IPv6 unique local
+		{"2607:f8b0:4004:800::200e", false}, // Google public IPv6
+	}
+
+	for _, tt := range tests {
+		got := isPrivateIP(tt.host)
+		if got != tt.want {
+			t.Errorf("isPrivateIP(%q) = %v, want %v", tt.host, got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// User-scoped table detection
+// ---------------------------------------------------------------------------
+
+func TestUserScopedTableAccessed(t *testing.T) {
+	tests := []struct {
+		query string
+		want  bool
+	}{
+		{"SELECT * FROM user_facts WHERE user_id = :user_id", true},
+		{"SELECT * FROM messages WHERE conversation_id = ?", true},
+		{"SELECT * FROM conversations WHERE user_id = ?", true},
+		{"SELECT * FROM notes WHERE user_id = ?", true},
+		{"SELECT * FROM reminders WHERE user_id = ?", true},
+		{"SELECT * FROM conversation_summaries", true},
+		{"SELECT * FROM tool_calls", true},
+		{"SELECT * FROM budget_cache WHERE hash = ?", false},
+		{"SELECT 1", false},
+		{"SELECT count(*) FROM sqlite_master", false},
+	}
+
+	for _, tt := range tests {
+		got := userScopedTableAccessed(tt.query)
+		if got != tt.want {
+			t.Errorf("userScopedTableAccessed(%q) = %v, want %v", tt.query, got, tt.want)
 		}
 	}
 }
