@@ -351,7 +351,7 @@ func (w *WasmRuntime) hostHTTPGet(ctx context.Context, mod api.Module, manifest 
 	rawURL := readString(mod, urlPtr, urlLen)
 
 	if !isHostAllowed(rawURL, manifest.AllowedHosts) {
-		ptr, length := writeString(mod, marshalError("host not allowed: "+rawURL))
+		ptr, length := writeString(ctx, mod, marshalError("host not allowed: "+rawURL))
 		return packPtrLen(ptr, length)
 	}
 
@@ -397,7 +397,7 @@ func (w *WasmRuntime) hostHTTPGet(ctx context.Context, mod api.Module, manifest 
 	}
 	resp, err := client.Get(rawURL)
 	if err != nil {
-		ptr, length := writeString(mod, marshalError(err.Error()))
+		ptr, length := writeString(ctx, mod, marshalError(err.Error()))
 		return packPtrLen(ptr, length)
 	}
 	defer resp.Body.Close()
@@ -405,11 +405,11 @@ func (w *WasmRuntime) hostHTTPGet(ctx context.Context, mod api.Module, manifest 
 	// Read up to 1MB.
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		ptr, length := writeString(mod, marshalError(err.Error()))
+		ptr, length := writeString(ctx, mod, marshalError(err.Error()))
 		return packPtrLen(ptr, length)
 	}
 
-	ptr, length := writeString(mod, string(buf))
+	ptr, length := writeString(ctx, mod, string(buf))
 	return packPtrLen(ptr, length)
 }
 
@@ -421,7 +421,7 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 	query := readString(mod, queryPtr, queryLen)
 
 	if !isSelectOnly(query) {
-		ptr, length := writeString(mod, marshalError("only SELECT statements are allowed"))
+		ptr, length := writeString(ctx, mod, marshalError("only SELECT statements are allowed"))
 		return packPtrLen(ptr, length)
 	}
 
@@ -448,7 +448,7 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 	}
 	if err != nil {
 		slog.Warn("wasm: db_read query failed", "err", err, "user_id", userID)
-		ptr, length := writeString(mod, marshalError("query failed"))
+		ptr, length := writeString(ctx, mod, marshalError("query failed"))
 		return packPtrLen(ptr, length)
 	}
 	defer rows.Close()
@@ -456,7 +456,7 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 	columns, err := rows.Columns()
 	if err != nil {
 		slog.Warn("wasm: db_read columns failed", "err", err, "user_id", userID)
-		ptr, length := writeString(mod, marshalError("query failed"))
+		ptr, length := writeString(ctx, mod, marshalError("query failed"))
 		return packPtrLen(ptr, length)
 	}
 
@@ -480,7 +480,7 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 	}
 
 	data, _ := json.Marshal(results)
-	ptr, length := writeString(mod, string(data))
+	ptr, length := writeString(ctx, mod, string(data))
 	return packPtrLen(ptr, length)
 }
 
@@ -557,7 +557,7 @@ func readString(mod api.Module, ptr, length uint32) string {
 // writeString writes a string into guest memory by calling the guest's
 // exported malloc function. Returns the pointer and length, or (0,0) on
 // failure.
-func writeString(mod api.Module, s string) (ptr, length uint32) {
+func writeString(ctx context.Context, mod api.Module, s string) (ptr, length uint32) {
 	malloc := mod.ExportedFunction("malloc")
 	if malloc == nil {
 		slog.Warn("wasm: guest does not export malloc")
@@ -565,13 +565,17 @@ func writeString(mod api.Module, s string) (ptr, length uint32) {
 	}
 
 	size := uint64(len(s))
-	results, err := malloc.Call(context.Background(), size)
+	results, err := malloc.Call(ctx, size)
 	if err != nil || len(results) == 0 {
 		slog.Warn("wasm: malloc call failed", "err", err)
 		return 0, 0
 	}
 
 	ptr = uint32(results[0])
+	if ptr == 0 {
+		slog.Warn("wasm: malloc returned null")
+		return 0, 0
+	}
 	if !mod.Memory().Write(ptr, []byte(s)) {
 		slog.Warn("wasm: failed to write to guest memory")
 		return 0, 0
@@ -635,7 +639,7 @@ func callSkillExecute(ctx context.Context, instance api.Module, input json.RawMe
 		return "", fmt.Errorf("module does not export skill_execute")
 	}
 
-	ptr, length := writeString(instance, string(input))
+	ptr, length := writeString(ctx, instance, string(input))
 	if length == 0 {
 		return "", fmt.Errorf("failed to write input to guest memory")
 	}
@@ -955,7 +959,7 @@ var ExportedForTesting = struct {
 	IsHostAllowed  func(string, []string) bool
 	LoadManifest   func(string) (*Manifest, error)
 	ReadString     func(api.Module, uint32, uint32) string
-	WriteString    func(api.Module, string) (uint32, uint32)
+	WriteString    func(context.Context, api.Module, string) (uint32, uint32)
 	WasmPathToName func(string) string
 }{
 	IsSelectOnly:   isSelectOnly,

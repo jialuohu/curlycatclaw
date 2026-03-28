@@ -86,12 +86,13 @@ type LoggingConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled              bool   `toml:"enabled"`
-	MaxFacts             int    `toml:"max_facts"`
-	SummaryRelevanceLimit int    `toml:"summary_relevance_limit"`
-	SummaryScoreThreshold float64 `toml:"summary_score_threshold"`
-	SummarizeModel       string `toml:"summarize_model"`
-	MinMsgToSummarize    int    `toml:"min_messages_to_summarize"`
+	Enabled              bool          `toml:"enabled"`
+	MaxFacts             int           `toml:"max_facts"`
+	SummaryRelevanceLimit int           `toml:"summary_relevance_limit"`
+	SummaryScoreThreshold float64       `toml:"summary_score_threshold"`
+	SummarizeModel       string        `toml:"summarize_model"`
+	MinMsgToSummarize    int           `toml:"min_messages_to_summarize"`
+	VectorSearchTimeout  time.Duration `toml:"vector_search_timeout"`
 }
 
 type SandboxConfig struct {
@@ -158,6 +159,7 @@ func Load(path string) (*Config, error) {
 			SummaryRelevanceLimit: 3,
 			SummaryScoreThreshold: 0.3,
 			MinMsgToSummarize:    4,
+			VectorSearchTimeout:  5 * time.Second,
 		},
 		Sandbox: SandboxConfig{
 			Enabled: false,
@@ -192,6 +194,23 @@ func (c *Config) validate() error {
 	}
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
 		return fmt.Errorf("config: invalid timezone %q: %w", c.Timezone, err)
+	}
+	if c.Storage.DBPath == "" {
+		return fmt.Errorf("config: storage.db_path is required")
+	}
+	for i, srv := range c.MCP.Servers {
+		if srv.Name == "" {
+			return fmt.Errorf("config: mcp.servers[%d].name is required", i)
+		}
+		if srv.Command == "" {
+			return fmt.Errorf("config: mcp.servers[%d].command is required", i)
+		}
+	}
+	if c.Vector.Enabled && c.Vector.QdrantAddr == "" {
+		return fmt.Errorf("config: vector.qdrant_addr is required when vector is enabled")
+	}
+	if c.Wasm.Enabled && c.Wasm.SkillsDir == "" {
+		return fmt.Errorf("config: wasm.skills_dir is required when wasm is enabled")
 	}
 	return nil
 }
