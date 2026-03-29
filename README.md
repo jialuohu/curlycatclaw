@@ -37,7 +37,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 ### Extensibility
 
 - **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio
-- **Built-in skills** — web search, notes, reminders, semantic search, persistent user facts
+- **Built-in skills** — web search, notes (size-limited), reminders (cron-validated), semantic search (result-capped), persistent user facts
 - **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security, 10 MiB query result cap, quote-aware SQL parameter binding, atomic hot-reload
 
 ### Operations

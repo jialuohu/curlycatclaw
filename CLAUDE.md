@@ -32,17 +32,17 @@ Test expectations:
 - **Health endpoint**: `GET /health` on 127.0.0.1, enabled by default via `[health]` config, returns 200/503 based on context cancellation, used by Docker healthcheck
 - **Claude client**: two modes — (1) direct API via Go SDK (streaming + tool_use state machine, 120s timeout, `OnPartialText` callback) or (2) CLI subprocess mode via `CLIManager` (long-lived `claude` process per user, stream-json protocol, enables Claude Max subscription)
 - **CLI subprocess**: spawns `claude --print --input-format stream-json --output-format stream-json --bare` per user; CLI handles auth, LLM calls, and tool execution via MCP; curlycatclaw parses events for Telegram streaming and SQLite logging
-- **Streaming responses**: text deltas streamed to Telegram via message edits (500ms debounce), tool_use transitions start new messages, error mid-stream appends notice
+- **Streaming responses**: text deltas streamed to Telegram via message edits (500ms debounce, strings.Builder accumulation), tool_use transitions start new messages, error mid-stream appends notice, pre-stream errors send visible feedback, msgID -1 sentinel handled at all sites
 - **Image support**: Telegram photos downloaded by channel actor, sent to Claude as base64 image blocks, stored as file_id references (not inline)
 - **MCP manager**: persistent stdio server connections, tool namespacing (server__tool), allowlist-based env filtering, user context injection
 - **Memory**: SQLite WAL mode, sliding window context (25 turns, ~150K tokens), conversations keyed by (userID, chatID), transactional check-and-create for active conversations
 - **Hierarchical memory**: three-tier (user facts in system prompt, conversation summaries via Qdrant relevance search, current conversation sliding window), opt-in via `[memory]` config
 - **Facts**: persistent per-user facts with category, sanitization (200-char, control char strip), IDOR-protected delete, proactive extraction via system prompt instruction
 - **Conversation archival**: async summarization on conversation expiry (>4h idle), crash recovery via `summarization_status` tracking, dedicated `curlycatclaw_summaries` Qdrant collection
-- **Budget manager**: Haiku-powered context classification (keyword fast-path + cache + LLM), budget-aware context building via `BuildContextWithBudget`, opt-in
+- **Budget manager**: Haiku-powered context classification (keyword fast-path + cache + LLM), budget-aware context building via `BuildContextWithBudget`, opt-in, cache indexed on created_at for cleanup
 - **Vector search**: Qdrant gRPC for semantic search, pluggable Embedder interface (FNV offline / Ollama local / Voyage AI paid), configurable search timeout via `vector_search_timeout_seconds` (default 5s)
 - **Config validation**: startup validation of required fields (db_path, MCP server name/command, qdrant_addr when vector enabled, wasm skills_dir when wasm enabled, health port range, budget.model when budget enabled)
-- **Skills**: built-in Go skills (search, note, remind, semantic_search, remember_fact, forget_fact, list_facts) + Wasm plugin runtime
+- **Skills**: built-in Go skills (search, note, remind, semantic_search, remember_fact, forget_fact, list_facts) + Wasm plugin runtime; note has title/content size limits (500 chars / 100KB), semantic_search capped at 50 results, remind validates cron expressions at input time
 - **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload (atomic reload with map-based Execute lookup), chat-scoped send_message, db_read user scoping via `:user_id` placeholder (quote-aware replacement, 10 MiB result size cap, rows.Err check), HTTP private IP blocklist (SSRF prevention), connect-time IP verification (DNS rebinding protection), sanitized DB errors, 50 MiB module size cap, compiled module cleanup on unload, skill-name-based registry unregister
 - **Tool transparency**: `[tool]` lines sent to user in Telegram, opt-out via `show_tool_calls`
 - **Tool confirmation**: `confirm_tools` prefix list for sensitive operations, stateless via Claude re-ask
