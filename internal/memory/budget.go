@@ -74,6 +74,11 @@ func NewBudgetManager(db *sql.DB, client *claude.Client, enabled bool) (*BudgetM
 		return nil, fmt.Errorf("budget: create cache table: %w", err)
 	}
 
+	const indexSchema = `CREATE INDEX IF NOT EXISTS idx_budget_cache_created ON budget_cache(created_at)`
+	if _, err := db.Exec(indexSchema); err != nil {
+		return nil, fmt.Errorf("budget: create cache index: %w", err)
+	}
+
 	return bm, nil
 }
 
