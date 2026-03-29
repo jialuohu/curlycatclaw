@@ -173,6 +173,14 @@ func TestIsSelectOnly(t *testing.T) {
 		{"SELECT ATTACHED_FILE FROM t", true},
 		{"SELECT DETACHED FROM t", true},
 		{"SELECT REINDEXED FROM t", true},
+		// UNION/INTERSECT/EXCEPT blocked as standalone words.
+		{"SELECT 1 UNION SELECT 2", false},
+		{"SELECT a FROM t UNION ALL SELECT b FROM t2", false},
+		{"SELECT a FROM t INTERSECT SELECT b FROM t2", false},
+		{"SELECT a FROM t EXCEPT SELECT b FROM t2", false},
+		// Word-boundary: "REUNION" should NOT be blocked.
+		{"SELECT * FROM t WHERE event = 'REUNION'", true},
+		{"SELECT REUNION_DATE FROM t", true},
 	}
 
 	for _, tt := range tests {
@@ -292,6 +300,9 @@ func TestUserScopedTableAccessed(t *testing.T) {
 		{"SELECT * FROM budget_cache WHERE hash = ?", false},
 		{"SELECT 1", false},
 		{"SELECT count(*) FROM sqlite_master", false},
+		// Table name in comment should NOT trigger detection.
+		{"SELECT 1 -- user_facts", false},
+		{"SELECT 1 /* messages */", false},
 	}
 
 	for _, tt := range tests {
@@ -800,6 +811,41 @@ func TestReadWasmFile_ValidFile(t *testing.T) {
 	}
 	if string(data) != string(content) {
 		t.Errorf("got %q, want %q", data, content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression: db_read rejects unscoped queries on user-scoped tables
+// ---------------------------------------------------------------------------
+
+func TestDBRead_UnscopedUserTable(t *testing.T) {
+	// Verify that a query touching user-scoped tables without :user_id
+	// is detected as needing rejection. This validates the guard logic
+	// used in hostDBQuery (which requires wazero infrastructure to call
+	// directly).
+	tests := []struct {
+		query      string
+		wantReject bool
+	}{
+		// Unscoped query on user_facts: must be rejected.
+		{"SELECT * FROM user_facts", true},
+		// Unscoped query on messages: must be rejected.
+		{"SELECT * FROM messages WHERE conversation_id = 42", true},
+		// Properly scoped query: allowed.
+		{"SELECT * FROM user_facts WHERE user_id = :user_id", false},
+		// Non-user-scoped table: allowed.
+		{"SELECT * FROM budget_cache WHERE hash = 'abc'", false},
+		// :user_id inside quotes only (bypass attempt): must be rejected.
+		{"SELECT * FROM user_facts WHERE note LIKE '%:user_id%'", true},
+	}
+
+	for _, tt := range tests {
+		_, paramCount := replaceOutsideQuotes(tt.query, ":user_id", "?")
+		wouldReject := userScopedTableAccessed(tt.query) && paramCount == 0
+
+		if wouldReject != tt.wantReject {
+			t.Errorf("query %q: wouldReject = %v, want %v", tt.query, wouldReject, tt.wantReject)
+		}
 	}
 }
 
