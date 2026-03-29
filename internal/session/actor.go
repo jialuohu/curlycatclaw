@@ -225,6 +225,9 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 // asyncSummarize summarizes an expired conversation in a background goroutine.
 func (a *Actor) asyncSummarize(expiredConvID string) {
+	if a.summarizer == nil {
+		return // summarizer disabled (e.g., CLI mode without direct API)
+	}
 	a.indexWg.Add(1)
 	go func() {
 		defer a.indexWg.Done()
@@ -604,16 +607,9 @@ func (a *Actor) handleWithCLI(
 	ss := &streamState{chatID: chatID, tg: a.tg}
 
 	mcpConfig := a.buildMCPConfig(userID, chatID)
-	proc, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, claude.SpawnParams{
-		SystemPrompt: systemPrompt,
-		MCPConfig:    mcpConfig,
-	})
-	if err != nil {
-		return fmt.Errorf("cli get/create: %w", err)
-	}
 
 	// Build the user message for the CLI's stream-json input.
-	var msg json.RawMessage
+	var userJSON json.RawMessage
 	if len(photos) > 0 {
 		var images []claude.ImageBlock
 		for _, photo := range photos {
@@ -622,12 +618,21 @@ func (a *Actor) handleWithCLI(
 				Data:      base64.StdEncoding.EncodeToString(photo.Data),
 			})
 		}
-		msg = claude.BuildImageMessage(userMsg, images)
+		userJSON = claude.BuildImageMessage(userMsg, images)
 	} else {
-		msg = claude.BuildUserMessage(userMsg)
+		userJSON = claude.BuildUserMessage(userMsg)
 	}
 
-	events, err := proc.Send(ctx, msg, func(delta string) {
+	proc, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, claude.SpawnParams{
+		SystemPrompt: systemPrompt,
+		MCPConfig:    mcpConfig,
+		InitialMsg:   userJSON,
+	})
+	if err != nil {
+		return fmt.Errorf("cli get/create: %w", err)
+	}
+
+	events, err := proc.Send(ctx, userJSON, func(delta string) {
 		ss.onDelta(delta)
 	})
 	if err != nil {
@@ -738,7 +743,8 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 		},
 	}
 
-	data, _ := json.Marshal(servers)
+	wrapper := map[string]any{"mcpServers": servers}
+	data, _ := json.Marshal(wrapper)
 	return string(data)
 }
 

@@ -141,6 +141,7 @@ func (ch *Channel) Run(ctx context.Context) error {
 
 // handleUpdate filters and forwards a single Telegram update.
 func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
+	slog.Info("telegram: raw update received", "update_id", upd.UpdateID, "has_message", upd.Message != nil)
 	if upd.Message == nil || upd.Message.From == nil {
 		return
 	}

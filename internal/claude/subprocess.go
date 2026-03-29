@@ -5,12 +5,15 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -75,13 +78,14 @@ type userKey struct {
 
 // CLIProcess wraps a single long-lived CLI subprocess.
 type CLIProcess struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	scanner   *bufio.Scanner
-	sessionID string
-	mu        sync.Mutex // serializes message sends
-	lastUsed  time.Time
-	done      chan struct{} // closed when process exits
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	scanner     *bufio.Scanner
+	sessionID   string
+	mu          sync.Mutex // serializes message sends
+	lastUsed    time.Time
+	done        chan struct{} // closed when process exits
+	initMsgSent bool         // true if initial message was sent during spawn
 }
 
 // Send writes a user message to the CLI's stdin and reads streaming events
@@ -92,12 +96,19 @@ func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartia
 	defer p.mu.Unlock()
 	p.lastUsed = time.Now()
 
-	// Write message to stdin (append newline without mutating caller's slice).
-	buf := make([]byte, len(userMsg)+1)
-	copy(buf, userMsg)
-	buf[len(userMsg)] = '\n'
-	if _, err := p.stdin.Write(buf); err != nil {
-		return nil, fmt.Errorf("cli: write stdin: %w", err)
+	slog.Info("cli: Send() called", "msg_len", len(userMsg), "skip_write", p.initMsgSent)
+
+	// Skip the write if this message was already sent during spawn().
+	if p.initMsgSent {
+		p.initMsgSent = false
+	} else {
+		// Write message to stdin (append newline without mutating caller's slice).
+		buf := make([]byte, len(userMsg)+1)
+		copy(buf, userMsg)
+		buf[len(userMsg)] = '\n'
+		if _, err := p.stdin.Write(buf); err != nil {
+			return nil, fmt.Errorf("cli: write stdin: %w", err)
+		}
 	}
 
 	// Read events until we get a result.
@@ -128,6 +139,17 @@ func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartia
 			slog.Warn("cli: skip unparseable event", "err", err, "line_len", len(line))
 			continue
 		}
+
+		// Log every event type for debugging.
+		if event != nil {
+			slog.Debug("cli: event", "type", fmt.Sprintf("%T", event))
+		} else {
+			// Peek at what we're skipping.
+			var peek struct{ Type string `json:"type"` }
+			json.Unmarshal(line, &peek)
+			slog.Debug("cli: skip event", "type", peek.Type, "len", len(line))
+		}
+
 		if event == nil {
 			continue // unknown event type, tolerate gracefully
 		}
@@ -141,6 +163,7 @@ func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartia
 
 		// Result means this turn is done.
 		if _, ok := event.(ResultEvent); ok {
+			slog.Info("cli: result received, returning")
 			return events, nil
 		}
 	}
@@ -186,7 +209,8 @@ func NewCLIManager(cliPath, model string) *CLIManager {
 // SpawnParams configures a new CLI process.
 type SpawnParams struct {
 	SystemPrompt string
-	MCPConfig    string // JSON string for --mcp-config
+	MCPConfig    string          // JSON string for --mcp-config
+	InitialMsg   json.RawMessage // first message to send (required for spawn, CLI waits for it before init)
 }
 
 // GetOrCreate returns the existing CLI process for a user or spawns a new one.
@@ -302,7 +326,9 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--include-partial-messages",
+		"--verbose",
 		"--bare",
+		"--no-session-persistence",
 		"--replay-user-messages",
 	}
 
@@ -318,6 +344,16 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 
 	cmd := exec.CommandContext(ctx, m.cliPath, args...)
 
+	// In --bare mode, the CLI only reads ANTHROPIC_API_KEY for auth.
+	// Read the OAuth access token from ~/.claude/.credentials.json and
+	// inject it as ANTHROPIC_API_KEY so Max subscription auth works.
+	if token := readOAuthToken(); token != "" {
+		cmd.Env = append(os.Environ(), "ANTHROPIC_API_KEY="+token)
+		slog.Info("cli: injecting OAuth token", "len", len(token))
+	} else {
+		slog.Warn("cli: no OAuth token found, CLI auth may fail")
+	}
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("cli: stdin pipe: %w", err)
@@ -329,8 +365,9 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 		return nil, fmt.Errorf("cli: stdout pipe: %w", err)
 	}
 
-	// Discard stderr to avoid blocking.
-	cmd.Stderr = nil
+	// Capture stderr for diagnostics (bounded buffer).
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &limitWriter{w: &stderrBuf, max: 4096}
 
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
@@ -354,6 +391,18 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 		done:     done,
 	}
 
+	// The CLI with --input-format stream-json waits for the first message
+	// on stdin before emitting the init event. Write it now.
+	if len(params.InitialMsg) > 0 {
+		initBuf := make([]byte, len(params.InitialMsg)+1)
+		copy(initBuf, params.InitialMsg)
+		initBuf[len(params.InitialMsg)] = '\n'
+		if _, err := stdin.Write(initBuf); err != nil {
+			proc.Kill()
+			return nil, fmt.Errorf("cli: write initial message: %w", err)
+		}
+	}
+
 	// Read the init event to capture session_id.
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -364,13 +413,13 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 			proc.Kill()
 			return nil, fmt.Errorf("cli: timeout waiting for init event")
 		case <-done:
-			return nil, fmt.Errorf("cli: process exited before init")
+			return nil, fmt.Errorf("cli: process exited before init: stderr=%s", stderrBuf.String())
 		default:
 		}
 
 		if !scanner.Scan() {
 			proc.Kill()
-			return nil, fmt.Errorf("cli: stdout closed before init")
+			return nil, fmt.Errorf("cli: stdout closed before init: stderr=%s", stderrBuf.String())
 		}
 
 		line := scanner.Bytes()
@@ -384,6 +433,7 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 		}
 		if init, ok := event.(SystemInitEvent); ok {
 			proc.sessionID = init.SessionID
+			proc.initMsgSent = len(params.InitialMsg) > 0
 			slog.Info("cli: process started",
 				"session_id", init.SessionID,
 				"model", init.Model,
@@ -576,8 +626,50 @@ func BuildImageMessage(text string, images []ImageBlock) json.RawMessage {
 	return data
 }
 
+// readOAuthToken reads the Claude OAuth access token from ~/.claude/.credentials.json.
+// Returns empty string if the file doesn't exist or can't be parsed.
+func readOAuthToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json"))
+	if err != nil {
+		return ""
+	}
+	var creds struct {
+		ClaudeAiOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return ""
+	}
+	return creds.ClaudeAiOauth.AccessToken
+}
+
 // ImageBlock holds base64-encoded image data for multimodal messages.
 type ImageBlock struct {
 	MediaType string // e.g. "image/jpeg"
 	Data      string // base64 encoded
+}
+
+// limitWriter wraps a writer and stops writing after max bytes.
+type limitWriter struct {
+	w   io.Writer
+	max int
+	n   int
+}
+
+func (lw *limitWriter) Write(p []byte) (int, error) {
+	if lw.n >= lw.max {
+		return len(p), nil // silently discard
+	}
+	remaining := lw.max - lw.n
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	n, err := lw.w.Write(p)
+	lw.n += n
+	return len(p), err // report full write to avoid broken pipe
 }
