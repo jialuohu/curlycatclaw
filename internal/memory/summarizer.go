@@ -65,8 +65,9 @@ func FormatTranscript(messages []Message) string {
 	}
 
 	result := sb.String()
-	if len(result) > maxTranscriptChars {
-		result = result[:maxTranscriptChars] + "..."
+	runes := []rune(result)
+	if len(runes) > maxTranscriptChars {
+		result = string(runes[:maxTranscriptChars]) + "..."
 	}
 	return strings.TrimSpace(result)
 }

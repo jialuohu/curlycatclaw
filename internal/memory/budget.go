@@ -135,15 +135,15 @@ func (bm *BudgetManager) ClassifyTurns(ctx context.Context, currentMsg string, t
 			if j < len(classifications) {
 				result[idx].Classification = classifications[j].Classification
 				result[idx].Summary = classifications[j].Summary
+
+				// Cache the LLM result (but not fallback values).
+				content := turnText(turns[idx])
+				hash := cacheHash(content, currentMsg)
+				bm.cacheSet(hash, result[idx].Classification, result[idx].Summary)
 			} else {
 				// Fallback: if we didn't get enough results, include fully.
 				result[idx].Classification = "full"
 			}
-
-			// Cache the result.
-			content := turnText(turns[idx])
-			hash := cacheHash(content, currentMsg)
-			bm.cacheSet(hash, result[idx].Classification, result[idx].Summary)
 		}
 	}
 

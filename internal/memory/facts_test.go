@@ -3,6 +3,7 @@ package memory
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestFactStore_AddAndGet(t *testing.T) {
@@ -241,5 +242,24 @@ func TestFactStore_Categories(t *testing.T) {
 		if got != c.category {
 			t.Errorf("fact %q: category = %q, want %q", c.fact, got, c.category)
 		}
+	}
+}
+
+func TestSanitizeFact_UTF8Truncation(t *testing.T) {
+	// 201 party popper emojis (each is 4 bytes in UTF-8).
+	input := strings.Repeat("\U0001f389", 201)
+
+	result := sanitizeFact(input)
+
+	runes := []rune(result)
+	if len(runes) != 200 {
+		t.Errorf("rune count = %d, want 200", len(runes))
+	}
+	if !utf8.ValidString(result) {
+		t.Error("result is not valid UTF-8")
+	}
+	// Each rune is 4 bytes, so 200 runes = 800 bytes.
+	if len(result) != 800 {
+		t.Errorf("byte length = %d, want 800 (200 x 4-byte runes)", len(result))
 	}
 }

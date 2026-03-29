@@ -104,7 +104,13 @@ func (s *Store) insertConversation(e execer, userID int64, chatID int64) (string
 func (s *Store) AppendMessage(convID string, role string, content json.RawMessage) error {
 	now := time.Now().UTC()
 
-	_, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("memory: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	_, err = tx.Exec(
 		`INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)`,
 		convID, role, string(content), now,
 	)
@@ -112,12 +118,16 @@ func (s *Store) AppendMessage(convID string, role string, content json.RawMessag
 		return fmt.Errorf("memory: append message: %w", err)
 	}
 
-	_, err = s.db.Exec(
+	_, err = tx.Exec(
 		`UPDATE conversations SET updated_at = ? WHERE id = ?`,
 		now, convID,
 	)
 	if err != nil {
 		return fmt.Errorf("memory: update conversation timestamp: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("memory: commit tx: %w", err)
 	}
 
 	return nil
