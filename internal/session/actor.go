@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/jialuohu/curlycatclaw/config"
@@ -54,6 +55,10 @@ type Actor struct {
 	// indexWg tracks in-flight vector/summarization goroutines for clean shutdown.
 	indexWg  sync.WaitGroup
 	indexSeq atomic.Uint64
+
+	// cachedAnthropicTools caches parsed MCP tool schemas (computed once per tool set).
+	cachedAnthropicTools []anthropic.ToolUnionParam
+	cachedToolCount      int // len(tools) when cache was built; invalidates on change
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -215,8 +220,14 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 		messages[len(messages)-1] = anthropic.NewUserMessage(blocks...)
 	}
 
-	// Collect all tools: MCP tools + built-in skills.
-	tools := toAnthropicTools(a.mcp.Tools())
+	// Collect all tools: MCP tools + built-in skills (cached).
+	mcpTools := a.mcp.Tools()
+	if a.cachedAnthropicTools == nil || len(mcpTools) != a.cachedToolCount {
+		a.cachedAnthropicTools = toAnthropicTools(mcpTools)
+		a.cachedToolCount = len(mcpTools)
+	}
+	tools := make([]anthropic.ToolUnionParam, len(a.cachedAnthropicTools))
+	copy(tools, a.cachedAnthropicTools)
 	tools = append(tools, toSkillTools(a.skills)...)
 
 	// Run the tool_use loop.
@@ -317,8 +328,9 @@ const streamDebounce = 500 * time.Millisecond
 // streamState tracks the state of a streaming response to Telegram.
 type streamState struct {
 	chatID    int64
-	msgID     int    // Telegram message ID being edited (0 = not started)
-	text      string // accumulated text so far
+	msgID     int // Telegram message ID being edited (0 = not started, -1 = timeout sentinel)
+	buf       strings.Builder // accumulated text so far
+	runeCount int             // rune count of buf (avoids repeated conversion)
 	lastFlush time.Time
 	mu        sync.Mutex
 	tg        TelegramTransport
@@ -330,15 +342,17 @@ func (ss *streamState) onDelta(delta string) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	ss.text += delta
+	ss.buf.WriteString(delta)
+	ss.runeCount += utf8.RuneCountInString(delta)
 
 	// If accumulated text exceeds Telegram's 4096-char edit limit,
 	// finalize the current message and start a new one for overflow.
-	if len([]rune(ss.text)) > 3900 {
+	if ss.runeCount > 3900 {
 		ss.flush()
 		// Reset for a new message (next flush will create a new one).
 		ss.msgID = 0
-		ss.text = ""
+		ss.buf.Reset()
+		ss.runeCount = 0
 		return
 	}
 
@@ -352,18 +366,19 @@ func (ss *streamState) onDelta(delta string) {
 // flush sends the current accumulated text to Telegram. Must be called
 // with ss.mu held.
 func (ss *streamState) flush() {
-	if ss.text == "" {
+	text := ss.buf.String()
+	if text == "" {
 		return
 	}
 	ss.lastFlush = time.Now()
 
-	if ss.msgID == 0 {
-		// First flush: send a new message and get the ID back.
+	if ss.msgID <= 0 {
+		// First flush (or retry after timeout sentinel -1): send a new message.
 		resultCh := make(chan int, 1)
 		select {
 		case ss.tg.Inbox() <- telegram.OutgoingMessage{
 			ChatID:   ss.chatID,
-			Text:     ss.text,
+			Text:     text,
 			ResultCh: resultCh,
 		}:
 		default:
@@ -385,7 +400,7 @@ func (ss *streamState) flush() {
 		select {
 		case ss.tg.Inbox() <- telegram.OutgoingMessage{
 			ChatID:    ss.chatID,
-			Text:      ss.text,
+			Text:      text,
 			MessageID: ss.msgID,
 		}:
 		default:
@@ -407,7 +422,8 @@ func (ss *streamState) reset() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.msgID = 0
-	ss.text = ""
+	ss.buf.Reset()
+	ss.runeCount = 0
 	ss.lastFlush = time.Time{}
 }
 
@@ -438,11 +454,17 @@ func (a *Actor) toolUseLoop(
 		claudeCancel()
 
 		if err != nil {
-			// If we already streamed partial text, append an error notice.
 			ss.mu.Lock()
-			if ss.msgID != 0 {
-				ss.text += "\n\n[error: response incomplete]"
+			if ss.msgID > 0 {
+				// Already streamed partial text: append error notice.
+				ss.buf.WriteString("\n\n[error: response incomplete]")
 				ss.flush()
+			} else {
+				// No streaming started: send a visible error to the user.
+				a.trySend(telegram.OutgoingMessage{
+					ChatID: chatID,
+					Text:   "[error: failed to get response]",
+				})
 			}
 			ss.mu.Unlock()
 			return fmt.Errorf("claude send: %w", err)
@@ -466,7 +488,7 @@ func (a *Actor) toolUseLoop(
 		// (e.g. OnPartialText not called), send the full text as a fallback.
 		if len(resp.ToolCalls) == 0 {
 			ss.mu.Lock()
-			streamed := ss.msgID != 0
+			streamed := ss.msgID > 0
 			ss.mu.Unlock()
 			if !streamed && resp.TextContent != "" {
 				a.trySend(telegram.OutgoingMessage{
@@ -478,7 +500,7 @@ func (a *Actor) toolUseLoop(
 		}
 
 		// Build the assistant content blocks for the conversation continuation.
-		var assistantBlocks []anthropic.ContentBlockParamUnion
+		assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, 1+len(resp.ToolCalls))
 		if resp.TextContent != "" {
 			assistantBlocks = append(assistantBlocks, anthropic.NewTextBlock(resp.TextContent))
 		}
@@ -487,8 +509,8 @@ func (a *Actor) toolUseLoop(
 		}
 
 		// Execute tool calls and collect results.
-		var toolResultBlocks []anthropic.ContentBlockParamUnion
-		var toolLines []string
+		toolResultBlocks := make([]anthropic.ContentBlockParamUnion, 0, len(resp.ToolCalls))
+		toolLines := make([]string, 0, len(resp.ToolCalls))
 		for _, call := range resp.ToolCalls {
 			// Log tool call before execution.
 			if err := a.store.LogToolCall(convID, call.ID, call.Name, call.Input); err != nil {
@@ -508,22 +530,23 @@ func (a *Actor) toolUseLoop(
 			}
 
 			// Try built-in skill first, then fall back to MCP.
+			// Wrap in IIFE so defer cancels the context at iteration end, not function end.
 			var result string
 			var execErr error
-			if skill := a.skills.Get(call.Name); skill != nil {
+			func() {
 				mcpCtx, mcpCancel := context.WithTimeout(ctx, mcpToolTimeout)
-				skillCtx := skills.WithUser(mcpCtx, skills.UserInfo{UserID: userID, ChatID: chatID})
-				result, execErr = skill.Execute(skillCtx, call.Input)
-				mcpCancel()
-			} else {
-				var args map[string]any
-				if err := json.Unmarshal(call.Input, &args); err != nil {
-					args = map[string]any{"raw": string(call.Input)}
+				defer mcpCancel()
+				if skill := a.skills.Get(call.Name); skill != nil {
+					skillCtx := skills.WithUser(mcpCtx, skills.UserInfo{UserID: userID, ChatID: chatID})
+					result, execErr = skill.Execute(skillCtx, call.Input)
+				} else {
+					var args map[string]any
+					if err := json.Unmarshal(call.Input, &args); err != nil {
+						args = map[string]any{"raw": string(call.Input)}
+					}
+					result, execErr = a.mcp.CallTool(mcpCtx, call.Name, args, userID, chatID)
 				}
-				mcpCtx, mcpCancel := context.WithTimeout(ctx, mcpToolTimeout)
-				result, execErr = a.mcp.CallTool(mcpCtx, call.Name, args, userID, chatID)
-				mcpCancel()
-			}
+			}()
 
 			// Log tool result.
 			resultJSON, marshalErr := json.Marshal(result)
@@ -639,11 +662,15 @@ func (a *Actor) handleWithCLI(
 		// Process may have died; remove it so next message spawns a fresh one.
 		a.cliMgr.Remove(userID, chatID)
 
-		// If we streamed partial text, append error notice.
 		ss.mu.Lock()
-		if ss.msgID != 0 {
-			ss.text += "\n\n[error: response incomplete]"
+		if ss.msgID > 0 {
+			ss.buf.WriteString("\n\n[error: response incomplete]")
 			ss.flush()
+		} else {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: chatID,
+				Text:   "[error: failed to get response]",
+			})
 		}
 		ss.mu.Unlock()
 		return fmt.Errorf("cli send: %w", err)
