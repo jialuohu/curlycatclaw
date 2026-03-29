@@ -460,3 +460,132 @@ func TestReminderActor_CancellationPreventsFireing(t *testing.T) {
 	cancel()
 	<-done
 }
+
+func TestSetReminder_InvalidCronExpression(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	futureTime := time.Now().Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05")
+	input, _ := json.Marshal(setReminderInput{
+		Message:   "Bad cron",
+		FireAt:    futureTime,
+		Recurring: "not a cron expression",
+	})
+
+	_, err := skills["set_reminder"].Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error for invalid cron expression, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid cron expression") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "invalid cron expression")
+	}
+
+	// Verify nothing was inserted into the database.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM reminders`).Scan(&count); err != nil {
+		t.Fatalf("count reminders: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 reminders in DB after invalid cron, got %d", count)
+	}
+}
+
+func TestSetReminder_ValidCronExpression(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	futureTime := time.Now().Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05")
+	input, _ := json.Marshal(setReminderInput{
+		Message:   "Valid cron",
+		FireAt:    futureTime,
+		Recurring: "0 9 * * MON-FRI",
+	})
+
+	result, err := skills["set_reminder"].Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("set_reminder with valid cron: %v", err)
+	}
+	if !strings.Contains(result, "recurring: 0 9 * * MON-FRI") {
+		t.Errorf("result = %q, want it to contain the cron expression", result)
+	}
+
+	// Drain signal.
+	<-signalCh
+}
+
+func TestReminderActor_CancelStopsScheduledJob(t *testing.T) {
+	db := newTestDBSingleConn(t)
+	signalCh := make(chan int64, 16)
+
+	if _, err := InitRemindSkills(db, signalCh, time.UTC); err != nil {
+		t.Fatalf("InitRemindSkills: %v", err)
+	}
+
+	// Insert a one-time reminder that fires 2 seconds from now.
+	futureTime := time.Now().Add(2 * time.Second).UTC()
+	_, err := db.Exec(
+		`INSERT INTO reminders (user_id, chat_id, message, fire_at, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)`,
+		1, 10, "Should not fire", futureTime, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("insert reminder: %v", err)
+	}
+
+	tgInbox := make(chan telegram.OutgoingMessage, 16)
+
+	actorSignalCh := make(chan int64, 16)
+	ra := NewReminderActor(db, tgInbox, time.UTC, actorSignalCh)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ra.Run(ctx)
+	}()
+
+	// Give the actor time to schedule the job.
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify the job was tracked in the actor's map.
+	ra.mu.Lock()
+	_, tracked := ra.jobs[1]
+	ra.mu.Unlock()
+	if !tracked {
+		t.Fatal("expected job to be tracked in actor's jobs map")
+	}
+
+	// Cancel the reminder in the DB and signal the actor.
+	_, err = db.Exec(`UPDATE reminders SET status = 'cancelled' WHERE id = 1`)
+	if err != nil {
+		t.Fatalf("cancel reminder in db: %v", err)
+	}
+	actorSignalCh <- 1
+
+	// Give the actor time to process the cancellation.
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify the job was removed from the actor's map.
+	ra.mu.Lock()
+	_, stillTracked := ra.jobs[1]
+	ra.mu.Unlock()
+	if stillTracked {
+		t.Error("expected job to be removed from actor's jobs map after cancellation")
+	}
+
+	// Wait past the original fire time and verify no message was sent.
+	// The job was scheduled at +2s, we've used ~400ms, wait 3s more to be safe.
+	select {
+	case msg := <-tgInbox:
+		t.Errorf("expected no message after cancellation, but got: %+v", msg)
+	case <-time.After(3 * time.Second):
+		// Good: the cancelled job did not fire.
+	}
+
+	cancel()
+	<-done
+}

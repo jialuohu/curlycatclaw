@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-co-op/gocron/v2"
+	cron "github.com/robfig/cron/v3"
 
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 )
@@ -89,6 +90,11 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 
 		var cronExpr *string
 		if params.Recurring != "" {
+			// Validate the cron expression at input time so the user gets
+			// immediate feedback instead of a silent scheduling failure later.
+			if _, parseErr := cron.ParseStandard(params.Recurring); parseErr != nil {
+				return "", fmt.Errorf("invalid cron expression %q: %w", params.Recurring, parseErr)
+			}
 			cronExpr = &params.Recurring
 		}
 
@@ -333,7 +339,7 @@ func (ra *ReminderActor) handleSignal(ctx context.Context, scheduler gocron.Sche
 	}
 
 	if status == "cancelled" {
-		ra.cancelJob(id)
+		ra.cancelJob(scheduler, id)
 		return
 	}
 
@@ -412,7 +418,7 @@ func (ra *ReminderActor) fireReminder(r reminderRow) {
 }
 
 // cancelJob removes a scheduled job from gocron.
-func (ra *ReminderActor) cancelJob(id int64) {
+func (ra *ReminderActor) cancelJob(scheduler gocron.Scheduler, id int64) {
 	ra.mu.Lock()
 	job, ok := ra.jobs[id]
 	if ok {
@@ -421,8 +427,12 @@ func (ra *ReminderActor) cancelJob(id int64) {
 	ra.mu.Unlock()
 
 	if ok {
-		// gocron v2 jobs are removed by their UUID.
-		slog.Info("reminder: cancelled job", "id", id, "job_id", job.ID())
+		// Actually remove the job from the scheduler so it stops firing.
+		if err := scheduler.RemoveJob(job.ID()); err != nil {
+			slog.Error("reminder: failed to remove job from scheduler", "id", id, "job_id", job.ID(), "err", err)
+		} else {
+			slog.Info("reminder: cancelled job", "id", id, "job_id", job.ID())
+		}
 	}
 }
 
