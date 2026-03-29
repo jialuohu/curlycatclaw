@@ -201,6 +201,54 @@ func TestSearchNotes_EmptyQuery(t *testing.T) {
 	}
 }
 
+func TestSaveNote_TitleTooLong(t *testing.T) {
+	db := newTestDB(t)
+	skills := initNoteSkillsForTest(t, db)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	longTitle := strings.Repeat("a", maxNoteTitleLen+1)
+	input, _ := json.Marshal(saveNoteInput{Title: longTitle, Content: "some content"})
+
+	_, err := skills["save_note"].Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error for title too long, got nil")
+	}
+	if !strings.Contains(err.Error(), "title too long") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "title too long")
+	}
+}
+
+func TestSaveNote_ContentTooLarge(t *testing.T) {
+	db := newTestDB(t)
+	skills := initNoteSkillsForTest(t, db)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	largeContent := strings.Repeat("x", maxNoteContentBytes+1)
+	input, _ := json.Marshal(saveNoteInput{Title: "A Title", Content: largeContent})
+
+	_, err := skills["save_note"].Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error for content too large, got nil")
+	}
+	if !strings.Contains(err.Error(), "content too large") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "content too large")
+	}
+}
+
+func TestSaveNote_TitleAtMaxLen(t *testing.T) {
+	db := newTestDB(t)
+	skills := initNoteSkillsForTest(t, db)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	exactTitle := strings.Repeat("a", maxNoteTitleLen)
+	input, _ := json.Marshal(saveNoteInput{Title: exactTitle, Content: "some content"})
+
+	_, err := skills["save_note"].Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("title at exactly max length should succeed, got: %v", err)
+	}
+}
+
 func TestNotes_UserScoped(t *testing.T) {
 	db := newTestDB(t)
 	skills := initNoteSkillsForTest(t, db)

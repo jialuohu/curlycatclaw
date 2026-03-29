@@ -37,6 +37,9 @@ func makeSemanticSearchExecute(vs *memory.VectorStore) func(ctx context.Context,
 		if params.Limit <= 0 {
 			params.Limit = 5
 		}
+		if params.Limit > 50 {
+			params.Limit = 50
+		}
 
 		user := GetUser(ctx)
 		results, err := vs.Search(ctx, params.Query, user.UserID, params.Limit)

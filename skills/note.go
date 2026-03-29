@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	maxNoteTitleLen    = 500
+	maxNoteContentBytes = 100 << 10 // 100 KB
+)
+
 // InitNoteSkills creates the notes table (if not exists) and returns
 // the save_note and search_notes skills. The db should be the same
 // *sql.DB used by the memory store.
@@ -59,6 +64,12 @@ func makeSaveNoteExecute(db *sql.DB) func(ctx context.Context, input json.RawMes
 		if params.Content == "" {
 			return "", fmt.Errorf("content is required")
 		}
+		if len(params.Title) > maxNoteTitleLen {
+			return "", fmt.Errorf("title too long: %d chars, max %d", len(params.Title), maxNoteTitleLen)
+		}
+		if len(params.Content) > maxNoteContentBytes {
+			return "", fmt.Errorf("content too large: %d bytes, max %d", len(params.Content), maxNoteContentBytes)
+		}
 
 		user := GetUser(ctx)
 		now := time.Now().UTC()
@@ -91,7 +102,7 @@ func makeSearchNotesExecute(db *sql.DB) func(ctx context.Context, input json.Raw
 		user := GetUser(ctx)
 		pattern := "%" + params.Query + "%"
 		rows, err := db.QueryContext(ctx,
-			`SELECT title, content, created_at FROM notes WHERE user_id = ? AND (title LIKE ? OR content LIKE ?) ORDER BY created_at DESC`,
+			`SELECT title, content, created_at FROM notes WHERE user_id = ? AND (title LIKE ? OR content LIKE ?) ORDER BY created_at DESC LIMIT 100`,
 			user.UserID, pattern, pattern,
 		)
 		if err != nil {
