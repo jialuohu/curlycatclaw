@@ -23,7 +23,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 ### Core
 
 - **Telegram-native** — message your bot like you'd message a friend
-- **Claude-powered** — streaming responses with tool use (120s per-request timeout)
+- **Claude-powered** — streaming responses with tool use, direct API or CLI subprocess mode (Claude Max subscription)
 - **Real-time streaming** — text deltas streamed via message edits (500ms debounce), new messages per tool-use round
 - **Image understanding** — send photos, Claude sees them via vision
 
@@ -57,7 +57,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Quick Start
 
-**Prerequisites:** Go 1.25+, a [Telegram bot token](https://t.me/BotFather), and a [Claude API key](https://console.anthropic.com/).
+**Prerequisites:** Go 1.25+, a [Telegram bot token](https://t.me/BotFather), and either a [Claude API key](https://console.anthropic.com/) or the [Claude CLI](https://claude.ai/code) (for Max subscription mode).
 
 ```bash
 # Clone and build
@@ -84,8 +84,10 @@ All config lives in `~/.curlycatclaw/config.toml`. Copy from the example:
 timezone = "America/Los_Angeles"
 
 [claude]
-auth_token = "..."               # OAuth token (preferred)
-# api_key  = "sk-ant-..."       # API key (alternative)
+# Choose ONE auth method:
+# cli_path = "/home/you/.local/bin/claude"  # Claude Max subscription (via CLI subprocess)
+auth_token = "..."               # OAuth token (direct API)
+# api_key  = "sk-ant-..."       # API key (direct API)
 model      = "claude-sonnet-4-6-20250514"
 
 [telegram]
@@ -111,6 +113,18 @@ port    = 8080
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 
+### Using Claude Max Subscription
+
+Instead of paying per API call, you can route through your Claude Max subscription ($100/month unlimited). Set `cli_path` in your config to the `claude` CLI binary:
+
+```toml
+[claude]
+cli_path = "/home/you/.local/bin/claude"
+model = "claude-sonnet-4-6-20250514"
+```
+
+curlycatclaw spawns a long-lived `claude` CLI process per user. The CLI handles OAuth authentication internally. Built-in skills (notes, reminders, facts, search) are exposed to the CLI as MCP tools automatically.
+
 ## Architecture
 
 ### System Overview
@@ -125,8 +139,9 @@ For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex cha
 │  │  Actor   │   │   Actor   │   │   Actor   │         │
 │  └────┬─────┘   └─────┬─────┘   └─────┬─────┘         │
 │       │               │               │               │
-│       │               ├──► Claude API │               │
-│       │               │    (stream + tool_use)        │
+│       │               ├──► Claude      │               │
+│       │               │    Direct API (stream+tools)  │
+│       │               │    OR CLI subprocess (Max)    │
 │       │               │               │               │
 │       │               ├──► Tools      │               │
 │       │               │    Skills / MCP / Wasm        │
