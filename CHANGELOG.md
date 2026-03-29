@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.10.1] - 2026-03-29
+
+Codebase quality sweep: security hardening, correctness fixes, dead code cleanup.
+
+### Fixed
+- **Wasm query result size cap**: 10 MiB limit prevents OOM from unbounded db_read results
+- **Wasm SQL placeholder collision**: `:user_id` inside SQL string literals no longer replaced (quote-aware parser)
+- **Wasm hot-reload race**: Execute closure looks up module by name under RLock instead of capturing stale pointer
+- **Wasm registry name mismatch**: UnloadModule/Close now unregister by skill name (from skill_info), not manifest name
+- **Wasm compiled module leak**: Close() now calls compiled.Close() preventing JIT memory leak on restart
+- **Wasm rows.Err() check**: scan loop now catches silent mid-query database errors
+- **Wasm warning bypass**: scoping warning uses paramCount instead of strings.Contains to prevent bypass via quoted `:user_id`
+- **Config validation**: Budget.Model now required when budget.enabled=true (fail-fast at config load)
+- **VectorStore Close()**: nil guard + double-close protection (nil-out after close)
+
+### Changed
+- Wasm json.Marshal error in hostDBQuery now returns error response instead of empty result
+- subprocess.go BuildUserMessage/BuildImageMessage: documented marshal safety with nolint comments
+- telegram/channel.go comments: "chars" corrected to "runes" (matches utf8.RuneCountInString)
+- skills/fact_test.go: strengthened test assertion (assert result contains "Remembered")
+
 ## [0.10.0] - 2026-03-29
 
 CLI subprocess mode for Claude Max subscription routing.
