@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.10.2] - 2026-03-29
+
+Performance, correctness, and reliability fixes across session actor, skills, and memory.
+
+### Fixed
+- **Streaming msgID sentinel**: all comparison sites now use `<= 0` / `> 0` to handle -1 timeout sentinel (prevents Telegram edit failures with invalid message ID)
+- **Pre-stream error feedback**: users now see `[error: failed to get response]` when Claude errors before streaming starts (both API and CLI paths)
+- **Cancelled reminders still firing**: `cancelJob` now calls `scheduler.RemoveJob` to actually stop gocron jobs
+- **Cron validation**: invalid cron expressions rejected at input time with clear error message
+- **Note input validation**: title capped at 500 chars, content at 100KB, search results at 100
+- **Semantic search limit**: capped at 50 results to prevent resource exhaustion
+
+### Changed
+- **Streaming performance**: replaced string concatenation with `strings.Builder` + rune counter (eliminates O(n^2) copying per response)
+- **Tool schema caching**: parsed MCP tool schemas cached and reused across messages
+- **Tool loop pre-allocation**: slices pre-allocated based on tool call count
+- **Context leak fix**: tool execution wrapped in IIFE for proper per-iteration cancel
+- **Budget cache index**: added `idx_budget_cache_created` for O(log N) cleanup queries
+
 ## [0.10.1] - 2026-03-29
 
 Codebase quality sweep: security hardening, correctness fixes, dead code cleanup.
