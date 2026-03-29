@@ -26,9 +26,10 @@ import (
 )
 
 const (
-	httpTimeout    = 10 * time.Second
-	dbQueryTimeout = 1 * time.Second
-	maxQueryRows   = 100
+	httpTimeout          = 10 * time.Second
+	dbQueryTimeout       = 1 * time.Second
+	maxQueryRows         = 100
+	maxQueryResultBytes  = 10 << 20 // 10 MiB total result size cap
 )
 
 // chatIDCtxKey is used to thread the invoking chat ID through Wasm execution
@@ -60,9 +61,10 @@ func (m *Manifest) hasCapability(cap string) bool {
 // WasmModule holds a compiled wazero module together with its manifest
 // and instantiated module reference.
 type WasmModule struct {
-	manifest *Manifest
-	compiled wazero.CompiledModule
-	instance api.Module
+	manifest  *Manifest
+	compiled  wazero.CompiledModule
+	instance  api.Module
+	skillName string // skill name from skill_info, used for registry unregister
 }
 
 // WasmRuntime manages the lifecycle of wasm skill modules. It compiles
@@ -213,27 +215,35 @@ func (w *WasmRuntime) LoadModule(ctx context.Context, wasmPath string) error {
 
 	// Create the skill and register it.
 	mod := &WasmModule{
-		manifest: manifest,
-		compiled: compiled,
-		instance: instance,
+		manifest:  manifest,
+		compiled:  compiled,
+		instance:  instance,
+		skillName: skillInfo.Name,
 	}
 
+	moduleName := manifest.Name
 	skill := &skills.Skill{
 		Name:        skillInfo.Name,
 		Description: skillInfo.Description,
 		InputSchema: skillInfo.InputSchema,
 		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			w.mu.RLock()
-			defer w.mu.RUnlock()
+			m, ok := w.modules[moduleName]
+			if !ok || m.instance == nil {
+				w.mu.RUnlock()
+				return "", fmt.Errorf("wasm: module %s not loaded", moduleName)
+			}
+			inst := m.instance
+			w.mu.RUnlock()
 			// Thread the invoking chat ID into the Wasm context so
 			// hostSendMessage can validate message scope.
 			user := skills.GetUser(ctx)
 			if user.ChatID == 0 {
-				return "", fmt.Errorf("wasm: no chat context for %s execution", manifest.Name)
+				return "", fmt.Errorf("wasm: no chat context for %s execution", moduleName)
 			}
 			execCtx := context.WithValue(ctx, chatIDCtxKey{}, user.ChatID)
 			execCtx = context.WithValue(execCtx, userIDCtxKey{}, user.UserID)
-			return callSkillExecute(execCtx, instance, input)
+			return callSkillExecute(execCtx, inst, input)
 		},
 	}
 
@@ -260,9 +270,18 @@ func (w *WasmRuntime) UnloadModule(name string) {
 		return
 	}
 
-	w.registry.Unregister(name)
+	// Unregister by skill name (from skill_info), not manifest name,
+	// since the registry key is the skill name set during Register.
+	unregName := name
+	if mod.skillName != "" {
+		unregName = mod.skillName
+	}
+	w.registry.Unregister(unregName)
 	if mod.instance != nil {
 		mod.instance.Close(context.Background())
+	}
+	if mod.compiled != nil {
+		mod.compiled.Close(context.Background())
 	}
 	slog.Info("wasm: module unloaded", "name", name)
 }
@@ -305,7 +324,12 @@ func (w *WasmRuntime) WatchForChanges(ctx context.Context) error {
 
 			if event.Op&(fsnotify.Create|fsnotify.Write) != 0 {
 				slog.Info("wasm: detected change", "file", event.Name, "op", event.Op)
-				// Unload existing version first if present.
+				// Atomic reload: unload then load under a single lock cycle.
+				// UnloadModule acquires and releases write lock, then
+				// LoadModule acquires write lock for registration. The
+				// Execute closure now looks up w.modules by name under
+				// RLock, so a brief nil window between unload and load
+				// returns "module not loaded" instead of nil-deref.
 				w.UnloadModule(name)
 				if err := w.LoadModule(ctx, event.Name); err != nil {
 					slog.Warn("wasm: reload failed", "file", event.Name, "err", err)
@@ -334,7 +358,15 @@ func (w *WasmRuntime) Close() error {
 		if mod.instance != nil {
 			mod.instance.Close(context.Background())
 		}
-		w.registry.Unregister(name)
+		if mod.compiled != nil {
+			mod.compiled.Close(context.Background())
+		}
+		// Unregister by skill name (matches Register key), fall back to map key.
+		unregName := name
+		if mod.skillName != "" {
+			unregName = mod.skillName
+		}
+		w.registry.Unregister(unregName)
 	}
 	w.modules = make(map[string]*WasmModule)
 
@@ -428,8 +460,12 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 	// Extract user ID from execution context for user-scoped queries.
 	userID, _ := ctx.Value(userIDCtxKey{}).(int64)
 
-	// Warn if query touches user-scoped tables without :user_id placeholder.
-	if userScopedTableAccessed(query) && !strings.Contains(query, ":user_id") {
+	// Bind :user_id placeholder if present (only outside string literals).
+	bound, paramCount := replaceOutsideQuotes(query, ":user_id", "?")
+
+	// Warn if query touches user-scoped tables without an effective :user_id binding.
+	// Use paramCount (not strings.Contains) to avoid bypass via :user_id inside quotes.
+	if userScopedTableAccessed(query) && paramCount == 0 {
 		slog.Warn("wasm: db_read query accesses user-scoped table without :user_id filter",
 			"query", query, "user_id", userID)
 	}
@@ -437,12 +473,14 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 	queryCtx, cancel := context.WithTimeout(ctx, dbQueryTimeout)
 	defer cancel()
 
-	// Bind :user_id placeholder if present.
 	var rows *sql.Rows
 	var err error
-	if strings.Contains(query, ":user_id") {
-		bound := strings.ReplaceAll(query, ":user_id", "?")
-		rows, err = w.db.QueryContext(queryCtx, bound, userID)
+	if paramCount > 0 {
+		args := make([]any, paramCount)
+		for i := range args {
+			args[i] = userID
+		}
+		rows, err = w.db.QueryContext(queryCtx, bound, args...)
 	} else {
 		rows, err = w.db.QueryContext(queryCtx, query)
 	}
@@ -462,6 +500,7 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 
 	var results []map[string]any
 	count := 0
+	totalSize := 0
 	for rows.Next() && count < maxQueryRows {
 		values := make([]any, len(columns))
 		valuePtrs := make([]any, len(columns))
@@ -474,12 +513,36 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 		row := make(map[string]any, len(columns))
 		for i, col := range columns {
 			row[col] = values[i]
+			// Approximate size: count bytes for []byte and string values.
+			switch v := values[i].(type) {
+			case []byte:
+				totalSize += len(v)
+			case string:
+				totalSize += len(v)
+			default:
+				totalSize += 8 // fixed-size types
+			}
+		}
+		if totalSize > maxQueryResultBytes {
+			slog.Warn("wasm: db_read result size exceeded", "bytes", totalSize, "limit", maxQueryResultBytes, "user_id", userID)
+			ptr, length := writeString(ctx, mod, marshalError("result size exceeded limit"))
+			return packPtrLen(ptr, length)
 		}
 		results = append(results, row)
 		count++
 	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("wasm: db_read iteration error", "err", err, "user_id", userID)
+		ptr, length := writeString(ctx, mod, marshalError("query failed"))
+		return packPtrLen(ptr, length)
+	}
 
-	data, _ := json.Marshal(results)
+	data, err := json.Marshal(results)
+	if err != nil {
+		slog.Warn("wasm: db_read marshal failed", "err", err, "user_id", userID)
+		ptr, length := writeString(ctx, mod, marshalError("result serialization failed"))
+		return packPtrLen(ptr, length)
+	}
 	ptr, length := writeString(ctx, mod, string(data))
 	return packPtrLen(ptr, length)
 }
@@ -533,7 +596,9 @@ func (w *WasmRuntime) hostSendMessage(ctx context.Context, mod api.Module, ptr, 
 // marshalError produces a properly escaped JSON error string for host function
 // error responses. This avoids injection via unescaped characters in error messages.
 func marshalError(msg string) string {
-	data, _ := json.Marshal(map[string]string{"error": msg})
+	// json.Marshal on map[string]string cannot fail (no special float values,
+	// no cyclic references, no channel/func types). Safe to discard error.
+	data, _ := json.Marshal(map[string]string{"error": msg}) //nolint:errcheck
 	return string(data)
 }
 
@@ -710,6 +775,77 @@ func containsWord(s, word string) bool {
 
 func isWordChar(c byte) bool {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+// replaceOutsideQuotes replaces all occurrences of old with new_ in sql,
+// but only when the occurrence is outside single-quoted or double-quoted
+// string literals. Returns the replaced string and the number of replacements.
+// Uses the same quote-tracking logic as stripSQLComments.
+func replaceOutsideQuotes(sql, old, new_ string) (string, int) {
+	if !strings.Contains(sql, old) {
+		return sql, 0
+	}
+	var b strings.Builder
+	b.Grow(len(sql))
+	count := 0
+	i := 0
+	for i < len(sql) {
+		ch := sql[i]
+
+		// Single-quoted string literal: copy verbatim.
+		if ch == '\'' {
+			b.WriteByte(ch)
+			i++
+			for i < len(sql) {
+				if sql[i] == '\'' {
+					b.WriteByte(sql[i])
+					i++
+					if i < len(sql) && sql[i] == '\'' {
+						b.WriteByte(sql[i])
+						i++
+						continue
+					}
+					break
+				}
+				b.WriteByte(sql[i])
+				i++
+			}
+			continue
+		}
+
+		// Double-quoted identifier: copy verbatim.
+		if ch == '"' {
+			b.WriteByte(ch)
+			i++
+			for i < len(sql) {
+				if sql[i] == '"' {
+					b.WriteByte(sql[i])
+					i++
+					if i < len(sql) && sql[i] == '"' {
+						b.WriteByte(sql[i])
+						i++
+						continue
+					}
+					break
+				}
+				b.WriteByte(sql[i])
+				i++
+			}
+			continue
+		}
+
+		// Check for old string match outside quotes.
+		if i+len(old) <= len(sql) && sql[i:i+len(old)] == old {
+			b.WriteString(new_)
+			i += len(old)
+			count++
+			continue
+		}
+
+		b.WriteByte(ch)
+		i++
+	}
+	return b.String(), count
 }
 
 // stripSQLComments removes -- line comments and /* block */ comments from SQL,

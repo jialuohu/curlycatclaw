@@ -494,6 +494,23 @@ func TestValidate_PopulatedAllowlist(t *testing.T) {
 	}
 }
 
+func TestValidate_BudgetEnabledMissingModel(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Budget:   BudgetConfig{Enabled: true, Model: ""},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for budget enabled without model")
+	}
+	if !strings.Contains(err.Error(), "budget.model") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "budget.model")
+	}
+}
+
 func TestLoad_ShowToolCallsDefault(t *testing.T) {
 	path := writeConfig(t, validTOML)
 

@@ -234,6 +234,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: mcp.servers[%d].command is required", i)
 		}
 	}
+	if c.Budget.Enabled && c.Budget.Model == "" {
+		return fmt.Errorf("config: budget.model is required when budget is enabled")
+	}
 	if c.Vector.Enabled && c.Vector.QdrantAddr == "" {
 		return fmt.Errorf("config: vector.qdrant_addr is required when vector is enabled")
 	}

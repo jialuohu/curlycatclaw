@@ -597,7 +597,7 @@ func BuildUserMessage(text string) json.RawMessage {
 			},
 		},
 	}
-	data, _ := json.Marshal(msg)
+	data, _ := json.Marshal(msg) //nolint:errcheck // marshal of map[string]any with string values cannot fail
 	return data
 }
 
@@ -623,7 +623,7 @@ func BuildImageMessage(text string, images []ImageBlock) json.RawMessage {
 			"content": content,
 		},
 	}
-	data, _ := json.Marshal(msg)
+	data, _ := json.Marshal(msg) //nolint:errcheck // marshal of map[string]any with string values cannot fail
 	return data
 }
 

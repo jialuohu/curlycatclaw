@@ -225,8 +225,14 @@ func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID
 }
 
 // Close tears down the gRPC connection.
+// It is safe to call Close on a zero-value VectorStore or multiple times.
 func (vs *VectorStore) Close() error {
-	return vs.client.Close()
+	if vs.client == nil {
+		return nil
+	}
+	err := vs.client.Close()
+	vs.client = nil
+	return err
 }
 
 // ensureCollection creates a collection if it does not already exist.

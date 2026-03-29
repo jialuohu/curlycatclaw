@@ -90,7 +90,9 @@ func TestForgetFact_Basic(t *testing.T) {
 		t.Fatalf("got %d facts, want 1", len(facts))
 	}
 	factID := facts[0].ID
-	_ = addResult
+	if !strings.Contains(addResult, "Remembered") {
+		t.Errorf("remember_fact result = %q, want it to contain %q", addResult, "Remembered")
+	}
 
 	// Delete it.
 	delInput, _ := json.Marshal(forgetFactInput{FactID: factID})

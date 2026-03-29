@@ -243,3 +243,28 @@ func TestVectorStore_Close(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 }
+
+func TestVectorStore_CloseNil(t *testing.T) {
+	// Close on a zero-value VectorStore (nil client) should return nil.
+	var vs VectorStore
+	if err := vs.Close(); err != nil {
+		t.Fatalf("Close on zero-value VectorStore returned error: %v", err)
+	}
+}
+
+func TestVectorStore_DoubleClose(t *testing.T) {
+	skipIfNoQdrant(t)
+	ctx := context.Background()
+
+	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
+	if err != nil {
+		t.Fatalf("NewVectorStore failed: %v", err)
+	}
+	if err := vs.Close(); err != nil {
+		t.Fatalf("first Close failed: %v", err)
+	}
+	// Second close should not panic and should return nil.
+	if err := vs.Close(); err != nil {
+		t.Fatalf("second Close returned error: %v", err)
+	}
+}
