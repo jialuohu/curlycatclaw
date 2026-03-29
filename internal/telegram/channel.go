@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	// maxMessageLen is Telegram's hard limit per message.
+	// maxMessageLen is Telegram's hard limit per message (in Unicode code points).
 	maxMessageLen = 4096
 
 	// sendInterval is the minimum delay between outgoing messages to stay
@@ -236,11 +236,11 @@ func (ch *Channel) isAllowed(userID int64) bool {
 // sendMessage sends or edits an OutgoingMessage. If MessageID is set, it
 // edits the existing message instead of creating a new one. If ResultCh is
 // set, it sends the message ID of the created/edited message back.
-// For new messages that exceed 4096 chars, it splits into chunks.
+// For new messages that exceed 4096 runes, it splits into chunks.
 func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTick *time.Ticker) {
 	// Edit existing message (streaming update path).
 	if msg.MessageID != 0 {
-		// Telegram edit limit is 4096 chars; truncate if needed.
+		// Telegram edit limit is 4096 runes; truncate if needed.
 		text := msg.Text
 		if utf8.RuneCountInString(text) > maxMessageLen {
 			r := []rune(text)
