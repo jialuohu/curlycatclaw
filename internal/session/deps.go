@@ -60,3 +60,11 @@ type TelegramTransport interface {
 	Inbox() chan<- telegram.OutgoingMessage
 	Updates() <-chan telegram.IncomingMessage
 }
+
+// CLIClient abstracts the CLI subprocess manager for testing.
+type CLIClient interface {
+	GetOrCreate(ctx context.Context, userID, chatID int64, params claude.SpawnParams) (*claude.CLIProcess, error)
+	Remove(userID, chatID int64)
+	Cleanup(maxIdle time.Duration)
+	Shutdown(timeout time.Duration)
+}

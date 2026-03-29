@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/actor"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
@@ -35,6 +36,7 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", defaultConfigPath(), "path to config.toml")
 	versionFlag := flag.Bool("version", false, "print version and exit")
+	mcpServerFlag := flag.Bool("mcp-server", false, "run as MCP stdio server (spawned by claude CLI)")
 	flag.Parse()
 
 	if *versionFlag {
@@ -46,6 +48,15 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
+
+	// MCP server mode: expose skills as MCP tools over stdio.
+	if *mcpServerFlag {
+		if err := runMCPServer(); err != nil {
+			slog.Error("mcp-server fatal", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(*configPath); err != nil {
 		slog.Error("fatal", "err", err)
@@ -97,10 +108,18 @@ func run(configPath string) error {
 		}
 	}
 
-	// Initialize Claude client.
-	authOpt := cfg.Claude.AuthOption()
-	claudeClient := claude.NewClient(authOpt, cfg.Claude.Model)
-	slog.Info("claude client initialized", "model", cfg.Claude.Model)
+	// Initialize Claude client (direct API) or CLI manager (subprocess mode).
+	var claudeClient *claude.Client
+	var cliManager *claude.CLIManager
+	var authOpt option.RequestOption
+	if cfg.Claude.UseCLI() {
+		cliManager = claude.NewCLIManager(cfg.Claude.CLIPath, cfg.Claude.Model)
+		slog.Info("claude CLI manager initialized", "cli", cfg.Claude.CLIPath, "model", cfg.Claude.Model)
+	} else {
+		authOpt = cfg.Claude.AuthOption()
+		claudeClient = claude.NewClient(authOpt, cfg.Claude.Model)
+		slog.Info("claude client initialized", "model", cfg.Claude.Model)
+	}
 
 	// Initialize Telegram channel.
 	tg, err := telegram.NewChannel(cfg.Telegram)
@@ -154,9 +173,9 @@ func run(configPath string) error {
 	}
 	slog.Info("skills registered", "count", len(skillReg.All()))
 
-	// Initialize prompt budget manager (optional).
+	// Initialize prompt budget manager (optional, requires direct API — not available in CLI mode).
 	var budgetMgr *memory.BudgetManager
-	if cfg.Budget.Enabled {
+	if cfg.Budget.Enabled && authOpt != nil {
 		haikuClient := claude.NewClient(authOpt, cfg.Budget.Model)
 		var bmErr error
 		budgetMgr, bmErr = memory.NewBudgetManager(store.DB(), haikuClient, true)
@@ -165,6 +184,8 @@ func run(configPath string) error {
 		} else {
 			slog.Info("budget manager enabled", "model", cfg.Budget.Model)
 		}
+	} else if cfg.Budget.Enabled && cfg.Claude.UseCLI() {
+		slog.Info("budget manager disabled in CLI mode (requires direct API)")
 	}
 
 	// Initialize vector store (optional).
@@ -229,23 +250,27 @@ func run(configPath string) error {
 			skillReg.Register(s)
 		}
 
-		// Create a dedicated client for summarization (may use a different model).
-		sumModel := cfg.Claude.Model
-		if cfg.Memory.SummarizeModel != "" {
-			sumModel = cfg.Memory.SummarizeModel
-		}
-		sumClient := claude.NewClient(authOpt, sumModel)
-		summarizer = memory.NewSummarizer(func(ctx context.Context, system, user string) (string, error) {
-			resp, err := sumClient.Send(ctx, claude.SendParams{
-				SystemPrompt: system,
-				Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(user))},
-				MaxTokens:    512,
-			})
-			if err != nil {
-				return "", err
+		// Create a dedicated client for summarization (requires direct API).
+		if authOpt != nil {
+			sumModel := cfg.Claude.Model
+			if cfg.Memory.SummarizeModel != "" {
+				sumModel = cfg.Memory.SummarizeModel
 			}
-			return resp.TextContent, nil
-		})
+			sumClient := claude.NewClient(authOpt, sumModel)
+			summarizer = memory.NewSummarizer(func(ctx context.Context, system, user string) (string, error) {
+				resp, err := sumClient.Send(ctx, claude.SendParams{
+					SystemPrompt: system,
+					Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(user))},
+					MaxTokens:    512,
+				})
+				if err != nil {
+					return "", err
+				}
+				return resp.TextContent, nil
+			})
+		} else {
+			slog.Info("summarizer disabled in CLI mode (requires direct API)")
+		}
 
 		slog.Info("hierarchical memory enabled", "max_facts", cfg.Memory.MaxFacts)
 	}
@@ -254,7 +279,7 @@ func run(configPath string) error {
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh)
 
 	// Create session actor.
-	sess := session.New(cfg, claudeClient, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, summarizer)
+	sess := session.New(cfg, claudeClient, cliManager, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, summarizer)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
@@ -272,6 +297,23 @@ func run(configPath string) error {
 	// Start health server if enabled.
 	if cfg.Health.Enabled {
 		startHealthServer(ctx, cfg.Health.Port)
+	}
+
+	// CLI manager lifecycle: periodic idle cleanup + graceful shutdown.
+	if cliManager != nil {
+		defer cliManager.Shutdown(30 * time.Second)
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					cliManager.Cleanup(4 * time.Hour) // match conversation expiry
+				}
+			}
+		}()
 	}
 
 	slog.Info("curlycatclaw started")
