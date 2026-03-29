@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.9.0] - 2026-03-28
+
+OAuth Bearer token support, Docker-first deployment, and setup improvements.
+
+### Added
+- OAuth Bearer token authentication via `auth_token` config field (uses SDK `option.WithAuthToken`)
+- `ClaudeConfig.AuthOption()` method for centralized auth option selection
+- Docker Compose as primary deployment option in setup skill
+- Config validation tests for auth mutual exclusion (6 new test cases)
+
+### Changed
+- `NewClient` accepts `option.RequestOption` instead of raw API key string
+- `config.toml.example` shows OAuth token as preferred auth method, API key as alternative
+- README config example updated to OAuth-first
+- Setup skill (`/setup`) presents OAuth token first, Docker Compose as primary deployment
+- `config.sh` accepts either `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`
+- Docker Compose: Qdrant healthcheck uses TCP connect (no wget/curl in container image)
+- Docker Compose: config mounted directly from `~/.curlycatclaw/config.docker.toml`
+
+### Fixed
+- Docker Compose Qdrant healthcheck failure (wget not available in qdrant/qdrant image)
+- Docker Compose removed unused `.env` file dependency
+
 ## [0.8.0] - 2026-03-28
 
 Phase 8 "Streaming, Vision & Hardening." Real-time streaming responses to Telegram, image/photo support via Claude vision, and a comprehensive security + reliability audit fixing 10 verified bugs.
