@@ -802,3 +802,87 @@ func TestReadWasmFile_ValidFile(t *testing.T) {
 		t.Errorf("got %q, want %q", data, content)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// replaceOutsideQuotes
+// ---------------------------------------------------------------------------
+
+func TestReplaceOutsideQuotes(t *testing.T) {
+	tests := []struct {
+		name      string
+		sql       string
+		old       string
+		new_      string
+		wantSQL   string
+		wantCount int
+	}{
+		{
+			name:      "outside quotes",
+			sql:       "SELECT * FROM t WHERE user_id = :user_id",
+			old:       ":user_id",
+			new_:      "?",
+			wantSQL:   "SELECT * FROM t WHERE user_id = ?",
+			wantCount: 1,
+		},
+		{
+			name:      "inside single quotes",
+			sql:       "SELECT * FROM t WHERE note LIKE '%:user_id%'",
+			old:       ":user_id",
+			new_:      "?",
+			wantSQL:   "SELECT * FROM t WHERE note LIKE '%:user_id%'",
+			wantCount: 0,
+		},
+		{
+			name:      "mixed inside and outside",
+			sql:       "SELECT * FROM t WHERE note LIKE '%:user_id%' AND user_id = :user_id",
+			old:       ":user_id",
+			new_:      "?",
+			wantSQL:   "SELECT * FROM t WHERE note LIKE '%:user_id%' AND user_id = ?",
+			wantCount: 1,
+		},
+		{
+			name:      "inside double quotes",
+			sql:       `SELECT * FROM t WHERE ":user_id" = :user_id`,
+			old:       ":user_id",
+			new_:      "?",
+			wantSQL:   `SELECT * FROM t WHERE ":user_id" = ?`,
+			wantCount: 1,
+		},
+		{
+			name:      "multiple outside",
+			sql:       "SELECT * FROM t WHERE a = :user_id AND b = :user_id",
+			old:       ":user_id",
+			new_:      "?",
+			wantSQL:   "SELECT * FROM t WHERE a = ? AND b = ?",
+			wantCount: 2,
+		},
+		{
+			name:      "escaped quote in string",
+			sql:       "SELECT * FROM t WHERE note = 'it''s :user_id' AND id = :user_id",
+			old:       ":user_id",
+			new_:      "?",
+			wantSQL:   "SELECT * FROM t WHERE note = 'it''s :user_id' AND id = ?",
+			wantCount: 1,
+		},
+		{
+			name:      "no match",
+			sql:       "SELECT 1",
+			old:       ":user_id",
+			new_:      "?",
+			wantSQL:   "SELECT 1",
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, count := replaceOutsideQuotes(tt.sql, tt.old, tt.new_)
+			if got != tt.wantSQL {
+				t.Errorf("sql = %q, want %q", got, tt.wantSQL)
+			}
+			if count != tt.wantCount {
+				t.Errorf("count = %d, want %d", count, tt.wantCount)
+			}
+		})
+	}
+}
