@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.10.3] - 2026-03-29
+
+Concurrency, correctness, security, and reliability sweep across 15 files.
+
+### Fixed
+- **Streaming deadlock**: `streamState.flush()` releases mutex during Telegram I/O with `flushing` state flag to prevent duplicate messages and lock contention
+- **CLI subprocess context cancellation**: persistent scan goroutine delivers events via channel, enabling proper `select` on ctx/done/scanCh (previously `scanner.Scan()` blocked context cancellation)
+- **CLI subprocess stdout pipe leak**: `Kill()` now explicitly closes stdout pipe
+- **CLI subprocess spawn cleanup**: deferred cleanup on error paths after `cmd.Start()` prevents zombie processes
+- **AppendMessage atomicity**: INSERT + UPDATE now wrapped in a single transaction
+- **Budget fallback caching**: LLM classification fallback "full" no longer cached permanently (prevents stale cache entries from transient LLM failures)
+- **UTF-8 truncation**: fact sanitization and summarizer transcript truncation use rune-based slicing (prevents invalid UTF-8 from split multi-byte characters)
+- **Wasm SQL scoping enforced**: `hostDBQuery()` now rejects (not just warns) queries on user-scoped tables without `:user_id` binding
+- **Wasm UNION/INTERSECT/EXCEPT blocked**: `isSelectOnly()` prevents set-operation bypasses of user scoping
+- **Wasm table detection**: `userScopedTableAccessed()` strips SQL comments and uses word-boundary matching (prevents false positives from comments and substrings)
+- **Remind signal timeout**: set/cancel now block up to 5s with error on timeout (previously silently dropped signals)
+- **Remind cancel error message**: corrected copy-paste error in cancel timeout message
+- **Signal handler leak**: goroutine exits cleanly on shutdown via `shutdownComplete` channel
+- **CLI cleanup ordering**: cleanup goroutine waits before `Shutdown()` to avoid races
+
+### Changed
+- **Indexing semaphore**: vector indexing, summarization, and fact updates bounded by 10-slot semaphore (prevents goroutine accumulation under load)
+- **Config validation**: embedder type validated at config load (fnv/ollama/voyage with required fields)
+- **Dead code removed**: unused `CLIProcess.scanner` struct field removed after scanCh refactor
+
 ## [0.10.2] - 2026-03-29
 
 Performance, correctness, and reliability fixes across session actor, skills, and memory.
