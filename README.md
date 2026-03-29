@@ -38,7 +38,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio
 - **Built-in skills** — web search, notes, reminders, semantic search, persistent user facts
-- **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security
+- **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security, 10 MiB query result cap, quote-aware SQL parameter binding, atomic hot-reload
 
 ### Operations
 
@@ -52,7 +52,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - **Landlock sandbox** — Linux filesystem restriction (opt-in)
 - **Encrypted credentials** — AES-256-GCM for MCP server secrets
-- **Secure defaults** — empty allowlist = no access, MCP env filtering, Wasm SSRF/DNS-rebinding protection, 50 MiB module cap
+- **Secure defaults** — empty allowlist = no access, MCP env filtering, Wasm SSRF/DNS-rebinding protection, 50 MiB module cap, config fail-fast validation
 - **Tool transparency** — see what tools Claude calls; confirmation prompts for sensitive operations
 
 ## Quick Start
