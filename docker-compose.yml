@@ -4,8 +4,7 @@ services:
     restart: unless-stopped
     volumes:
       - curlycatclaw-data:/data
-    env_file:
-      - .env
+      - ~/.curlycatclaw/config.docker.toml:/data/config.toml:ro
     depends_on:
       qdrant:
         condition: service_healthy
@@ -24,7 +23,7 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
       interval: 10s
       timeout: 3s
       retries: 3

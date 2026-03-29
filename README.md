@@ -84,8 +84,9 @@ All config lives in `~/.curlycatclaw/config.toml`. Copy from the example:
 timezone = "America/Los_Angeles"
 
 [claude]
-api_key = "sk-ant-..."
-model   = "claude-sonnet-4-6-20250514"
+auth_token = "..."               # OAuth token (preferred)
+# api_key  = "sk-ant-..."       # API key (alternative)
+model      = "claude-sonnet-4-6-20250514"
 
 [telegram]
 token = "123456:ABC-DEF..."

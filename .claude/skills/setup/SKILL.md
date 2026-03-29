@@ -37,10 +37,10 @@ Before asking for anything, explain what curlycatclaw is:
 > conversations + memories in SQLite with Qdrant for semantic search.
 >
 > This setup will install the curlycatclaw binary, start a Qdrant vector database
-> (via Docker), configure your API keys, and verify everything works.
+> (via Docker), configure your credentials, and verify everything works.
 >
 > You'll need three things ready:
-> 1. An **Anthropic API key** (from console.anthropic.com)
+> 1. An **Anthropic OAuth token** or **API key** (from console.anthropic.com)
 > 2. A **Telegram bot token** (from @BotFather)
 > 3. Your **Telegram user ID** (from @userinfobot)
 
@@ -145,15 +145,18 @@ If start fails, check:
 Ask for each credential one at a time in plain text. Trim whitespace from the user's
 response before validating.
 
-**4a. Anthropic API key**
+**4a. Anthropic authentication**
 
-Say: "Paste your Anthropic API key. Get one at https://console.anthropic.com/settings/keys
-if you don't have one. It starts with `sk-ant-`."
+Say: "Paste your Anthropic OAuth token or API key. Get one at https://console.anthropic.com/settings/keys
+if you don't have one.
+- OAuth tokens are preferred (paste the token value directly)
+- API keys start with `sk-ant-`"
 
 Wait for user response. Validate:
 - Trim leading/trailing whitespace
-- Must start with `sk-ant-`
-- If invalid: "That doesn't look like an Anthropic API key (should start with sk-ant-). Try again."
+- If starts with `sk-ant-`: treat as API key, store as `ANTHROPIC_API_KEY`
+- Otherwise: treat as OAuth token, store as `ANTHROPIC_AUTH_TOKEN`
+- If empty: "Please paste a valid token or API key. Try again."
 
 **4b. Telegram bot token**
 
@@ -193,14 +196,17 @@ Write credentials to a temp file (secure, not visible in process list):
 CREDS_FILE=$(mktemp /tmp/curlycatclaw-creds-XXXXXXXX.tmp)
 chmod 600 "$CREDS_FILE"
 cat > "$CREDS_FILE" << 'EOF'
-ANTHROPIC_API_KEY=<collected key>
+ANTHROPIC_AUTH_TOKEN=<collected OAuth token, if applicable>
+ANTHROPIC_API_KEY=<collected API key, if applicable>
 TELEGRAM_TOKEN=<collected token>
 TELEGRAM_USER_ID=<collected user id>
 EOF
 ```
 
 **Important:** Replace the `<collected ...>` placeholders with the actual values the
-user provided. Use the Write tool to create the temp file, or a heredoc in Bash.
+user provided. Include only the auth field that applies (ANTHROPIC_AUTH_TOKEN for OAuth
+tokens, ANTHROPIC_API_KEY for API keys starting with `sk-ant-`). Use the Write tool
+to create the temp file, or a heredoc in Bash.
 
 Then run config.sh:
 
@@ -220,12 +226,38 @@ the config file, then proceed.
 
 Use AskUserQuestion: "How do you want to run curlycatclaw?"
 
-**If `SYSTEMD_AVAILABLE=true` and `OS=linux`:**
-- A) Foreground (for testing, run in a separate terminal)
-- B) systemd service (persistent, auto-starts on boot)
+**If `DOCKER=running` or `DOCKER=installed_not_running`:**
+- A) Docker Compose (recommended, persistent, manages Qdrant too)
+- B) Foreground (for testing, run in a separate terminal)
+- C) systemd service (if `SYSTEMD_AVAILABLE=true` and `OS=linux`)
 
 **Otherwise:**
 - A) Foreground (run in a separate terminal)
+- B) systemd service (if `SYSTEMD_AVAILABLE=true` and `OS=linux`)
+
+**If Docker Compose (A with Docker):**
+
+Generate a Docker-specific config file at `~/.curlycatclaw/config.docker.toml` that
+uses `/data/curlycatclaw.db` for db_path and `qdrant:6334` for qdrant_addr. Mount it
+into the container. Then:
+
+```bash
+docker compose up -d --build
+```
+
+Wait for health check:
+```bash
+for i in $(seq 1 60); do
+  if docker compose ps | grep -q "healthy"; then
+    echo "Health check passed!"
+    break
+  fi
+  sleep 2
+done
+```
+
+If health check passes, proceed to Step 7. If timeout, check logs:
+`docker compose logs curlycatclaw`.
 
 **If Foreground (A):**
 

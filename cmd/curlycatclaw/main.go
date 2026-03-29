@@ -98,7 +98,8 @@ func run(configPath string) error {
 	}
 
 	// Initialize Claude client.
-	claudeClient := claude.NewClient(cfg.Claude.APIKey, cfg.Claude.Model)
+	authOpt := cfg.Claude.AuthOption()
+	claudeClient := claude.NewClient(authOpt, cfg.Claude.Model)
 	slog.Info("claude client initialized", "model", cfg.Claude.Model)
 
 	// Initialize Telegram channel.
@@ -156,7 +157,7 @@ func run(configPath string) error {
 	// Initialize prompt budget manager (optional).
 	var budgetMgr *memory.BudgetManager
 	if cfg.Budget.Enabled {
-		haikuClient := claude.NewClient(cfg.Claude.APIKey, cfg.Budget.Model)
+		haikuClient := claude.NewClient(authOpt, cfg.Budget.Model)
 		var bmErr error
 		budgetMgr, bmErr = memory.NewBudgetManager(store.DB(), haikuClient, true)
 		if bmErr != nil {
@@ -233,7 +234,7 @@ func run(configPath string) error {
 		if cfg.Memory.SummarizeModel != "" {
 			sumModel = cfg.Memory.SummarizeModel
 		}
-		sumClient := claude.NewClient(cfg.Claude.APIKey, sumModel)
+		sumClient := claude.NewClient(authOpt, sumModel)
 		summarizer = memory.NewSummarizer(func(ctx context.Context, system, user string) (string, error) {
 			resp, err := sumClient.Send(ctx, claude.SendParams{
 				SystemPrompt: system,

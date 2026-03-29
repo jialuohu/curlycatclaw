@@ -53,7 +53,7 @@ func newErrorServer(t *testing.T, statusCode int, body string) *httptest.Server 
 
 // testClient builds a *Client pointing at the given base URL.
 func testClient(baseURL string) *Client {
-	return NewClient("test-key", "claude-sonnet-4-6-20250514",
+	return NewClient(option.WithAPIKey("test-key"), "claude-sonnet-4-6-20250514",
 		option.WithBaseURL(baseURL),
 	)
 }

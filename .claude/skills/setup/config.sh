@@ -6,9 +6,11 @@
 # Usage: bash config.sh /path/to/creds.tmp
 #
 # The creds file must contain key=value lines:
-#   ANTHROPIC_API_KEY=sk-ant-...
+#   ANTHROPIC_AUTH_TOKEN=... (OAuth token, preferred)
+#   ANTHROPIC_API_KEY=sk-ant-... (API key, alternative)
 #   TELEGRAM_TOKEN=123456:ABC...
 #   TELEGRAM_USER_ID=123456789
+# Provide exactly one of ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY.
 set -euo pipefail
 
 CREDS_FILE="${1:-}"
@@ -22,6 +24,7 @@ trap 'rm -f "$CREDS_FILE"' EXIT
 
 # Read credentials from file
 ANTHROPIC_API_KEY=""
+ANTHROPIC_AUTH_TOKEN=""
 TELEGRAM_TOKEN=""
 TELEGRAM_USER_ID=""
 while IFS='=' read -r key value; do
@@ -31,15 +34,20 @@ while IFS='=' read -r key value; do
   # Trim whitespace (use printf to avoid echo flag interpretation on values starting with -)
   value=$(printf '%s' "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   case "$key" in
-    ANTHROPIC_API_KEY) ANTHROPIC_API_KEY="$value" ;;
-    TELEGRAM_TOKEN)    TELEGRAM_TOKEN="$value" ;;
-    TELEGRAM_USER_ID)  TELEGRAM_USER_ID="$value" ;;
+    ANTHROPIC_API_KEY)    ANTHROPIC_API_KEY="$value" ;;
+    ANTHROPIC_AUTH_TOKEN) ANTHROPIC_AUTH_TOKEN="$value" ;;
+    TELEGRAM_TOKEN)       TELEGRAM_TOKEN="$value" ;;
+    TELEGRAM_USER_ID)     TELEGRAM_USER_ID="$value" ;;
   esac
 done < "$CREDS_FILE"
 
-# Validate required fields
-if [ -z "$ANTHROPIC_API_KEY" ]; then
-  echo "ERROR: ANTHROPIC_API_KEY not found in credentials file" >&2
+# Validate required fields: need exactly one of API key or auth token
+if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
+  echo "ERROR: either ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY required in credentials file" >&2
+  exit 1
+fi
+if [ -n "$ANTHROPIC_API_KEY" ] && [ -n "$ANTHROPIC_AUTH_TOKEN" ]; then
+  echo "ERROR: provide either ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY, not both" >&2
   exit 1
 fi
 if [ -z "$TELEGRAM_TOKEN" ]; then
@@ -56,7 +64,8 @@ if ! [[ "$TELEGRAM_USER_ID" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 # Reject double-quotes in credential values (prevents TOML injection)
-if [[ "$ANTHROPIC_API_KEY" == *'"'* ]] || [[ "$TELEGRAM_TOKEN" == *'"'* ]]; then
+_AUTH_VALUE="${ANTHROPIC_AUTH_TOKEN:-$ANTHROPIC_API_KEY}"
+if [[ "$_AUTH_VALUE" == *'"'* ]] || [[ "$TELEGRAM_TOKEN" == *'"'* ]]; then
   echo "ERROR: credential values must not contain double-quote characters" >&2
   exit 1
 fi
@@ -89,7 +98,7 @@ cat > "$CONFIG_PATH" << TOML_EOF
 timezone = "$TIMEZONE"
 
 [claude]
-api_key = "$ANTHROPIC_API_KEY"
+$(if [ -n "$ANTHROPIC_AUTH_TOKEN" ]; then echo "auth_token = \"$ANTHROPIC_AUTH_TOKEN\""; else echo "api_key = \"$ANTHROPIC_API_KEY\""; fi)
 model   = "claude-sonnet-4-6-20250514"
 
 [telegram]

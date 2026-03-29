@@ -55,13 +55,12 @@ type Client struct {
 	opts  []option.RequestOption
 }
 
-// NewClient creates a new Claude client. The apiKey is the Anthropic API key;
-// model is the model identifier (e.g. "claude-sonnet-4-6-20250514"). Extra
-// SDK options can be supplied for testing (e.g. option.WithBaseURL).
-func NewClient(apiKey string, model string, extraOpts ...option.RequestOption) *Client {
-	opts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
-	}
+// NewClient creates a new Claude client. The authOpt should be either
+// option.WithAPIKey or option.WithAuthToken; model is the model identifier
+// (e.g. "claude-sonnet-4-6-20250514"). Extra SDK options can be supplied
+// for testing (e.g. option.WithBaseURL).
+func NewClient(authOpt option.RequestOption, model string, extraOpts ...option.RequestOption) *Client {
+	opts := []option.RequestOption{authOpt}
 	opts = append(opts, extraOpts...)
 
 	return &Client{

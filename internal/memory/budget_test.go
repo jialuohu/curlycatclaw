@@ -64,7 +64,7 @@ func newErrorSSEServer(t *testing.T, statusCode int) *httptest.Server {
 
 // newTestHaikuClient creates a Claude client pointing at the test server.
 func newTestHaikuClient(baseURL string) *claude.Client {
-	return claude.NewClient("test-key", "claude-haiku-4-5-20251001",
+	return claude.NewClient(option.WithAPIKey("test-key"), "claude-haiku-4-5-20251001",
 		option.WithBaseURL(baseURL),
 	)
 }

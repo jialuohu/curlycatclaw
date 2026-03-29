@@ -1,8 +1,10 @@
 timezone = "America/Los_Angeles"
 
 [claude]
-api_key = "sk-ant-..."
-model   = "claude-sonnet-4-6-20250514"
+# Authentication: provide exactly one of auth_token or api_key.
+auth_token = ""              # OAuth token (preferred, from console.anthropic.com)
+# api_key  = "sk-ant-..."   # API key (alternative)
+model      = "claude-sonnet-4-6-20250514"
 
 [telegram]
 token = "123456:ABC-DEF..."

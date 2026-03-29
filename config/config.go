@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
 // Config holds all application configuration.
@@ -28,8 +29,18 @@ type Config struct {
 }
 
 type ClaudeConfig struct {
-	APIKey string `toml:"api_key"`
-	Model  string `toml:"model"`
+	APIKey    string `toml:"api_key"`
+	AuthToken string `toml:"auth_token"`
+	Model     string `toml:"model"`
+}
+
+// AuthOption returns the SDK request option for the configured auth method.
+// Call only after validation ensures exactly one of APIKey or AuthToken is set.
+func (c *ClaudeConfig) AuthOption() option.RequestOption {
+	if c.AuthToken != "" {
+		return option.WithAuthToken(c.AuthToken)
+	}
+	return option.WithAPIKey(c.APIKey)
 }
 
 type TGConfig struct {
@@ -183,8 +194,13 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if c.Claude.APIKey == "" {
-		return fmt.Errorf("config: claude.api_key is required")
+	hasAPIKey := c.Claude.APIKey != ""
+	hasAuthToken := c.Claude.AuthToken != ""
+	if !hasAPIKey && !hasAuthToken {
+		return fmt.Errorf("config: claude section requires either api_key or auth_token")
+	}
+	if hasAPIKey && hasAuthToken {
+		return fmt.Errorf("config: claude section cannot have both api_key and auth_token")
 	}
 	if c.Telegram.Token == "" {
 		return fmt.Errorf("config: telegram.token is required")
