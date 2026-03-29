@@ -30,7 +30,8 @@ Test expectations:
 - **Actor model**: each component (Telegram, session, etc.) runs in its own goroutine with typed message channels
 - **Supervision**: panic/recover with exponential backoff, resets after 60s healthy run, WaitGroup drain with 30s timeout on shutdown, configurable via `SupervisorConfig` (initial/max backoff, healthy period)
 - **Health endpoint**: `GET /health` on 127.0.0.1, enabled by default via `[health]` config, returns 200/503 based on context cancellation, used by Docker healthcheck
-- **Claude client**: streaming + tool_use state machine, 120s per-request timeout, `OnPartialText` callback for real-time streaming
+- **Claude client**: two modes — (1) direct API via Go SDK (streaming + tool_use state machine, 120s timeout, `OnPartialText` callback) or (2) CLI subprocess mode via `CLIManager` (long-lived `claude` process per user, stream-json protocol, enables Claude Max subscription)
+- **CLI subprocess**: spawns `claude --print --input-format stream-json --output-format stream-json --bare` per user; CLI handles auth, LLM calls, and tool execution via MCP; curlycatclaw parses events for Telegram streaming and SQLite logging
 - **Streaming responses**: text deltas streamed to Telegram via message edits (500ms debounce), tool_use transitions start new messages, error mid-stream appends notice
 - **Image support**: Telegram photos downloaded by channel actor, sent to Claude as base64 image blocks, stored as file_id references (not inline)
 - **MCP manager**: persistent stdio server connections, tool namespacing (server__tool), allowlist-based env filtering, user context injection
@@ -56,7 +57,9 @@ Test expectations:
 | `config/config.go` | TOML config struct, defaults, validation |
 | `internal/session/actor.go` | Central session actor wiring everything together |
 | `internal/session/deps.go` | Testability interfaces (LLMClient, MessageStore, etc.) |
-| `internal/claude/client.go` | Claude API streaming + non-streaming client |
+| `internal/claude/client.go` | Claude API streaming + non-streaming client (direct mode) |
+| `internal/claude/subprocess.go` | CLI subprocess manager + stream-json parser (CLI mode) |
+| `cmd/curlycatclaw/mcp_server.go` | MCP stdio server exposing built-in skills |
 | `internal/telegram/channel.go` | Telegram channel actor |
 | `internal/memory/store.go` | SQLite storage |
 | `internal/mcp/manager.go` | MCP server lifecycle |
@@ -75,7 +78,9 @@ Test expectations:
 
 ## Configuration
 
-Copy `config.toml.example` to `~/.curlycatclaw/config.toml` and fill in API keys.
+Copy `config.toml.example` to `~/.curlycatclaw/config.toml` and fill in credentials.
+
+Three auth modes: `cli_path` (Claude Max subscription via CLI subprocess), `auth_token` (OAuth), or `api_key` (direct API). Set exactly one in `[claude]`.
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 
