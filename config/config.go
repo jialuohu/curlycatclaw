@@ -240,6 +240,20 @@ func (c *Config) validate() error {
 	if c.Vector.Enabled && c.Vector.QdrantAddr == "" {
 		return fmt.Errorf("config: vector.qdrant_addr is required when vector is enabled")
 	}
+	if c.Vector.Enabled {
+		switch c.Vector.Embedder {
+		case "fnv", "":
+			// fnv is the default, no external config needed
+		case "ollama":
+			// ollama_url has a default, no required field
+		case "voyage":
+			if c.Vector.VoyageKey == "" {
+				return fmt.Errorf("config: vector.voyage_api_key is required when embedder is \"voyage\"")
+			}
+		default:
+			return fmt.Errorf("config: vector.embedder must be \"fnv\", \"ollama\", or \"voyage\", got %q", c.Vector.Embedder)
+		}
+	}
 	if c.Wasm.Enabled && c.Wasm.SkillsDir == "" {
 		return fmt.Errorf("config: wasm.skills_dir is required when wasm is enabled")
 	}

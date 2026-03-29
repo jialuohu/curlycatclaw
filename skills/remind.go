@@ -109,10 +109,13 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 		id, _ := res.LastInsertId()
 
 		// Signal the actor to pick up the new reminder.
+		signalTimer := time.NewTimer(5 * time.Second)
+		defer signalTimer.Stop()
 		select {
 		case signalCh <- id:
-		default:
-			slog.Warn("remind signal channel full, actor will pick up on next cycle", "id", id)
+		case <-signalTimer.C:
+			slog.Error("remind signal channel full after 5s", "id", id)
+			return "", fmt.Errorf("reminder saved but scheduler is unresponsive; it will activate on next restart")
 		}
 
 		localTime := fireAtUTC.In(loc).Format("2006-01-02 15:04")
@@ -217,10 +220,13 @@ func makeCancelReminderExecute(db *sql.DB, signalCh chan<- int64) func(ctx conte
 		}
 
 		// Signal the actor to cancel the scheduled job.
+		signalTimer := time.NewTimer(5 * time.Second)
+		defer signalTimer.Stop()
 		select {
 		case signalCh <- params.ID:
-		default:
-			slog.Warn("remind signal channel full", "id", params.ID)
+		case <-signalTimer.C:
+			slog.Error("remind signal channel full after 5s", "id", params.ID)
+			return "", fmt.Errorf("reminder #%d cancelled in database but scheduler did not acknowledge; it may still fire once", params.ID)
 		}
 
 		return fmt.Sprintf("Reminder #%d cancelled", params.ID), nil

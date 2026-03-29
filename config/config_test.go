@@ -523,3 +523,50 @@ func TestLoad_ShowToolCallsDefault(t *testing.T) {
 		t.Error("ShowToolCalls should default to true")
 	}
 }
+
+func TestValidate_VectorVoyageMissingKey(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Vector:   VectorConfig{Enabled: true, QdrantAddr: "localhost:6334", Embedder: "voyage"},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for voyage embedder without voyage_api_key")
+	}
+	if !strings.Contains(err.Error(), "voyage_api_key") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "voyage_api_key")
+	}
+}
+
+func TestValidate_VectorUnknownEmbedder(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Vector:   VectorConfig{Enabled: true, QdrantAddr: "localhost:6334", Embedder: "openai"},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for unknown embedder type")
+	}
+	if !strings.Contains(err.Error(), `got "openai"`) {
+		t.Errorf("error = %q, want it to contain the unknown embedder name", err.Error())
+	}
+}
+
+func TestValidate_VectorVoyageValid(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Vector:   VectorConfig{Enabled: true, QdrantAddr: "localhost:6334", Embedder: "voyage", VoyageKey: "vk-test"},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate with voyage + api key should succeed, got: %v", err)
+	}
+}
