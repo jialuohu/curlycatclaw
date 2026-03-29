@@ -41,9 +41,9 @@ Test expectations:
 - **Conversation archival**: async summarization on conversation expiry (>4h idle), crash recovery via `summarization_status` tracking, dedicated `curlycatclaw_summaries` Qdrant collection
 - **Budget manager**: Haiku-powered context classification (keyword fast-path + cache + LLM), budget-aware context building via `BuildContextWithBudget`, opt-in
 - **Vector search**: Qdrant gRPC for semantic search, pluggable Embedder interface (FNV offline / Ollama local / Voyage AI paid), configurable search timeout via `vector_search_timeout_seconds` (default 5s)
-- **Config validation**: startup validation of required fields (db_path, MCP server name/command, qdrant_addr when vector enabled, wasm skills_dir when wasm enabled, health port range)
+- **Config validation**: startup validation of required fields (db_path, MCP server name/command, qdrant_addr when vector enabled, wasm skills_dir when wasm enabled, health port range, budget.model when budget enabled)
 - **Skills**: built-in Go skills (search, note, remind, semantic_search, remember_fact, forget_fact, list_facts) + Wasm plugin runtime
-- **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload, chat-scoped send_message, db_read user scoping via `:user_id` placeholder, HTTP private IP blocklist (SSRF prevention), connect-time IP verification (DNS rebinding protection), sanitized DB errors, 50 MiB module size cap
+- **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload (atomic reload with map-based Execute lookup), chat-scoped send_message, db_read user scoping via `:user_id` placeholder (quote-aware replacement, 10 MiB result size cap, rows.Err check), HTTP private IP blocklist (SSRF prevention), connect-time IP verification (DNS rebinding protection), sanitized DB errors, 50 MiB module size cap, compiled module cleanup on unload, skill-name-based registry unregister
 - **Tool transparency**: `[tool]` lines sent to user in Telegram, opt-out via `show_tool_calls`
 - **Tool confirmation**: `confirm_tools` prefix list for sensitive operations, stateless via Claude re-ask
 - **Logging**: configurable level/format/file via `[logging]` config, lumberjack rotation
