@@ -29,13 +29,20 @@ type Config struct {
 }
 
 type ClaudeConfig struct {
-	APIKey    string `toml:"api_key"`
-	AuthToken string `toml:"auth_token"`
+	CLIPath   string `toml:"cli_path"`   // path to claude binary (CLI subprocess mode)
+	APIKey    string `toml:"api_key"`    // direct API mode
+	AuthToken string `toml:"auth_token"` // direct API mode (OAuth)
 	Model     string `toml:"model"`
+}
+
+// UseCLI returns true if CLI subprocess mode is configured.
+func (c *ClaudeConfig) UseCLI() bool {
+	return c.CLIPath != ""
 }
 
 // AuthOption returns the SDK request option for the configured auth method.
 // Call only after validation ensures exactly one of APIKey or AuthToken is set.
+// Not used in CLI mode.
 func (c *ClaudeConfig) AuthOption() option.RequestOption {
 	if c.AuthToken != "" {
 		return option.WithAuthToken(c.AuthToken)
@@ -194,12 +201,16 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	hasCLI := c.Claude.CLIPath != ""
 	hasAPIKey := c.Claude.APIKey != ""
 	hasAuthToken := c.Claude.AuthToken != ""
-	if !hasAPIKey && !hasAuthToken {
-		return fmt.Errorf("config: claude section requires either api_key or auth_token")
+	if !hasCLI && !hasAPIKey && !hasAuthToken {
+		return fmt.Errorf("config: claude section requires cli_path, api_key, or auth_token")
 	}
-	if hasAPIKey && hasAuthToken {
+	if hasCLI && (hasAPIKey || hasAuthToken) {
+		return fmt.Errorf("config: claude.cli_path cannot be combined with api_key or auth_token")
+	}
+	if !hasCLI && hasAPIKey && hasAuthToken {
 		return fmt.Errorf("config: claude section cannot have both api_key and auth_token")
 	}
 	if c.Telegram.Token == "" {

@@ -123,8 +123,8 @@ token = "tok"
 	if err == nil {
 		t.Fatal("Load without api_key or auth_token should return an error")
 	}
-	if !strings.Contains(err.Error(), "api_key or auth_token") {
-		t.Errorf("error = %q, want it to mention %q", err.Error(), "api_key or auth_token")
+	if !strings.Contains(err.Error(), "cli_path") && !strings.Contains(err.Error(), "api_key") {
+		t.Errorf("error = %q, want it to mention auth options", err.Error())
 	}
 }
 
@@ -249,8 +249,8 @@ func TestValidate_MissingAuth(t *testing.T) {
 	if err == nil {
 		t.Fatal("validate with no auth should return an error")
 	}
-	if !strings.Contains(err.Error(), "api_key or auth_token") {
-		t.Errorf("error = %q, want it to mention %q", err.Error(), "api_key or auth_token")
+	if !strings.Contains(err.Error(), "cli_path") && !strings.Contains(err.Error(), "api_key") {
+		t.Errorf("error = %q, want it to mention auth options", err.Error())
 	}
 }
 

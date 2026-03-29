@@ -1,10 +1,18 @@
 timezone = "America/Los_Angeles"
 
 [claude]
-# Authentication: provide exactly one of auth_token or api_key.
-auth_token = ""              # OAuth token (preferred, from console.anthropic.com)
-# api_key  = "sk-ant-..."   # API key (alternative)
-model      = "claude-sonnet-4-6-20250514"
+# Choose ONE authentication method:
+#
+# Option 1: CLI subprocess mode (uses Claude Max subscription via claude CLI).
+# cli_path = "/home/you/.local/bin/claude"
+#
+# Option 2: Direct API with OAuth token.
+# auth_token = ""
+#
+# Option 3: Direct API with API key.
+# api_key  = "sk-ant-..."
+#
+model = "claude-sonnet-4-6-20250514"
 
 [telegram]
 token = "123456:ABC-DEF..."

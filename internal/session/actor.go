@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +33,7 @@ const (
 type Actor struct {
 	cfg    *config.Config
 	claude LLMClient
+	cliMgr CLIClient // non-nil when using CLI subprocess mode
 	tg     TelegramTransport
 	mcp    ToolRouter
 	store  MessageStore
@@ -53,10 +56,12 @@ type Actor struct {
 	indexSeq atomic.Uint64
 }
 
-// New creates a new session actor.
+// New creates a new session actor. Either claudeClient or cliMgr should be
+// non-nil (CLI subprocess mode uses cliMgr, direct API mode uses claudeClient).
 func New(
 	cfg *config.Config,
 	claudeClient *claude.Client,
+	cliMgr CLIClient,
 	tg *telegram.Channel,
 	mcpMgr *mcp.Manager,
 	store *memory.Store,
@@ -77,6 +82,7 @@ func New(
 	return &Actor{
 		cfg:         cfg,
 		claude:      claudeClient,
+		cliMgr:      cliMgr,
 		tg:          tg,
 		mcp:         mcpMgr,
 		store:       store,
@@ -175,7 +181,15 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 		}()
 	}
 
-	// Build context from conversation history (budget-aware if BudgetManager is set).
+	// Build system prompt with timezone, user facts, and relevant summaries.
+	systemPrompt := a.buildSystemPrompt(msg.UserID, msg.ChatID, msg.Text)
+
+	// CLI subprocess mode: delegate to claude CLI which handles the agent loop.
+	if a.cliMgr != nil {
+		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos, systemPrompt)
+	}
+
+	// Direct API mode: build context and run the tool_use loop.
 	history, err := a.ctxb.BuildContextWithBudget(ctx, convID, msg.Text)
 	if err != nil {
 		return fmt.Errorf("build context: %w", err)
@@ -200,9 +214,6 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 		// Replace the last user message with our multimodal one.
 		messages[len(messages)-1] = anthropic.NewUserMessage(blocks...)
 	}
-
-	// Build system prompt with timezone, user facts, and relevant summaries.
-	systemPrompt := a.buildSystemPrompt(msg.UserID, msg.ChatID, msg.Text)
 
 	// Collect all tools: MCP tools + built-in skills.
 	tools := toAnthropicTools(a.mcp.Tools())
@@ -577,6 +588,158 @@ func (a *Actor) toolUseLoop(
 		Text:   "I seem to be stuck in a tool-use loop. Please try rephrasing your request.",
 	})
 	return nil
+}
+
+// handleWithCLI delegates a user message to the claude CLI subprocess.
+// The CLI handles the full agent loop (LLM calls + tool execution via MCP).
+// curlycatclaw parses streaming output for Telegram delivery and logs to SQLite.
+func (a *Actor) handleWithCLI(
+	ctx context.Context,
+	userID, chatID int64,
+	convID string,
+	userMsg string,
+	photos []telegram.Photo,
+	systemPrompt string,
+) error {
+	ss := &streamState{chatID: chatID, tg: a.tg}
+
+	mcpConfig := a.buildMCPConfig(userID, chatID)
+	proc, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, claude.SpawnParams{
+		SystemPrompt: systemPrompt,
+		MCPConfig:    mcpConfig,
+	})
+	if err != nil {
+		return fmt.Errorf("cli get/create: %w", err)
+	}
+
+	// Build the user message for the CLI's stream-json input.
+	var msg json.RawMessage
+	if len(photos) > 0 {
+		var images []claude.ImageBlock
+		for _, photo := range photos {
+			images = append(images, claude.ImageBlock{
+				MediaType: photo.MimeType,
+				Data:      base64.StdEncoding.EncodeToString(photo.Data),
+			})
+		}
+		msg = claude.BuildImageMessage(userMsg, images)
+	} else {
+		msg = claude.BuildUserMessage(userMsg)
+	}
+
+	events, err := proc.Send(ctx, msg, func(delta string) {
+		ss.onDelta(delta)
+	})
+	if err != nil {
+		// Process may have died; remove it so next message spawns a fresh one.
+		a.cliMgr.Remove(userID, chatID)
+
+		// If we streamed partial text, append error notice.
+		ss.mu.Lock()
+		if ss.msgID != 0 {
+			ss.text += "\n\n[error: response incomplete]"
+			ss.flush()
+		}
+		ss.mu.Unlock()
+		return fmt.Errorf("cli send: %w", err)
+	}
+
+	ss.finalFlush()
+
+	// Parse events for logging and tool transparency.
+	var fullText string
+	for _, event := range events {
+		switch e := event.(type) {
+		case claude.AssistantMessageEvent:
+			// Accumulate text across multiple assistant messages (tool use
+			// produces one message before tools and another after).
+			if e.TextContent != "" {
+				if fullText != "" {
+					fullText += "\n"
+				}
+				fullText += e.TextContent
+			}
+			// Log tool calls for transparency.
+			for _, tc := range e.ToolCalls {
+				if a.cfg.Telegram.ShowToolCalls {
+					a.trySend(telegram.OutgoingMessage{
+						ChatID: chatID,
+						Text:   fmt.Sprintf("[tool] %s", tc.Name),
+					})
+				}
+				a.store.LogToolCall(convID, tc.ID, tc.Name, tc.Input) //nolint:errcheck
+			}
+		case claude.ResultEvent:
+			if e.IsError {
+				slog.Warn("cli turn error",
+					"subtype", e.Subtype,
+					"errors", e.Errors,
+					"cost_usd", e.Cost)
+			} else {
+				slog.Info("cli turn complete",
+					"turns", e.Turns,
+					"cost_usd", e.Cost,
+					"duration_ms", e.DurationMs)
+			}
+		}
+	}
+
+	// Store assistant response to SQLite (for memory features).
+	if fullText != "" {
+		content, _ := json.Marshal(fullText)
+		if err := a.store.AppendMessage(convID, "assistant", content); err != nil {
+			slog.Error("failed to store assistant message",
+				"err", err, "conversation_id", convID, "data_loss", true)
+		}
+	}
+
+	// Index assistant response in vector store (async).
+	if fullText != "" && a.vector != nil {
+		a.indexWg.Add(1)
+		go func() {
+			defer a.indexWg.Done()
+			indexCtx, cancel := context.WithTimeout(a.bgCtx(), 5*time.Second)
+			defer cancel()
+			msgID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), a.indexSeq.Add(1))
+			if err := a.vector.Index(indexCtx, convID+":"+msgID, fullText, userID, chatID, "assistant"); err != nil {
+				slog.Warn("vector index failed", "err", err)
+			}
+		}()
+	}
+
+	return nil
+}
+
+// buildMCPConfig generates the --mcp-config JSON string for the CLI subprocess.
+// It includes the curlycatclaw skills MCP server with user-scoped env vars,
+// plus any external MCP servers from the config.
+func (a *Actor) buildMCPConfig(userID, chatID int64) string {
+	type mcpServer struct {
+		Command string            `json:"command"`
+		Args    []string          `json:"args,omitempty"`
+		Env     map[string]string `json:"env,omitempty"`
+	}
+
+	// Resolve to absolute path so the CLI can spawn it regardless of cwd.
+	selfPath, _ := os.Executable()
+	if selfPath == "" {
+		selfPath, _ = filepath.Abs(os.Args[0])
+	}
+
+	servers := map[string]mcpServer{
+		"curlycatclaw-skills": {
+			Command: selfPath,
+			Args:    []string{"--mcp-server"},
+			Env: map[string]string{
+				"CURLYCATCLAW_USER_ID": fmt.Sprintf("%d", userID),
+				"CURLYCATCLAW_CHAT_ID": fmt.Sprintf("%d", chatID),
+				"CURLYCATCLAW_DB_PATH": a.cfg.Storage.DBPath,
+			},
+		},
+	}
+
+	data, _ := json.Marshal(servers)
+	return string(data)
 }
 
 func (a *Actor) trySend(msg telegram.OutgoingMessage) {

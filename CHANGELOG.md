@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.10.0] - 2026-03-29
+
+CLI subprocess mode for Claude Max subscription routing.
+
+### Added
+- **CLI subprocess mode**: spawn `claude` CLI as a long-lived subprocess per user, enabling Claude Max subscription ($100/month unlimited) instead of per-API-call billing
+- `CLIManager` in `internal/claude/subprocess.go`: manages long-lived CLI processes keyed by (userID, chatID), handles spawn, cleanup, and graceful shutdown
+- Stream-json event parser: parses `system`, `stream_event`, `assistant`, and `result` events from CLI stdout with tolerant handling of unknown event types
+- `--mcp-server` mode: curlycatclaw can run as an MCP stdio server exposing all built-in skills (note, remind, facts, search, semantic_search) for the CLI to call
+- `cli_path` config field in `[claude]` section as alternative to `api_key`/`auth_token`
+- `handleWithCLI()` in session actor: delegates to CLI subprocess with streaming to Telegram, SQLite logging, and vector indexing
+- `BuildUserMessage()` and `BuildImageMessage()` helpers for stream-json input format
+
+### Changed
+- `session.New()` accepts optional `CLIClient` parameter for CLI mode
+- Config validation accepts `cli_path` OR `api_key`/`auth_token` (not both required)
+- `config.toml.example` documents all three auth modes
+
 ## [0.9.0] - 2026-03-28
 
 OAuth Bearer token support, Docker-first deployment, and setup improvements.
