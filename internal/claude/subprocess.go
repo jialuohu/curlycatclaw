@@ -146,8 +146,9 @@ func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartia
 		} else {
 			// Peek at what we're skipping.
 			var peek struct{ Type string `json:"type"` }
-			json.Unmarshal(line, &peek)
-			slog.Debug("cli: skip event", "type", peek.Type, "len", len(line))
+			if err := json.Unmarshal(line, &peek); err == nil {
+				slog.Debug("cli: skip event", "type", peek.Type, "len", len(line))
+			}
 		}
 
 		if event == nil {
