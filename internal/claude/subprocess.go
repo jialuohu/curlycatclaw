@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -70,11 +69,11 @@ type ResultEvent struct {
 
 func (ResultEvent) cliEvent() {}
 
-// scanResult carries a single line from the persistent scan goroutine.
-type scanResult struct {
-	line []byte
-	ok   bool
-	err  error
+// ScanResult carries a single line from the persistent scan goroutine.
+type ScanResult struct {
+	Line []byte
+	OK   bool
+	Err  error
 }
 
 // userKey identifies a unique user conversation for process mapping.
@@ -88,7 +87,7 @@ type CLIProcess struct {
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
 	stdout io.ReadCloser
-	scanCh chan scanResult // persistent scan goroutine delivers lines here
+	scanCh chan ScanResult // persistent scan goroutine delivers lines here
 	sessionID   string
 	mu          sync.Mutex // serializes message sends
 	lastUsed    time.Time
@@ -128,14 +127,14 @@ func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartia
 		case <-p.done:
 			return events, fmt.Errorf("cli: process exited unexpectedly")
 		case res := <-p.scanCh:
-			if !res.ok {
-				if res.err != nil {
-					return events, fmt.Errorf("cli: read stdout: %w", res.err)
+			if !res.OK {
+				if res.Err != nil {
+					return events, fmt.Errorf("cli: read stdout: %w", res.Err)
 				}
 				return events, fmt.Errorf("cli: stdout closed")
 			}
 
-			line := res.line
+			line := res.Line
 			if len(line) == 0 {
 				continue
 			}
@@ -200,20 +199,23 @@ func (p *CLIProcess) Kill() {
 
 // CLIManager manages long-lived CLI processes keyed by (userID, chatID).
 type CLIManager struct {
-	cliPath string
-	model   string
+	cliPath    string
+	model      string
+	oauthToken string // long-lived token from `claude setup-token`
 
 	mu        sync.Mutex
 	processes map[userKey]*CLIProcess
 	spawning  map[userKey]chan struct{} // in-flight spawns (singleflight)
 }
 
-// NewCLIManager creates a new manager.
-func NewCLIManager(cliPath, model string) *CLIManager {
+// NewCLIManager creates a new manager. If oauthToken is non-empty, it is
+// injected as CLAUDE_CODE_OAUTH_TOKEN on each subprocess.
+func NewCLIManager(cliPath, model, oauthToken string) *CLIManager {
 	return &CLIManager{
-		cliPath:   cliPath,
-		model:     model,
-		processes: make(map[userKey]*CLIProcess),
+		cliPath:    cliPath,
+		model:      model,
+		oauthToken: oauthToken,
+		processes:  make(map[userKey]*CLIProcess),
 	}
 }
 
@@ -338,7 +340,6 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 		"--input-format", "stream-json",
 		"--include-partial-messages",
 		"--verbose",
-		"--bare",
 		"--no-session-persistence",
 		"--replay-user-messages",
 	}
@@ -355,14 +356,11 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 
 	cmd := exec.CommandContext(ctx, m.cliPath, args...)
 
-	// In --bare mode, the CLI only reads ANTHROPIC_API_KEY for auth.
-	// Read the OAuth access token from ~/.claude/.credentials.json and
-	// inject it as ANTHROPIC_API_KEY so Max subscription auth works.
-	if token := readOAuthToken(); token != "" {
-		cmd.Env = append(os.Environ(), "ANTHROPIC_API_KEY="+token)
-		slog.Info("cli: injecting OAuth token", "len", len(token))
-	} else {
-		slog.Warn("cli: no OAuth token found, CLI auth may fail")
+	// Inject long-lived OAuth token so the CLI handles auth via
+	// token exchange at /api/oauth/claude_cli/create_api_key.
+	if m.oauthToken != "" {
+		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+m.oauthToken)
+		slog.Info("cli: OAuth token injected via CLAUDE_CODE_OAUTH_TOKEN")
 	}
 
 	stdin, err := cmd.StdinPipe()
@@ -405,13 +403,13 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024) // up to 1MB lines
 
-	scanCh := make(chan scanResult, 1)
+	scanCh := make(chan ScanResult, 1)
 	go func() {
 		for scanner.Scan() {
 			line := append([]byte(nil), scanner.Bytes()...)
-			scanCh <- scanResult{line: line, ok: true}
+			scanCh <- ScanResult{Line: line, OK: true}
 		}
-		scanCh <- scanResult{ok: false, err: scanner.Err()}
+		scanCh <- ScanResult{OK: false, Err: scanner.Err()}
 	}()
 
 	proc := &CLIProcess{
@@ -445,11 +443,11 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 		case <-done:
 			return nil, fmt.Errorf("cli: process exited before init: stderr=%s", stderrBuf.String())
 		case res := <-scanCh:
-			if !res.ok {
+			if !res.OK {
 				return nil, fmt.Errorf("cli: stdout closed before init: stderr=%s", stderrBuf.String())
 			}
 
-			line := res.line
+			line := res.Line
 			if len(line) == 0 {
 				continue
 			}
@@ -654,27 +652,6 @@ func BuildImageMessage(text string, images []ImageBlock) json.RawMessage {
 	return data
 }
 
-// readOAuthToken reads the Claude OAuth access token from ~/.claude/.credentials.json.
-// Returns empty string if the file doesn't exist or can't be parsed.
-func readOAuthToken() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json"))
-	if err != nil {
-		return ""
-	}
-	var creds struct {
-		ClaudeAiOauth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return ""
-	}
-	return creds.ClaudeAiOauth.AccessToken
-}
 
 // ImageBlock holds base64-encoded image data for multimodal messages.
 type ImageBlock struct {
@@ -700,4 +677,17 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 	n, err := lw.w.Write(p)
 	lw.n += n
 	return len(p), err // report full write to avoid broken pipe
+}
+
+// NewTestProcess creates a CLIProcess from pre-wired pipes for testing.
+// The caller is responsible for feeding ScanResult values into scanCh
+// and closing done when the "process" exits.
+func NewTestProcess(stdin io.WriteCloser, stdout io.ReadCloser, scanCh chan ScanResult, done chan struct{}) *CLIProcess {
+	return &CLIProcess{
+		stdin:    stdin,
+		stdout:   stdout,
+		scanCh:   scanCh,
+		lastUsed: time.Now(),
+		done:     done,
+	}
 }
