@@ -113,18 +113,6 @@ port    = 8080
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 
-### Using Claude Max Subscription
-
-Instead of paying per API call, you can route through your Claude Max subscription ($100/month unlimited). Set `cli_path` in your config to the `claude` CLI binary:
-
-```toml
-[claude]
-cli_path = "/home/you/.local/bin/claude"
-model = "claude-sonnet-4-6-20250514"
-```
-
-curlycatclaw spawns a long-lived `claude` CLI process per user. The CLI handles OAuth authentication internally. Built-in skills (notes, reminders, facts, search) are exposed to the CLI as MCP tools automatically.
-
 ## Architecture
 
 ### System Overview
