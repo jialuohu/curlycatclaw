@@ -596,3 +596,48 @@ func TestValidate_VectorOllamaValid(t *testing.T) {
 		t.Fatalf("ollama embedder should succeed: %v", err)
 	}
 }
+
+func TestLoad_EnvOverrides(t *testing.T) {
+	path := writeConfig(t, validTOML)
+
+	t.Setenv("CURLYCATCLAW_DB_PATH", "/data/override.db")
+	t.Setenv("CURLYCATCLAW_QDRANT_ADDR", "qdrant:6334")
+	t.Setenv("CURLYCATCLAW_MODEL", "claude-opus-4-6")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Storage.DBPath != "/data/override.db" {
+		t.Errorf("Storage.DBPath = %q, want %q", cfg.Storage.DBPath, "/data/override.db")
+	}
+	if cfg.Vector.QdrantAddr != "qdrant:6334" {
+		t.Errorf("Vector.QdrantAddr = %q, want %q", cfg.Vector.QdrantAddr, "qdrant:6334")
+	}
+	if cfg.Claude.Model != "claude-opus-4-6" {
+		t.Errorf("Claude.Model = %q, want %q", cfg.Claude.Model, "claude-opus-4-6")
+	}
+}
+
+func TestLoad_EnvOverridesNotSet(t *testing.T) {
+	path := writeConfig(t, validTOML)
+
+	// Ensure env vars are NOT set.
+	os.Unsetenv("CURLYCATCLAW_DB_PATH")
+	os.Unsetenv("CURLYCATCLAW_QDRANT_ADDR")
+	os.Unsetenv("CURLYCATCLAW_MODEL")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Should keep TOML values when env vars are absent.
+	if cfg.Storage.DBPath != "/tmp/test.db" {
+		t.Errorf("Storage.DBPath = %q, want %q (from TOML)", cfg.Storage.DBPath, "/tmp/test.db")
+	}
+	if cfg.Claude.Model != "claude-sonnet-4-6-20250514" {
+		t.Errorf("Claude.Model = %q, want %q (from TOML)", cfg.Claude.Model, "claude-sonnet-4-6-20250514")
+	}
+}

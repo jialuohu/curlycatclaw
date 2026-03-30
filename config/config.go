@@ -29,10 +29,11 @@ type Config struct {
 }
 
 type ClaudeConfig struct {
-	CLIPath   string `toml:"cli_path"`   // path to claude binary (CLI subprocess mode)
-	APIKey    string `toml:"api_key"`    // direct API mode
-	AuthToken string `toml:"auth_token"` // direct API mode (OAuth)
-	Model     string `toml:"model"`
+	CLIPath    string `toml:"cli_path"`    // path to claude binary (CLI subprocess mode)
+	APIKey     string `toml:"api_key"`     // direct API mode
+	AuthToken  string `toml:"auth_token"`  // direct API mode (OAuth)
+	OAuthToken string `toml:"oauth_token"` // long-lived token from `claude setup-token` (CLI mode)
+	Model      string `toml:"model"`
 }
 
 // UseCLI returns true if CLI subprocess mode is configured.
@@ -193,11 +194,33 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	// Allow environment variables to override path-related fields so a
+	// single config.toml can be shared between local and Docker runs.
+	cfg.applyEnvOverrides()
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// applyEnvOverrides lets environment variables override config fields that
+// typically differ between local and containerized deployments, so one
+// config file can be shared across both.
+func (c *Config) applyEnvOverrides() {
+	if v := os.Getenv("CURLYCATCLAW_DB_PATH"); v != "" {
+		c.Storage.DBPath = v
+	}
+	if v := os.Getenv("CURLYCATCLAW_QDRANT_ADDR"); v != "" {
+		c.Vector.QdrantAddr = v
+	}
+	if v := os.Getenv("CURLYCATCLAW_MODEL"); v != "" {
+		c.Claude.Model = v
+	}
+	if v := os.Getenv("CURLYCATCLAW_CLI_PATH"); v != "" {
+		c.Claude.CLIPath = v
+	}
 }
 
 func (c *Config) validate() error {

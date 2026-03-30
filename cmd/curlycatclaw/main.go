@@ -113,7 +113,7 @@ func run(configPath string) error {
 	var cliManager *claude.CLIManager
 	var authOpt option.RequestOption
 	if cfg.Claude.UseCLI() {
-		cliManager = claude.NewCLIManager(cfg.Claude.CLIPath, cfg.Claude.Model)
+		cliManager = claude.NewCLIManager(cfg.Claude.CLIPath, cfg.Claude.Model, cfg.Claude.OAuthToken)
 		slog.Info("claude CLI manager initialized", "cli", cfg.Claude.CLIPath, "model", cfg.Claude.Model)
 	} else {
 		authOpt = cfg.Claude.AuthOption()
@@ -279,13 +279,18 @@ func run(configPath string) error {
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh)
 
 	// Create session actor.
-	// Pass explicit nil interface (not typed nil *ConversationSummarizer) when
-	// summarizer is disabled, so that session.Actor's nil checks work correctly.
+	// Pass explicit nil interfaces (not typed nil pointers) when components
+	// are disabled, so that session.Actor's nil checks work correctly.
+	// A nil *T passed to an interface becomes non-nil (Go nil-interface trap).
+	var sessionCLI session.CLIClient
+	if cliManager != nil {
+		sessionCLI = cliManager
+	}
 	var sessionSummarizer session.Summarizer
 	if summarizer != nil {
 		sessionSummarizer = summarizer
 	}
-	sess := session.New(cfg, claudeClient, cliManager, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, sessionSummarizer)
+	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, sessionSummarizer)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
