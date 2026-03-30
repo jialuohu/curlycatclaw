@@ -988,50 +988,6 @@ func TestStreamingState_FlushingGuard(t *testing.T) {
 
 // --- CLI subprocess mode tests ---
 
-// mockCLIProcess simulates a CLIProcess for testing handleWithCLI.
-// It stores events to return and a callback to invoke for text deltas.
-type mockCLIProcess struct {
-	events []claude.CLIEvent
-	err    error
-}
-
-// mockCLIClient implements CLIClient for testing.
-type mockCLIClient struct {
-	mu      sync.Mutex
-	proc    *mockCLIProcess
-	removed bool
-}
-
-func (m *mockCLIClient) GetOrCreate(_ context.Context, _, _ int64, _ claude.SpawnParams) (*claude.CLIProcess, error) {
-	// We can't return a *CLIProcess directly because Send() is tightly coupled
-	// to the real process. Instead, we'll use a different approach.
-	return nil, fmt.Errorf("mock: use handleWithCLI directly")
-}
-
-func (m *mockCLIClient) Remove(_, _ int64) {
-	m.mu.Lock()
-	m.removed = true
-	m.mu.Unlock()
-}
-
-func (m *mockCLIClient) Cleanup(_ time.Duration) {}
-func (m *mockCLIClient) Shutdown(_ time.Duration) {}
-
-// newCLITestActor creates a test actor wired for CLI mode testing.
-// It injects a mock cliMgr so handleMessage routes to handleWithCLI.
-func newCLITestActor(cliMgr CLIClient, store MessageStore, tg TelegramTransport) *Actor {
-	return &Actor{
-		cfg:      defaultCfg(),
-		cliMgr:   cliMgr,
-		tg:       tg,
-		mcp:      &mockToolRouter{},
-		store:    store,
-		ctxb:     &mockContextProvider{},
-		skills:   skills.NewRegistry(),
-		indexSem: make(chan struct{}, 10),
-	}
-}
-
 // TestHandleWithCLI_ErrorResult verifies that error ResultEvents from the CLI
 // produce a visible error message to the user instead of silence.
 func TestHandleWithCLI_ErrorResult(t *testing.T) {
