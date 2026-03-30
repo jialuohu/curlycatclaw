@@ -139,7 +139,7 @@ curlycatclaw spawns a long-lived `claude` CLI process per user. The CLI handles 
 │  │  Actor   │   │   Actor   │   │   Actor   │         │
 │  └────┬─────┘   └─────┬─────┘   └─────┬─────┘         │
 │       │               │               │               │
-│       │               ├──► Claude      │               │
+│       │               ├──► Claude     │               │
 │       │               │    Direct API (stream+tools)  │
 │       │               │    OR CLI subprocess (Max)    │
 │       │               │               │               │
@@ -225,7 +225,7 @@ Claude tool_use ──► skills.Registry.Get(name)
 │  save_note       │  server__tool     │  ├ http (SSRF block) │
 │  set_reminder    │                   │  ├ db_read (enforced │
 │  remember_fact   │  Env filtered     │  │  :user_id scoping,│
-│  semantic_search │  via allowlist    │  │  UNION blocked)    │
+│  semantic_search │  via allowlist    │  │  UNION blocked)   │
 │                  │                   │  └ send_message      │
 │  Deps: FactStore │  _user_context    │                      │
 │  DB, VectorStore │  injected per call│ Hot-reload (fsnotify)│
