@@ -85,10 +85,11 @@ timezone = "America/Los_Angeles"
 
 [claude]
 # Choose ONE auth method:
-# cli_path = "/home/you/.local/bin/claude"  # Claude Max subscription (via CLI subprocess)
-auth_token = "..."               # OAuth token (direct API)
-# api_key  = "sk-ant-..."       # API key (direct API)
-model      = "claude-sonnet-4-6-20250514"
+cli_path    = "/home/you/.local/bin/claude"  # Claude Max subscription (via CLI subprocess)
+oauth_token = "sk-ant-oat01-..."             # long-lived token from `claude setup-token`
+# api_key  = "sk-ant-..."                    # API key (direct API, separate billing)
+# auth_token = "..."                         # OAuth token (direct API)
+model       = "claude-sonnet-4-6-20250514"
 
 [telegram]
 token = "123456:ABC-DEF..."
