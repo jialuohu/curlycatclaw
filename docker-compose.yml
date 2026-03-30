@@ -3,13 +3,17 @@ services:
     build: .
     restart: unless-stopped
     volumes:
-      - curlycatclaw-data:/data
-      - ~/.curlycatclaw/config.docker.toml:/data/config.toml:ro
+      - ~/.curlycatclaw:/data
+    environment:
+      - CURLYCATCLAW_DB_PATH=/data/curlycatclaw.db
+      - CURLYCATCLAW_QDRANT_ADDR=qdrant:6334
+      - CURLYCATCLAW_CLI_PATH=/usr/local/bin/claude
+      - HOME=/data
     depends_on:
       qdrant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
