@@ -80,7 +80,7 @@ Test expectations:
 
 Copy `config.toml.example` to `~/.curlycatclaw/config.toml` and fill in credentials.
 
-Auth modes: `cli_path` + `oauth_token` (Claude Max subscription via CLI subprocess), `auth_token` (OAuth direct API), or `api_key` (direct API). CLI mode uses `oauth_token` from `claude setup-token` injected as `CLAUDE_CODE_OAUTH_TOKEN` env var.
+Auth modes: `cli_path` + `oauth_token` (Claude Max subscription via CLI subprocess) or `api_key` (direct API). CLI mode uses `oauth_token` from `claude setup-token` injected as `CLAUDE_CODE_OAUTH_TOKEN` env var.
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 
