@@ -249,6 +249,31 @@ func TestSaveNote_TitleAtMaxLen(t *testing.T) {
 	}
 }
 
+func TestSaveNote_TitleUTF8Runes(t *testing.T) {
+	db := newTestDB(t)
+	skills := initNoteSkillsForTest(t, db)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	// 500 emoji (4 bytes each = 2000 bytes, but exactly 500 runes) should succeed.
+	exactTitle := strings.Repeat("\U0001f680", maxNoteTitleLen)
+	input, _ := json.Marshal(saveNoteInput{Title: exactTitle, Content: "rocket content"})
+	if _, err := skills["save_note"].Execute(ctx, input); err != nil {
+		t.Fatalf("title at exactly 500 runes should succeed, got: %v", err)
+	}
+
+	// 501 emoji should fail.
+	longTitle := strings.Repeat("\U0001f680", maxNoteTitleLen+1)
+	input2, _ := json.Marshal(saveNoteInput{Title: longTitle, Content: "rocket content"})
+	_, err := skills["save_note"].Execute(ctx, input2)
+	if err == nil {
+		t.Fatal("expected error for 501-rune title, got nil")
+	}
+	if !strings.Contains(err.Error(), "title too long") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "title too long")
+	}
+}
+
 func TestNotes_UserScoped(t *testing.T) {
 	db := newTestDB(t)
 	skills := initNoteSkillsForTest(t, db)

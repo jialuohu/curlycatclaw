@@ -181,6 +181,12 @@ func TestIsSelectOnly(t *testing.T) {
 		// Word-boundary: "REUNION" should NOT be blocked.
 		{"SELECT * FROM t WHERE event = 'REUNION'", true},
 		{"SELECT REUNION_DATE FROM t", true},
+		// WITH (CTE) blocked
+		{"WITH cte AS (SELECT 1) SELECT * FROM cte", false},
+		{"WITH RECURSIVE cte AS (SELECT 1 UNION ALL SELECT n+1 FROM cte WHERE n < 10) SELECT * FROM cte", false},
+		// Word boundary: WITHDRAWN should NOT be blocked
+		{"SELECT WITHDRAWN FROM t", true},
+		{"SELECT * FROM t WHERE status = 'WITHHOLD'", true},
 	}
 
 	for _, tt := range tests {

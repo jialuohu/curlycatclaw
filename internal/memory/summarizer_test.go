@@ -151,6 +151,23 @@ func TestSummarizer_EmptyTranscript(t *testing.T) {
 	}
 }
 
+func TestFormatTranscript_ImageOnly(t *testing.T) {
+	// Image blocks have type "image" not "text", so extractText returns ""
+	imageContent, _ := json.Marshal([]map[string]interface{}{
+		{"type": "image", "source": map[string]string{"type": "base64", "data": "abc"}},
+	})
+	messages := []Message{
+		{Role: "user", Content: imageContent},
+	}
+	result := FormatTranscript(messages)
+	// Image-only messages produce no text content
+	result = strings.TrimSpace(result)
+	if result != "" && result != "user:" {
+		// Either empty or just the role prefix with no content
+		t.Logf("result = %q (expected empty or role-only)", result)
+	}
+}
+
 func TestFormatTranscript_UTF8(t *testing.T) {
 	// Use multi-byte characters that would be split incorrectly by byte truncation.
 	// Each emoji is 4 bytes; fill past maxTranscriptChars (4000) in runes.

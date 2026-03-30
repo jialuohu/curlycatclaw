@@ -570,3 +570,29 @@ func TestValidate_VectorVoyageValid(t *testing.T) {
 		t.Fatalf("validate with voyage + api key should succeed, got: %v", err)
 	}
 }
+
+func TestValidate_VectorFNVExplicit(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Vector:   VectorConfig{Enabled: true, QdrantAddr: "localhost:6334", Embedder: "fnv"},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("fnv embedder with vector enabled should succeed: %v", err)
+	}
+}
+
+func TestValidate_VectorOllamaValid(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Vector:   VectorConfig{Enabled: true, QdrantAddr: "localhost:6334", Embedder: "ollama"},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("ollama embedder should succeed: %v", err)
+	}
+}

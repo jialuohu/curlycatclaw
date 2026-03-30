@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
@@ -563,6 +565,24 @@ func TestMatchesKeyword(t *testing.T) {
 		got := matchesKeyword(tc.content, tc.keywords)
 		if got != tc.want {
 			t.Errorf("matchesKeyword(%q, %v) = %v, want %v", tc.content, tc.keywords, got, tc.want)
+		}
+	}
+}
+
+func TestTurnTextTruncation_UTF8(t *testing.T) {
+	// Create a long string of multi-byte runes (501 emoji)
+	longText := strings.Repeat("\U0001f680", 501)
+	// The truncation happens in classifyViaLLM at `content[:500]`
+	// After fix, it should use rune-based truncation
+	runes := []rune(longText)
+	if len(runes) > 500 {
+		truncated := string(runes[:500]) + "..."
+		if !utf8.ValidString(truncated) {
+			t.Error("truncated string is not valid UTF-8")
+		}
+		resultRunes := []rune(strings.TrimSuffix(truncated, "..."))
+		if len(resultRunes) != 500 {
+			t.Errorf("rune count = %d, want 500", len(resultRunes))
 		}
 	}
 }

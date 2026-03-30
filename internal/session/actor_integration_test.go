@@ -798,8 +798,6 @@ func TestHandleMessage_ImageMessage(t *testing.T) {
 				Data:     photoData,
 				MimeType: "image/jpeg",
 				FileID:   "file-123",
-				Width:    800,
-				Height:   600,
 			},
 		},
 	}
@@ -853,5 +851,135 @@ func TestHandleMessage_ImageMessage(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected telegram message within 1s")
+	}
+}
+
+func TestStreamingState_OverflowSplit(t *testing.T) {
+	// Build a single delta that exceeds the 3900-rune split threshold.
+	bigDelta := strings.Repeat("A", 4100)
+	llm := &mockLLM{
+		entries: []mockLLMEntry{
+			{
+				deltas: []string{bigDelta},
+				resp:   &claude.Response{TextContent: bigDelta},
+			},
+		},
+	}
+	store := &mockStore{convID: "conv-overflow-1"}
+	ctxb := &mockContextProvider{}
+	router := &mockToolRouter{}
+	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
+
+	actor := newTestActor(llm, store, ctxb, router, nil, tg)
+
+	msg := telegram.IncomingMessage{ChatID: 600, UserID: 42, Text: "overflow test"}
+	if err := actor.handleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	msgs := collectOutbox(outbox, 500*time.Millisecond)
+
+	// Count new message sends (MessageID == 0). This includes both the
+	// initial streaming send (with ResultCh) and the fallback trySend
+	// (without ResultCh) that fires when overflow resets the stream state.
+	var newSends int
+	for _, m := range msgs {
+		if m.MessageID == 0 {
+			newSends++
+		}
+	}
+	if newSends < 2 {
+		t.Errorf("expected at least 2 new message sends (overflow split), got %d (total messages: %d)", newSends, len(msgs))
+	}
+}
+
+func TestStreamingState_FlushingGuard(t *testing.T) {
+	// Produce a large stream (>8000 runes) split across many small deltas.
+	// This exercises the flushing guard: when flush() is doing I/O with the
+	// mutex released, concurrent onDelta calls accumulate in the buffer
+	// instead of triggering another flush.
+	const totalRunes = 8500
+	const chunkSize = 50
+	numChunks := totalRunes / chunkSize
+
+	deltas := make([]string, numChunks)
+	var fullText strings.Builder
+	for i := 0; i < numChunks; i++ {
+		chunk := strings.Repeat(string(rune('A'+(i%26))), chunkSize)
+		deltas[i] = chunk
+		fullText.WriteString(chunk)
+	}
+
+	llm := &mockLLM{
+		entries: []mockLLMEntry{
+			{
+				deltas: deltas,
+				resp:   &claude.Response{TextContent: fullText.String()},
+			},
+		},
+	}
+	store := &mockStore{convID: "conv-flushing-1"}
+	ctxb := &mockContextProvider{}
+	router := &mockToolRouter{}
+	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := tg.drainInbox(ctx)
+
+	actor := newTestActor(llm, store, ctxb, router, nil, tg)
+
+	msg := telegram.IncomingMessage{ChatID: 700, UserID: 42, Text: "flushing guard test"}
+	if err := actor.handleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	msgs := collectOutbox(outbox, 500*time.Millisecond)
+
+	// With 8500 runes and a 3900-rune split threshold, we need at least 3
+	// Telegram messages (first fills to ~3900, second fills to ~3900, third
+	// holds the remainder).
+	var freshSends int
+	for _, m := range msgs {
+		if m.MessageID == 0 && m.ResultCh != nil {
+			freshSends++
+		}
+	}
+	if freshSends < 2 {
+		t.Errorf("expected at least 2 fresh sends for %d runes, got %d (total messages: %d)", totalRunes, freshSends, len(msgs))
+	}
+
+	// Reconstruct all delivered text to verify nothing was lost. Each fresh
+	// send starts a new message, and subsequent edits replace the text for
+	// that message. We care about the *last* text for each message ID.
+	lastTextByMsg := make(map[int]string) // msgID -> last text seen
+	msgOrder := []int{}                   // ordered message IDs
+	currentMsgID := 0
+	for _, m := range msgs {
+		if m.MessageID == 0 && m.ResultCh != nil {
+			// This is a fresh send; the drainInbox helper assigned an ID
+			// which we can discover from subsequent edits. Track by order.
+			currentMsgID++
+			if _, exists := lastTextByMsg[currentMsgID]; !exists {
+				msgOrder = append(msgOrder, currentMsgID)
+			}
+			lastTextByMsg[currentMsgID] = m.Text
+		} else {
+			lastTextByMsg[currentMsgID] = m.Text
+		}
+	}
+
+	// Concatenate the final text from each message in order.
+	var delivered strings.Builder
+	for _, id := range msgOrder {
+		delivered.WriteString(lastTextByMsg[id])
+	}
+
+	expected := fullText.String()
+	got := delivered.String()
+	if len(got) < len(expected) {
+		t.Errorf("delivered text (%d runes) shorter than expected (%d runes); data lost", len([]rune(got)), len([]rune(expected)))
 	}
 }
