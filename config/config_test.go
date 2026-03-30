@@ -112,7 +112,7 @@ func TestLoad_InvalidTOML(t *testing.T) {
 func TestLoad_MissingAuth(t *testing.T) {
 	content := `
 [claude]
-# neither api_key nor auth_token
+# no cli_path or api_key
 
 [telegram]
 token = "tok"
@@ -121,57 +121,10 @@ token = "tok"
 
 	_, err := Load(path)
 	if err == nil {
-		t.Fatal("Load without api_key or auth_token should return an error")
+		t.Fatal("Load without cli_path or api_key should return an error")
 	}
 	if !strings.Contains(err.Error(), "cli_path") && !strings.Contains(err.Error(), "api_key") {
 		t.Errorf("error = %q, want it to mention auth options", err.Error())
-	}
-}
-
-func TestLoad_AuthTokenOnly(t *testing.T) {
-	content := `
-[claude]
-auth_token = "oauth-test-token"
-
-[telegram]
-token = "tok"
-allow_all = true
-
-[storage]
-db_path = "/tmp/test.db"
-`
-	path := writeConfig(t, content)
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load with auth_token should succeed: %v", err)
-	}
-	if cfg.Claude.AuthToken != "oauth-test-token" {
-		t.Errorf("Claude.AuthToken = %q, want %q", cfg.Claude.AuthToken, "oauth-test-token")
-	}
-	if cfg.Claude.APIKey != "" {
-		t.Errorf("Claude.APIKey = %q, want empty", cfg.Claude.APIKey)
-	}
-}
-
-func TestLoad_BothAuthMethodsFails(t *testing.T) {
-	content := `
-[claude]
-api_key = "sk-ant-test"
-auth_token = "oauth-test"
-
-[telegram]
-token = "tok"
-allow_all = true
-`
-	path := writeConfig(t, content)
-
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("Load with both api_key and auth_token should return an error")
-	}
-	if !strings.Contains(err.Error(), "cannot have both") {
-		t.Errorf("error = %q, want it to contain %q", err.Error(), "cannot have both")
 	}
 }
 
@@ -254,32 +207,19 @@ func TestValidate_MissingAuth(t *testing.T) {
 	}
 }
 
-func TestValidate_BothAuthMethods(t *testing.T) {
+func TestValidate_CLIAndAPIKeyFails(t *testing.T) {
 	cfg := &Config{
 		Timezone: "UTC",
-		Claude:   ClaudeConfig{APIKey: "sk-key", AuthToken: "oauth-token"},
+		Claude:   ClaudeConfig{CLIPath: "/usr/bin/claude", APIKey: "sk-key"},
 		Telegram: TGConfig{Token: "tok", AllowAll: true},
 	}
 
 	err := cfg.validate()
 	if err == nil {
-		t.Fatal("validate with both auth methods should return an error")
+		t.Fatal("validate with both cli_path and api_key should return an error")
 	}
-	if !strings.Contains(err.Error(), "cannot have both") {
-		t.Errorf("error = %q, want it to contain %q", err.Error(), "cannot have both")
-	}
-}
-
-func TestValidate_AuthTokenOnly(t *testing.T) {
-	cfg := &Config{
-		Timezone: "UTC",
-		Claude:   ClaudeConfig{AuthToken: "oauth-token"},
-		Telegram: TGConfig{Token: "tok", AllowAll: true},
-		Storage:  StorageConfig{DBPath: "/data/test.db"},
-	}
-
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("validate with auth_token only should succeed, got: %v", err)
+	if !strings.Contains(err.Error(), "cannot be combined") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "cannot be combined")
 	}
 }
 
