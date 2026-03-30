@@ -767,7 +767,21 @@ func (a *Actor) handleWithCLI(
 					"cost_usd", e.Cost,
 					"duration_ms", e.DurationMs)
 			}
+			// Fallback: if no streaming deltas or assistant messages delivered
+			// the text (e.g., cached or very short response), use Result.
+			if fullText == "" && e.Result != "" {
+				fullText = e.Result
+			}
 		}
+	}
+
+	// If we have text that was never streamed to Telegram (e.g., came only
+	// from ResultEvent.Result), send it now.
+	if fullText != "" && ss.msgID <= 0 {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: chatID,
+			Text:   fullText,
+		})
 	}
 
 	// Store assistant response to SQLite (for memory features).
