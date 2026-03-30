@@ -98,7 +98,7 @@ cat > "$CONFIG_PATH" << TOML_EOF
 timezone = "$TIMEZONE"
 
 [claude]
-$(if [ -n "$ANTHROPIC_AUTH_TOKEN" ]; then echo "auth_token = \"$ANTHROPIC_AUTH_TOKEN\""; else echo "api_key = \"$ANTHROPIC_API_KEY\""; fi)
+$(if [ -n "$CLAUDE_CLI_PATH" ]; then echo "cli_path    = \"$CLAUDE_CLI_PATH\""; echo "oauth_token = \"$ANTHROPIC_AUTH_TOKEN\""; else echo "api_key = \"$ANTHROPIC_API_KEY\""; fi)
 model   = "claude-sonnet-4-6-20250514"
 
 [telegram]

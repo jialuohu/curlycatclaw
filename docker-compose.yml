@@ -33,5 +33,4 @@ services:
       retries: 3
 
 volumes:
-  curlycatclaw-data:
   qdrant-data:

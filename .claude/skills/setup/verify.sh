@@ -35,7 +35,7 @@ fi
 SERVICE="stopped"
 if pgrep -x curlycatclaw >/dev/null 2>&1; then
   SERVICE="running"
-elif command -v systemctl >/dev/null 2>&1 && systemctl is-active curlycatclaw >/dev/null 2>&1; then
+elif docker compose ps 2>/dev/null | grep -q "curlycatclaw.*Up"; then
   SERVICE="running"
 fi
 

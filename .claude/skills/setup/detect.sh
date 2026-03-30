@@ -92,13 +92,6 @@ else
   CONFIG_EXISTS="false"
 fi
 
-# systemd availability
-if command -v systemctl >/dev/null 2>&1; then
-  SYSTEMD_AVAILABLE="true"
-else
-  SYSTEMD_AVAILABLE="false"
-fi
-
 # Port 8080 availability (health endpoint default)
 if command -v ss >/dev/null 2>&1; then
   if ss -tlnp 2>/dev/null | grep -q ':8080 '; then
@@ -130,7 +123,6 @@ CURLYCATCLAW_VERSION=$CURLYCATCLAW_VERSION
 LATEST_VERSION=$LATEST_VERSION
 QDRANT_RUNNING=$QDRANT_RUNNING
 CONFIG_EXISTS=$CONFIG_EXISTS
-SYSTEMD_AVAILABLE=$SYSTEMD_AVAILABLE
 PORT_8080=$PORT_8080
 --- END ---
 EOF

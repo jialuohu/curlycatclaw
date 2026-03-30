@@ -3,13 +3,12 @@ timezone = "America/Los_Angeles"
 [claude]
 # Choose ONE authentication method:
 #
-# Option 1: CLI subprocess mode (uses Claude Max subscription via claude CLI).
-# cli_path = "/home/you/.local/bin/claude"
+# Option 1: CLI subprocess mode (Claude Max subscription).
+# Run `claude setup-token` to get a long-lived OAuth token.
+# cli_path    = "/home/you/.local/bin/claude"
+# oauth_token = "sk-ant-oat01-..."
 #
-# Option 2: Direct API with OAuth token.
-# auth_token = ""
-#
-# Option 3: Direct API with API key.
+# Option 2: Direct API with API key (separate billing).
 # api_key  = "sk-ant-..."
 #
 model = "claude-sonnet-4-6-20250514"
@@ -27,7 +26,7 @@ allowed_user_ids = []
 # WARNING: ~ does not expand in TOML values; use an absolute path.
 # db_path = "~/.curlycatclaw/curlycatclaw.db"
 db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
-# Docker: use "/data/curlycatclaw.db" (the /data volume is mounted by docker-compose).
+# Docker: env var CURLYCATCLAW_DB_PATH overrides this automatically.
 
 # MCP server configurations
 [[mcp.servers]]

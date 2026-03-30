@@ -263,38 +263,12 @@ Skills are registered alongside MCP tools — Claude sees them all and picks the
 ### Docker (recommended)
 
 ```bash
-cp config.toml.example config.toml
-# Set db_path = "/data/curlycatclaw.db" and qdrant_addr = "qdrant:6334"
-
+# Your ~/.curlycatclaw/config.toml is used directly.
+# Docker overrides paths via environment variables automatically.
 docker compose up -d
-docker compose cp config.toml curlycatclaw:/data/config.toml
-docker compose restart curlycatclaw
 ```
 
 See [deploy/docker.md](deploy/docker.md) for details and MCP limitations.
-
-### systemd
-
-```bash
-# 1. Create system user
-sudo useradd --system --create-home --home-dir /var/lib/curlycatclaw curlycatclaw
-
-# 2. Install binary and config
-sudo cp curlycatclaw /usr/local/bin/
-sudo mkdir -p /etc/curlycatclaw
-sudo cp config.toml /etc/curlycatclaw/config.toml
-sudo chown -R curlycatclaw:curlycatclaw /etc/curlycatclaw
-
-# 3. Enable service
-sudo cp deploy/curlycatclaw.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now curlycatclaw
-
-# 4. View logs
-journalctl -u curlycatclaw -f
-```
-
-See [deploy/UPGRADE.md](deploy/UPGRADE.md) for upgrade instructions.
 
 ## Testing
 

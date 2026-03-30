@@ -71,8 +71,7 @@ Test expectations:
 | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | `skills/` | Built-in skill implementations |
 | `internal/security/sandbox_linux.go` | Landlock filesystem sandbox (Linux) |
-| `deploy/curlycatclaw.service` | systemd unit file with hardening |
-| `Dockerfile` | Container build (CGO_ENABLED=0, Alpine) |
+| `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
 | `docker-compose.yml` | curlycatclaw + Qdrant orchestration |
 | `.goreleaser.yml` | Release automation (binaries, checksums, Docker images) |
 

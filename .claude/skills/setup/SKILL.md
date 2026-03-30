@@ -25,7 +25,7 @@ Telegram bot, pasting an API key). If a dependency is missing, install it. If a 
 won't start, diagnose and repair.
 
 **UX Note:** Use `AskUserQuestion` for multiple-choice questions only (e.g. "Foreground
-or systemd?"). Do NOT use AskUserQuestion when free-text input is needed (API keys,
+or Docker?"). Do NOT use AskUserQuestion when free-text input is needed (API keys,
 tokens, user IDs). Instead, ask the question in plain text and wait for the user's reply.
 
 ## 0. Introduction
@@ -64,7 +64,6 @@ drive all subsequent decisions. Key fields:
 - `CURLYCATCLAW_INSTALLED` / `CURLYCATCLAW_VERSION` / `LATEST_VERSION` — install/upgrade decision
 - `QDRANT_RUNNING` — skip Qdrant setup if already running
 - `CONFIG_EXISTS` — prompt before overwriting
-- `SYSTEMD_AVAILABLE` — affects service start options
 - `PORT_8080` — health endpoint port availability
 
 Tell the user what was detected: "Detected: [OS] [ARCH], Docker [status], curlycatclaw [installed/not]."
@@ -147,15 +146,14 @@ response before validating.
 
 **4a. Anthropic authentication**
 
-Say: "Paste your Anthropic OAuth token or API key. Get one at https://console.anthropic.com/settings/keys
-if you don't have one.
-- OAuth tokens are preferred (paste the token value directly)
-- API keys start with `sk-ant-`"
+Say: "How do you want to authenticate?
+- **Claude Max subscription** (recommended): Run `claude setup-token` in a terminal and paste the token
+- **API key** (separate billing): Get one at https://console.anthropic.com/settings/keys"
 
 Wait for user response. Validate:
 - Trim leading/trailing whitespace
+- If starts with `sk-ant-oat`: treat as OAuth token from `claude setup-token`, store as `ANTHROPIC_AUTH_TOKEN`, set `CLAUDE_CLI_PATH` to the detected claude binary path
 - If starts with `sk-ant-`: treat as API key, store as `ANTHROPIC_API_KEY`
-- Otherwise: treat as OAuth token, store as `ANTHROPIC_AUTH_TOKEN`
 - If empty: "Please paste a valid token or API key. Try again."
 
 **4b. Telegram bot token**
@@ -229,17 +227,15 @@ Use AskUserQuestion: "How do you want to run curlycatclaw?"
 **If `DOCKER=running` or `DOCKER=installed_not_running`:**
 - A) Docker Compose (recommended, persistent, manages Qdrant too)
 - B) Foreground (for testing, run in a separate terminal)
-- C) systemd service (if `SYSTEMD_AVAILABLE=true` and `OS=linux`)
 
 **Otherwise:**
 - A) Foreground (run in a separate terminal)
-- B) systemd service (if `SYSTEMD_AVAILABLE=true` and `OS=linux`)
 
 **If Docker Compose (A with Docker):**
 
-Generate a Docker-specific config file at `~/.curlycatclaw/config.docker.toml` that
-uses `/data/curlycatclaw.db` for db_path and `qdrant:6334` for qdrant_addr. Mount it
-into the container. Then:
+The same `~/.curlycatclaw/config.toml` is used. Docker overrides paths via environment
+variables (`CURLYCATCLAW_DB_PATH`, `CURLYCATCLAW_QDRANT_ADDR`, `CURLYCATCLAW_CLI_PATH`)
+defined in `docker-compose.yml`. No separate config file needed. Then:
 
 ```bash
 docker compose up -d --build
@@ -281,31 +277,6 @@ done
 If health check passes, proceed to Step 7. If timeout, ask user to check the terminal
 output for errors.
 
-**If systemd (B):**
-
-```bash
-# Create system user
-sudo useradd --system --create-home --home-dir /var/lib/curlycatclaw curlycatclaw 2>/dev/null || true
-
-# Copy config
-sudo mkdir -p /etc/curlycatclaw
-sudo cp ~/.curlycatclaw/config.toml /etc/curlycatclaw/config.toml
-sudo chown -R curlycatclaw:curlycatclaw /etc/curlycatclaw
-
-# Update db_path for system user
-sudo sed -i 's|db_path = .*|db_path = "/var/lib/curlycatclaw/curlycatclaw.db"|' /etc/curlycatclaw/config.toml
-sudo chown -R curlycatclaw:curlycatclaw /var/lib/curlycatclaw
-
-# Install and start service
-sudo cp deploy/curlycatclaw.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now curlycatclaw
-```
-
-Verify with: `sudo systemctl status curlycatclaw`
-
-If service fails to start, check: `sudo journalctl -u curlycatclaw -n 20`
-
 ## 7. Verify
 
 Run the verification script:
@@ -320,7 +291,7 @@ Parse the STATUS block:
   Send a message to your Telegram bot to test it."
 
 - **HEALTH=fail:** Check if port is correct, if process is running, check logs.
-  For systemd: `sudo journalctl -u curlycatclaw -n 20`
+  For Docker: `docker compose logs curlycatclaw --tail 20`
   For foreground: ask user to check terminal output.
 
 - **QDRANT=fail:** Run `bash .claude/skills/setup/qdrant.sh health`. If unhealthy,
