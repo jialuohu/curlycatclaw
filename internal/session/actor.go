@@ -455,12 +455,17 @@ func (ss *streamState) flush() {
 }
 
 // finalFlush sends any remaining accumulated text. Called after the stream
-// completes. Thread-safe.
+// completes. Thread-safe. Waits for any in-progress flush to finish, then
+// flushes once more if the buffer has grown since the last flush.
 func (ss *streamState) finalFlush() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	if ss.flushing {
-		return // flush in progress from onDelta; that flush will send the text
+	// Spin-wait for any in-progress flush to complete. flush() re-acquires
+	// the mutex before setting flushing=false, so we yield and re-lock.
+	for ss.flushing {
+		ss.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+		ss.mu.Lock()
 	}
 	ss.flush()
 }
@@ -782,6 +787,25 @@ func (a *Actor) handleWithCLI(
 			ChatID: chatID,
 			Text:   fullText,
 		})
+	}
+
+	// If the CLI returned an error result and nothing was delivered to the
+	// user (no streaming, no fallback text), send the error so the user
+	// isn't left waiting in silence.
+	if fullText == "" && ss.msgID <= 0 {
+		for _, event := range events {
+			if r, ok := event.(claude.ResultEvent); ok && r.IsError {
+				errMsg := "[error] " + r.Subtype
+				if len(r.Errors) > 0 {
+					errMsg += ": " + strings.Join(r.Errors, "; ")
+				}
+				a.trySend(telegram.OutgoingMessage{
+					ChatID: chatID,
+					Text:   errMsg,
+				})
+				break
+			}
+		}
 	}
 
 	// Store assistant response to SQLite (for memory features).

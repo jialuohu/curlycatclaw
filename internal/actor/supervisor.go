@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -67,6 +68,7 @@ func SuperviseWithConfig(ctx context.Context, a Actor, cfg SupervisorConfig) {
 						"actor", a.Name(),
 						"panic", r,
 						"restart_in", backoff,
+						"stack", string(debug.Stack()),
 					)
 				}
 			}()
