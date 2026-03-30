@@ -253,24 +253,24 @@ func TestBuildUserMessage(t *testing.T) {
 }
 
 func TestScanResult_Fields(t *testing.T) {
-	r := scanResult{line: []byte("hello"), ok: true, err: nil}
-	if !r.ok {
-		t.Error("expected ok=true")
+	r := ScanResult{Line: []byte("hello"), OK: true, Err: nil}
+	if !r.OK {
+		t.Error("expected OK=true")
 	}
-	if string(r.line) != "hello" {
-		t.Errorf("line = %q, want hello", r.line)
+	if string(r.Line) != "hello" {
+		t.Errorf("Line = %q, want hello", r.Line)
 	}
-	if r.err != nil {
-		t.Errorf("err = %v, want nil", r.err)
+	if r.Err != nil {
+		t.Errorf("Err = %v, want nil", r.Err)
 	}
 
 	// Verify error-carrying variant.
-	errResult := scanResult{ok: false, err: fmt.Errorf("read failed")}
-	if errResult.ok {
-		t.Error("expected ok=false for error result")
+	errResult := ScanResult{OK: false, Err: fmt.Errorf("read failed")}
+	if errResult.OK {
+		t.Error("expected OK=false for error result")
 	}
-	if errResult.err == nil || errResult.err.Error() != "read failed" {
-		t.Errorf("err = %v, want 'read failed'", errResult.err)
+	if errResult.Err == nil || errResult.Err.Error() != "read failed" {
+		t.Errorf("Err = %v, want 'read failed'", errResult.Err)
 	}
 }
 
