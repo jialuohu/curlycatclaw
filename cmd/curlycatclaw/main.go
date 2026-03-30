@@ -279,7 +279,13 @@ func run(configPath string) error {
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh)
 
 	// Create session actor.
-	sess := session.New(cfg, claudeClient, cliManager, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, summarizer)
+	// Pass explicit nil interface (not typed nil *ConversationSummarizer) when
+	// summarizer is disabled, so that session.Actor's nil checks work correctly.
+	var sessionSummarizer session.Summarizer
+	if summarizer != nil {
+		sessionSummarizer = summarizer
+	}
+	sess := session.New(cfg, claudeClient, cliManager, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, sessionSummarizer)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
