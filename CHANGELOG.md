@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.5] - 2026-03-30
+
+Clean up stale references across goreleaser config and application code.
+
+### Fixed
+- **Goreleaser archive**: removed reference to deleted `deploy/curlycatclaw.service` that would fail release builds
+- **Goreleaser Docker**: renamed `dockers_v2` to `dockers` (correct key for goreleaser v2 config format, previously silently skipped)
+
+### Removed
+- **`auth_token` config field**: removed undocumented field from `ClaudeConfig` struct, validation, and `AuthOption()`. Config now accepts `cli_path` or `api_key` only, matching documentation since v0.10.4
+
 ## [0.10.4] - 2026-03-30
 
 CLI subprocess auth, response delivery, and Docker unification.
