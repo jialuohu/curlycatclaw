@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -248,6 +249,28 @@ func TestBuildUserMessage(t *testing.T) {
 	}
 	if block["text"] != "Hello!" {
 		t.Errorf("block text = %q, want %q", block["text"], "Hello!")
+	}
+}
+
+func TestScanResult_Fields(t *testing.T) {
+	r := scanResult{line: []byte("hello"), ok: true, err: nil}
+	if !r.ok {
+		t.Error("expected ok=true")
+	}
+	if string(r.line) != "hello" {
+		t.Errorf("line = %q, want hello", r.line)
+	}
+	if r.err != nil {
+		t.Errorf("err = %v, want nil", r.err)
+	}
+
+	// Verify error-carrying variant.
+	errResult := scanResult{ok: false, err: fmt.Errorf("read failed")}
+	if errResult.ok {
+		t.Error("expected ok=false for error result")
+	}
+	if errResult.err == nil || errResult.err.Error() != "read failed" {
+		t.Errorf("err = %v, want 'read failed'", errResult.err)
 	}
 }
 

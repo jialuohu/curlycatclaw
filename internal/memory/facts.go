@@ -148,8 +148,9 @@ func sanitizeFact(s string) string {
 		b.WriteRune(r)
 	}
 	result := strings.TrimSpace(b.String())
-	if len(result) > 200 {
-		result = result[:200]
+	runes := []rune(result)
+	if len(runes) > 200 {
+		result = string(runes[:200])
 	}
 	return result
 }

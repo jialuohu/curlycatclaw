@@ -70,6 +70,13 @@ type ResultEvent struct {
 
 func (ResultEvent) cliEvent() {}
 
+// scanResult carries a single line from the persistent scan goroutine.
+type scanResult struct {
+	line []byte
+	ok   bool
+	err  error
+}
+
 // userKey identifies a unique user conversation for process mapping.
 type userKey struct {
 	UserID int64
@@ -80,7 +87,8 @@ type userKey struct {
 type CLIProcess struct {
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
-	scanner     *bufio.Scanner
+	stdout io.ReadCloser
+	scanCh chan scanResult // persistent scan goroutine delivers lines here
 	sessionID   string
 	mu          sync.Mutex // serializes message sends
 	lastUsed    time.Time
@@ -119,53 +127,52 @@ func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartia
 			return events, ctx.Err()
 		case <-p.done:
 			return events, fmt.Errorf("cli: process exited unexpectedly")
-		default:
-		}
-
-		if !p.scanner.Scan() {
-			if err := p.scanner.Err(); err != nil {
-				return events, fmt.Errorf("cli: read stdout: %w", err)
+		case res := <-p.scanCh:
+			if !res.ok {
+				if res.err != nil {
+					return events, fmt.Errorf("cli: read stdout: %w", res.err)
+				}
+				return events, fmt.Errorf("cli: stdout closed")
 			}
-			return events, fmt.Errorf("cli: stdout closed")
-		}
 
-		line := p.scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		event, err := parseStreamEvent(line)
-		if err != nil {
-			slog.Warn("cli: skip unparseable event", "err", err, "line_len", len(line))
-			continue
-		}
-
-		// Log every event type for debugging.
-		if event != nil {
-			slog.Debug("cli: event", "type", fmt.Sprintf("%T", event))
-		} else {
-			// Peek at what we're skipping.
-			var peek struct{ Type string `json:"type"` }
-			if err := json.Unmarshal(line, &peek); err == nil {
-				slog.Debug("cli: skip event", "type", peek.Type, "len", len(line))
+			line := res.line
+			if len(line) == 0 {
+				continue
 			}
-		}
 
-		if event == nil {
-			continue // unknown event type, tolerate gracefully
-		}
+			event, err := parseStreamEvent(line)
+			if err != nil {
+				slog.Warn("cli: skip unparseable event", "err", err, "line_len", len(line))
+				continue
+			}
 
-		events = append(events, event)
+			// Log every event type for debugging.
+			if event != nil {
+				slog.Debug("cli: event", "type", fmt.Sprintf("%T", event))
+			} else {
+				// Peek at what we're skipping.
+				var peek struct{ Type string `json:"type"` }
+				if err := json.Unmarshal(line, &peek); err == nil {
+					slog.Debug("cli: skip event", "type", peek.Type, "len", len(line))
+				}
+			}
 
-		// Fire streaming callback for text deltas.
-		if td, ok := event.(TextDeltaEvent); ok && onPartialText != nil {
-			onPartialText(td.Text)
-		}
+			if event == nil {
+				continue // unknown event type, tolerate gracefully
+			}
 
-		// Result means this turn is done.
-		if _, ok := event.(ResultEvent); ok {
-			slog.Info("cli: result received, returning")
-			return events, nil
+			events = append(events, event)
+
+			// Fire streaming callback for text deltas.
+			if td, ok := event.(TextDeltaEvent); ok && onPartialText != nil {
+				onPartialText(td.Text)
+			}
+
+			// Result means this turn is done.
+			if _, ok := event.(ResultEvent); ok {
+				slog.Info("cli: result received, returning")
+				return events, nil
+			}
 		}
 	}
 }
@@ -183,6 +190,9 @@ func (p *CLIProcess) Alive() bool {
 // Kill terminates the CLI process.
 func (p *CLIProcess) Kill() {
 	p.stdin.Close()
+	if p.stdout != nil {
+		p.stdout.Close()
+	}
 	if p.cmd.Process != nil {
 		p.cmd.Process.Kill() //nolint:errcheck
 	}
@@ -321,7 +331,7 @@ func (m *CLIManager) Shutdown(timeout time.Duration) {
 }
 
 // spawn creates and starts a new CLI subprocess.
-func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess, error) {
+func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProcess, retErr error) {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -375,6 +385,17 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 		return nil, fmt.Errorf("cli: start process: %w", err)
 	}
 
+	// Cleanup on failure after Start.
+	defer func() {
+		if retErr != nil {
+			stdin.Close()
+			stdout.Close()
+			if cmd.Process != nil {
+				cmd.Process.Kill() //nolint:errcheck
+			}
+		}
+	}()
+
 	done := make(chan struct{})
 	go func() {
 		cmd.Wait() //nolint:errcheck
@@ -384,10 +405,20 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024) // up to 1MB lines
 
+	scanCh := make(chan scanResult, 1)
+	go func() {
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			scanCh <- scanResult{line: line, ok: true}
+		}
+		scanCh <- scanResult{ok: false, err: scanner.Err()}
+	}()
+
 	proc := &CLIProcess{
 		cmd:      cmd,
 		stdin:    stdin,
-		scanner:  scanner,
+		stdout:   stdout,
+		scanCh:   scanCh,
 		lastUsed: time.Now(),
 		done:     done,
 	}
@@ -399,7 +430,6 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 		copy(initBuf, params.InitialMsg)
 		initBuf[len(params.InitialMsg)] = '\n'
 		if _, err := stdin.Write(initBuf); err != nil {
-			proc.Kill()
 			return nil, fmt.Errorf("cli: write initial message: %w", err)
 		}
 	}
@@ -411,35 +441,32 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (*CLIProcess
 	for {
 		select {
 		case <-initCtx.Done():
-			proc.Kill()
 			return nil, fmt.Errorf("cli: timeout waiting for init event")
 		case <-done:
 			return nil, fmt.Errorf("cli: process exited before init: stderr=%s", stderrBuf.String())
-		default:
-		}
+		case res := <-scanCh:
+			if !res.ok {
+				return nil, fmt.Errorf("cli: stdout closed before init: stderr=%s", stderrBuf.String())
+			}
 
-		if !scanner.Scan() {
-			proc.Kill()
-			return nil, fmt.Errorf("cli: stdout closed before init: stderr=%s", stderrBuf.String())
-		}
+			line := res.line
+			if len(line) == 0 {
+				continue
+			}
 
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		event, err := parseStreamEvent(line)
-		if err != nil {
-			continue
-		}
-		if init, ok := event.(SystemInitEvent); ok {
-			proc.sessionID = init.SessionID
-			proc.initMsgSent = len(params.InitialMsg) > 0
-			slog.Info("cli: process started",
-				"session_id", init.SessionID,
-				"model", init.Model,
-				"pid", cmd.Process.Pid)
-			return proc, nil
+			event, err := parseStreamEvent(line)
+			if err != nil {
+				continue
+			}
+			if init, ok := event.(SystemInitEvent); ok {
+				proc.sessionID = init.SessionID
+				proc.initMsgSent = len(params.InitialMsg) > 0
+				slog.Info("cli: process started",
+					"session_id", init.SessionID,
+					"model", init.Model,
+					"pid", cmd.Process.Pid)
+				return proc, nil
+			}
 		}
 	}
 }

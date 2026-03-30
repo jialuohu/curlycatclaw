@@ -55,6 +55,7 @@ type Actor struct {
 	// indexWg tracks in-flight vector/summarization goroutines for clean shutdown.
 	indexWg  sync.WaitGroup
 	indexSeq atomic.Uint64
+	indexSem chan struct{} // bounds concurrent vector/summarization goroutines
 
 	// cachedAnthropicTools caches parsed MCP tool schemas (computed once per tool set).
 	cachedAnthropicTools []anthropic.ToolUnionParam
@@ -97,6 +98,7 @@ func New(
 		facts:       factStore,
 		summarizer:  summarizer,
 		vectorStore: vectorStore,
+		indexSem:    make(chan struct{}, 10),
 	}
 }
 
@@ -174,16 +176,22 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// Index user message in vector store asynchronously.
 	indexText := msg.Text
 	if a.vector != nil && indexText != "" {
-		a.indexWg.Add(1)
-		go func() {
-			defer a.indexWg.Done()
-			indexCtx, cancel := context.WithTimeout(a.bgCtx(), 5*time.Second)
-			defer cancel()
-			msgID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), a.indexSeq.Add(1))
-			if err := a.vector.Index(indexCtx, convID+":"+msgID, indexText, msg.UserID, msg.ChatID, "message"); err != nil {
-				slog.Warn("vector index failed", "err", err)
-			}
-		}()
+		select {
+		case a.indexSem <- struct{}{}:
+			a.indexWg.Add(1)
+			go func() {
+				defer a.indexWg.Done()
+				defer func() { <-a.indexSem }()
+				indexCtx, cancel := context.WithTimeout(a.bgCtx(), 5*time.Second)
+				defer cancel()
+				msgID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), a.indexSeq.Add(1))
+				if err := a.vector.Index(indexCtx, convID+":"+msgID, indexText, msg.UserID, msg.ChatID, "message"); err != nil {
+					slog.Warn("vector index failed", "err", err)
+				}
+			}()
+		default:
+			slog.Warn("vector indexing semaphore full, skipping", "user_id", msg.UserID)
+		}
 	}
 
 	// Build system prompt with timezone, user facts, and relevant summaries.
@@ -239,9 +247,16 @@ func (a *Actor) asyncSummarize(expiredConvID string) {
 	if a.summarizer == nil {
 		return // summarizer disabled (e.g., CLI mode without direct API)
 	}
+	select {
+	case a.indexSem <- struct{}{}:
+	default:
+		slog.Warn("vector indexing semaphore full, skipping summarization", "conv_id", expiredConvID)
+		return
+	}
 	a.indexWg.Add(1)
 	go func() {
 		defer a.indexWg.Done()
+		defer func() { <-a.indexSem }()
 
 		// Mark as pending.
 		if err := a.store.SetSummarizationStatus(expiredConvID, "pending"); err != nil {
@@ -332,6 +347,7 @@ type streamState struct {
 	buf       strings.Builder // accumulated text so far
 	runeCount int             // rune count of buf (avoids repeated conversion)
 	lastFlush time.Time
+	flushing  bool // true while flush() is doing I/O with mutex released
 	mu        sync.Mutex
 	tg        TelegramTransport
 }
@@ -348,6 +364,9 @@ func (ss *streamState) onDelta(delta string) {
 	// If accumulated text exceeds Telegram's 4096-char edit limit,
 	// finalize the current message and start a new one for overflow.
 	if ss.runeCount > 3900 {
+		if ss.flushing {
+			return // another flush is in progress, just accumulate
+		}
 		ss.flush()
 		// Reset for a new message (next flush will create a new one).
 		ss.msgID = 0
@@ -360,11 +379,16 @@ func (ss *streamState) onDelta(delta string) {
 	if time.Since(ss.lastFlush) < streamDebounce {
 		return
 	}
+	if ss.flushing {
+		return // another flush is in progress, just accumulate
+	}
 	ss.flush()
 }
 
 // flush sends the current accumulated text to Telegram. Must be called
-// with ss.mu held.
+// with ss.mu held. Temporarily releases the mutex during blocking I/O
+// and re-acquires it before returning. Concurrent callers see
+// flushing==true and skip (accumulate in buffer only).
 func (ss *streamState) flush() {
 	text := ss.buf.String()
 	if text == "" {
@@ -372,40 +396,61 @@ func (ss *streamState) flush() {
 	}
 	ss.lastFlush = time.Now()
 
-	if ss.msgID <= 0 {
+	// Copy state needed for I/O.
+	msgID := ss.msgID
+	chatID := ss.chatID
+
+	// Mark as flushing so concurrent onDelta() just accumulates.
+	ss.flushing = true
+	ss.mu.Unlock()
+
+	var newMsgID int
+	var gotID bool
+
+	if msgID <= 0 {
 		// First flush (or retry after timeout sentinel -1): send a new message.
 		resultCh := make(chan int, 1)
 		select {
 		case ss.tg.Inbox() <- telegram.OutgoingMessage{
-			ChatID:   ss.chatID,
+			ChatID:   chatID,
 			Text:     text,
 			ResultCh: resultCh,
 		}:
 		default:
-			slog.Warn("telegram inbox full, dropping stream message", "chat_id", ss.chatID)
+			slog.Warn("telegram inbox full, dropping stream message", "chat_id", chatID)
+			ss.mu.Lock()
+			ss.flushing = false
 			return
 		}
 		// Wait for the message ID (with timeout to avoid deadlock if channel is down).
 		select {
 		case id := <-resultCh:
-			ss.msgID = id
+			newMsgID = id
+			gotID = true
 		case <-time.After(5 * time.Second):
-			slog.Warn("timeout waiting for telegram message ID", "chat_id", ss.chatID)
+			slog.Warn("timeout waiting for telegram message ID", "chat_id", chatID)
 			// Set a sentinel to prevent duplicate new-message sends on retry.
 			// -1 means "we tried to send but couldn't get the ID back."
-			ss.msgID = -1
+			newMsgID = -1
+			gotID = true
 		}
 	} else {
 		// Subsequent flush: edit the existing message.
 		select {
 		case ss.tg.Inbox() <- telegram.OutgoingMessage{
-			ChatID:    ss.chatID,
+			ChatID:    chatID,
 			Text:      text,
-			MessageID: ss.msgID,
+			MessageID: msgID,
 		}:
 		default:
-			slog.Warn("telegram inbox full, dropping stream edit", "chat_id", ss.chatID)
+			slog.Warn("telegram inbox full, dropping stream edit", "chat_id", chatID)
 		}
+	}
+
+	ss.mu.Lock()
+	ss.flushing = false
+	if gotID {
+		ss.msgID = newMsgID
 	}
 }
 
@@ -414,6 +459,9 @@ func (ss *streamState) flush() {
 func (ss *streamState) finalFlush() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
+	if ss.flushing {
+		return // flush in progress from onDelta; that flush will send the text
+	}
 	ss.flush()
 }
 
@@ -458,7 +506,9 @@ func (a *Actor) toolUseLoop(
 			if ss.msgID > 0 {
 				// Already streamed partial text: append error notice.
 				ss.buf.WriteString("\n\n[error: response incomplete]")
-				ss.flush()
+				if !ss.flushing {
+					ss.flush()
+				}
 			} else {
 				// No streaming started: send a visible error to the user.
 				a.trySend(telegram.OutgoingMessage{
@@ -665,7 +715,9 @@ func (a *Actor) handleWithCLI(
 		ss.mu.Lock()
 		if ss.msgID > 0 {
 			ss.buf.WriteString("\n\n[error: response incomplete]")
-			ss.flush()
+			if !ss.flushing {
+				ss.flush()
+			}
 		} else {
 			a.trySend(telegram.OutgoingMessage{
 				ChatID: chatID,
@@ -699,7 +751,9 @@ func (a *Actor) handleWithCLI(
 						Text:   fmt.Sprintf("[tool] %s", tc.Name),
 					})
 				}
-				a.store.LogToolCall(convID, tc.ID, tc.Name, tc.Input) //nolint:errcheck
+				if err := a.store.LogToolCall(convID, tc.ID, tc.Name, tc.Input); err != nil {
+						slog.Warn("failed to log tool call", "err", err, "tool", tc.Name)
+					}
 			}
 		case claude.ResultEvent:
 			if e.IsError {
@@ -727,16 +781,22 @@ func (a *Actor) handleWithCLI(
 
 	// Index assistant response in vector store (async).
 	if fullText != "" && a.vector != nil {
-		a.indexWg.Add(1)
-		go func() {
-			defer a.indexWg.Done()
-			indexCtx, cancel := context.WithTimeout(a.bgCtx(), 5*time.Second)
-			defer cancel()
-			msgID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), a.indexSeq.Add(1))
-			if err := a.vector.Index(indexCtx, convID+":"+msgID, fullText, userID, chatID, "assistant"); err != nil {
-				slog.Warn("vector index failed", "err", err)
-			}
-		}()
+		select {
+		case a.indexSem <- struct{}{}:
+			a.indexWg.Add(1)
+			go func() {
+				defer a.indexWg.Done()
+				defer func() { <-a.indexSem }()
+				indexCtx, cancel := context.WithTimeout(a.bgCtx(), 5*time.Second)
+				defer cancel()
+				msgID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), a.indexSeq.Add(1))
+				if err := a.vector.Index(indexCtx, convID+":"+msgID, fullText, userID, chatID, "assistant"); err != nil {
+					slog.Warn("vector index failed", "err", err)
+				}
+			}()
+		default:
+			slog.Warn("vector indexing semaphore full, skipping", "user_id", userID)
+		}
 	}
 
 	return nil
@@ -812,11 +872,19 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 					fmt.Fprintf(&sb, "[id=%d] %s (%s)\n", f.ID, f.Fact, f.Category)
 				}
 				sb.WriteString("</user_facts>\n")
-				a.indexWg.Add(1)
-				go func() {
-					defer a.indexWg.Done()
-					a.facts.UpdateLastReferenced(ids) //nolint:errcheck
-				}()
+				select {
+				case a.indexSem <- struct{}{}:
+					a.indexWg.Add(1)
+					go func() {
+						defer a.indexWg.Done()
+						defer func() { <-a.indexSem }()
+						if err := a.facts.UpdateLastReferenced(ids); err != nil {
+							slog.Warn("failed to update fact references", "err", err)
+						}
+					}()
+				default:
+					slog.Warn("vector indexing semaphore full, skipping fact reference update")
+				}
 			}
 
 			sb.WriteString("\n## Memory instructions\n")

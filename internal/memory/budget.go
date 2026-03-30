@@ -135,15 +135,15 @@ func (bm *BudgetManager) ClassifyTurns(ctx context.Context, currentMsg string, t
 			if j < len(classifications) {
 				result[idx].Classification = classifications[j].Classification
 				result[idx].Summary = classifications[j].Summary
+
+				// Cache the LLM result (but not fallback values).
+				content := turnText(turns[idx])
+				hash := cacheHash(content, currentMsg)
+				bm.cacheSet(hash, result[idx].Classification, result[idx].Summary)
 			} else {
 				// Fallback: if we didn't get enough results, include fully.
 				result[idx].Classification = "full"
 			}
-
-			// Cache the result.
-			content := turnText(turns[idx])
-			hash := cacheHash(content, currentMsg)
-			bm.cacheSet(hash, result[idx].Classification, result[idx].Summary)
 		}
 	}
 
@@ -160,8 +160,9 @@ func (bm *BudgetManager) classifyViaLLM(ctx context.Context, currentMsg string, 
 	for i, idx := range indices {
 		content := turnText(turns[idx])
 		// Truncate very long turns for the classification prompt.
-		if len(content) > 500 {
-			content = content[:500] + "..."
+		runes := []rune(content)
+		if len(runes) > 500 {
+			content = string(runes[:500]) + "..."
 		}
 		fmt.Fprintf(&sb, "TURN %d:\n%s\n\n", i+1, content)
 	}

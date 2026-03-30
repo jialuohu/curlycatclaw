@@ -44,8 +44,6 @@ type Photo struct {
 	Data      []byte // raw image bytes (downloaded from Telegram)
 	MimeType  string // e.g. "image/jpeg"
 	FileID    string // Telegram file_id for reference storage
-	Width     int
-	Height    int
 }
 
 // OutgoingMessage represents a message to be sent to a Telegram chat.
@@ -218,8 +216,6 @@ func (ch *Channel) downloadPhoto(bot *tgbotapi.BotAPI, ps tgbotapi.PhotoSize) (P
 		Data:     data,
 		MimeType: mime,
 		FileID:   ps.FileID,
-		Width:    ps.Width,
-		Height:   ps.Height,
 	}, nil
 }
 

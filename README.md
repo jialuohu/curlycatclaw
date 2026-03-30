@@ -52,7 +52,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - **Landlock sandbox** — Linux filesystem restriction (opt-in)
 - **Encrypted credentials** — AES-256-GCM for MCP server secrets
-- **Secure defaults** — empty allowlist = no access, MCP env filtering, Wasm SSRF/DNS-rebinding protection, 50 MiB module cap, config fail-fast validation
+- **Secure defaults** — empty allowlist = no access, MCP env filtering, Wasm SSRF/DNS-rebinding protection, enforced `:user_id` scoping on user tables (UNION/INTERSECT/EXCEPT blocked), 50 MiB module cap, config fail-fast validation with embedder type checking
 - **Tool transparency** — see what tools Claude calls; confirmation prompts for sensitive operations
 
 ## Quick Start
@@ -139,7 +139,7 @@ curlycatclaw spawns a long-lived `claude` CLI process per user. The CLI handles 
 │  │  Actor   │   │   Actor   │   │   Actor   │         │
 │  └────┬─────┘   └─────┬─────┘   └─────┬─────┘         │
 │       │               │               │               │
-│       │               ├──► Claude      │               │
+│       │               ├──► Claude     │               │
 │       │               │    Direct API (stream+tools)  │
 │       │               │    OR CLI subprocess (Max)    │
 │       │               │               │               │
@@ -168,7 +168,10 @@ Telegram ──► Channel Actor ──► Session Actor ──► Claude API (s
                                                      ▼
                                               onDelta() ── 500ms debounce
                                                      │
-              Telegram ◄── send/edit ◄── flush() ◄───┘
+                                              flush() ── releases mutex during
+                                                     │   Telegram I/O (flushing flag)
+                                                     │
+              Telegram ◄── send/edit ◄───────────────┘
                                                      │
                                               Tool calls? ─── No ──► done
                                                      │
@@ -178,7 +181,7 @@ Telegram ──► Channel Actor ──► Session Actor ──► Claude API (s
                                               state, loop (max 10 rounds)
 ```
 
-Each tool round produces a distinct Telegram message. Text edits respect Telegram's 4096-char limit — long responses split automatically.
+Each tool round produces a distinct Telegram message. Text edits respect Telegram's 4096-char limit -- long responses split automatically. The `flushing` state flag prevents lock contention during Telegram I/O.
 
 ### Memory System
 
@@ -220,12 +223,12 @@ Claude tool_use ──► skills.Registry.Get(name)
 ├──────────────────┼───────────────────┼──────────────────────┤
 │  web_search      │  Namespaced:      │  Capability-gated:   │
 │  save_note       │  server__tool     │  ├ http (SSRF block) │
-│  set_reminder    │                   │  ├ db_read (SELECT)  │
-│  remember_fact   │  Env filtered     │  └ send_message      │
-│  semantic_search │  via allowlist    │                      │
-│                  │                   │ Hot-reload (fsnotify)│
-│  Deps: FactStore │  _user_context    │  50 MiB module cap   │
-│  DB, VectorStore │  injected per call│                      │
+│  set_reminder    │                   │  ├ db_read (enforced │
+│  remember_fact   │  Env filtered     │  │  :user_id scoping,│
+│  semantic_search │  via allowlist    │  │  UNION blocked)   │
+│                  │                   │  └ send_message      │
+│  Deps: FactStore │  _user_context    │                      │
+│  DB, VectorStore │  injected per call│ Hot-reload (fsnotify)│
 └──────────────────┴───────────────────┴──────────────────────┘
                         │
                         ▼

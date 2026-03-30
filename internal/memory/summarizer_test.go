@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestFormatTranscript_PlainText(t *testing.T) {
@@ -147,5 +148,42 @@ func TestSummarizer_EmptyTranscript(t *testing.T) {
 	}
 	if sendCalled {
 		t.Error("send function should not be called for empty transcript")
+	}
+}
+
+func TestFormatTranscript_ImageOnly(t *testing.T) {
+	// Image blocks have type "image" not "text", so extractText returns ""
+	imageContent, _ := json.Marshal([]map[string]interface{}{
+		{"type": "image", "source": map[string]string{"type": "base64", "data": "abc"}},
+	})
+	messages := []Message{
+		{Role: "user", Content: imageContent},
+	}
+	result := FormatTranscript(messages)
+	// Image-only messages produce no text content
+	result = strings.TrimSpace(result)
+	if result != "" && result != "user:" {
+		// Either empty or just the role prefix with no content
+		t.Logf("result = %q (expected empty or role-only)", result)
+	}
+}
+
+func TestFormatTranscript_UTF8(t *testing.T) {
+	// Use multi-byte characters that would be split incorrectly by byte truncation.
+	// Each emoji is 4 bytes; fill past maxTranscriptChars (4000) in runes.
+	longEmoji := strings.Repeat("\U0001f680", 4100) // 4100 rocket emojis
+	content, _ := json.Marshal(longEmoji)
+
+	messages := []Message{
+		{Role: "user", Content: content},
+	}
+
+	result := FormatTranscript(messages)
+
+	if !utf8.ValidString(result) {
+		t.Error("result is not valid UTF-8")
+	}
+	if !strings.HasSuffix(result, "...") {
+		t.Errorf("expected truncated transcript to end with '...', got suffix %q", result[len(result)-10:])
 	}
 }

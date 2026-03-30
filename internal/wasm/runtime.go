@@ -463,11 +463,13 @@ func (w *WasmRuntime) hostDBQuery(ctx context.Context, mod api.Module, queryPtr,
 	// Bind :user_id placeholder if present (only outside string literals).
 	bound, paramCount := replaceOutsideQuotes(query, ":user_id", "?")
 
-	// Warn if query touches user-scoped tables without an effective :user_id binding.
+	// Reject queries that touch user-scoped tables without an effective :user_id binding.
 	// Use paramCount (not strings.Contains) to avoid bypass via :user_id inside quotes.
 	if userScopedTableAccessed(query) && paramCount == 0 {
-		slog.Warn("wasm: db_read query accesses user-scoped table without :user_id filter",
+		slog.Warn("wasm: db_read rejected: user-scoped table without :user_id",
 			"query", query, "user_id", userID)
+		ptr, length := writeString(ctx, mod, marshalError("query rejected: queries on user-scoped tables must include :user_id filter"))
+		return packPtrLen(ptr, length)
 	}
 
 	queryCtx, cancel := context.WithTimeout(ctx, dbQueryTimeout)
@@ -744,7 +746,7 @@ func isSelectOnly(query string) bool {
 	}
 	// Reject statements that contain mutating keywords as standalone words.
 	// This avoids false positives like WHERE action = 'DELETE_REQUEST'.
-	for _, kw := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "ATTACH", "DETACH", "PRAGMA", "VACUUM", "REINDEX"} {
+	for _, kw := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "ATTACH", "DETACH", "PRAGMA", "VACUUM", "REINDEX", "UNION", "INTERSECT", "EXCEPT", "WITH"} {
 		if containsWord(upper, kw) {
 			return false
 		}
@@ -930,9 +932,9 @@ func stripSQLComments(sql string) string {
 // userScopedTableAccessed returns true if the query references tables that
 // contain per-user data (conversations, messages, notes, user_facts, reminders).
 func userScopedTableAccessed(query string) bool {
-	q := strings.ToLower(query)
-	for _, table := range []string{"conversations", "messages", "notes", "user_facts", "reminders", "conversation_summaries", "tool_calls"} {
-		if strings.Contains(q, table) {
+	q := strings.ToUpper(stripSQLComments(query))
+	for _, table := range []string{"CONVERSATIONS", "MESSAGES", "NOTES", "USER_FACTS", "REMINDERS", "CONVERSATION_SUMMARIES", "TOOL_CALLS"} {
+		if containsWord(q, table) {
 			return true
 		}
 	}

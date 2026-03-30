@@ -283,15 +283,20 @@ func run(configPath string) error {
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
+	shutdownComplete := make(chan struct{})
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
 		slog.Info("received signal, shutting down gracefully", "signal", sig)
 		cancel()
-		sig = <-sigCh
-		slog.Error("received second signal, forcing exit", "signal", sig)
-		os.Exit(1)
+		select {
+		case sig = <-sigCh:
+			slog.Error("received second signal, forcing exit", "signal", sig)
+			os.Exit(1)
+		case <-shutdownComplete:
+			return
+		}
 	}()
 
 	// Start health server if enabled.
@@ -300,9 +305,11 @@ func run(configPath string) error {
 	}
 
 	// CLI manager lifecycle: periodic idle cleanup + graceful shutdown.
+	// The cleanup goroutine must exit before Shutdown runs to avoid races.
 	if cliManager != nil {
-		defer cliManager.Shutdown(30 * time.Second)
+		cleanupDone := make(chan struct{})
 		go func() {
+			defer close(cleanupDone)
 			ticker := time.NewTicker(5 * time.Minute)
 			defer ticker.Stop()
 			for {
@@ -314,12 +321,17 @@ func run(configPath string) error {
 				}
 			}
 		}()
+		defer func() {
+			<-cleanupDone
+			cliManager.Shutdown(30 * time.Second)
+		}()
 	}
 
 	slog.Info("curlycatclaw started")
 
 	// Run actors under supervision.
 	actor.SuperviseAll(ctx, 30*time.Second, tg, sess, reminderActor)
+	close(shutdownComplete)
 
 	slog.Info("curlycatclaw stopped")
 	return nil
