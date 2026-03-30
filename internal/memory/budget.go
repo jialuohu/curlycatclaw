@@ -160,8 +160,9 @@ func (bm *BudgetManager) classifyViaLLM(ctx context.Context, currentMsg string, 
 	for i, idx := range indices {
 		content := turnText(turns[idx])
 		// Truncate very long turns for the classification prompt.
-		if len(content) > 500 {
-			content = content[:500] + "..."
+		runes := []rune(content)
+		if len(runes) > 500 {
+			content = string(runes[:500]) + "..."
 		}
 		fmt.Fprintf(&sb, "TURN %d:\n%s\n\n", i+1, content)
 	}

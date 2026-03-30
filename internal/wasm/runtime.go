@@ -746,7 +746,7 @@ func isSelectOnly(query string) bool {
 	}
 	// Reject statements that contain mutating keywords as standalone words.
 	// This avoids false positives like WHERE action = 'DELETE_REQUEST'.
-	for _, kw := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "ATTACH", "DETACH", "PRAGMA", "VACUUM", "REINDEX", "UNION", "INTERSECT", "EXCEPT"} {
+	for _, kw := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "ATTACH", "DETACH", "PRAGMA", "VACUUM", "REINDEX", "UNION", "INTERSECT", "EXCEPT", "WITH"} {
 		if containsWord(upper, kw) {
 			return false
 		}

@@ -64,8 +64,9 @@ func makeSaveNoteExecute(db *sql.DB) func(ctx context.Context, input json.RawMes
 		if params.Content == "" {
 			return "", fmt.Errorf("content is required")
 		}
-		if len(params.Title) > maxNoteTitleLen {
-			return "", fmt.Errorf("title too long: %d chars, max %d", len(params.Title), maxNoteTitleLen)
+		titleRunes := []rune(params.Title)
+		if len(titleRunes) > maxNoteTitleLen {
+			return "", fmt.Errorf("title too long: %d chars, max %d", len(titleRunes), maxNoteTitleLen)
 		}
 		if len(params.Content) > maxNoteContentBytes {
 			return "", fmt.Errorf("content too large: %d bytes, max %d", len(params.Content), maxNoteContentBytes)

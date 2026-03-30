@@ -751,7 +751,9 @@ func (a *Actor) handleWithCLI(
 						Text:   fmt.Sprintf("[tool] %s", tc.Name),
 					})
 				}
-				a.store.LogToolCall(convID, tc.ID, tc.Name, tc.Input) //nolint:errcheck
+				if err := a.store.LogToolCall(convID, tc.ID, tc.Name, tc.Input); err != nil {
+						slog.Warn("failed to log tool call", "err", err, "tool", tc.Name)
+					}
 			}
 		case claude.ResultEvent:
 			if e.IsError {
@@ -876,7 +878,9 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 					go func() {
 						defer a.indexWg.Done()
 						defer func() { <-a.indexSem }()
-						a.facts.UpdateLastReferenced(ids) //nolint:errcheck
+						if err := a.facts.UpdateLastReferenced(ids); err != nil {
+							slog.Warn("failed to update fact references", "err", err)
+						}
 					}()
 				default:
 					slog.Warn("vector indexing semaphore full, skipping fact reference update")
