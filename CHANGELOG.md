@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.10.4] - 2026-03-30
+
+CLI subprocess auth, response delivery, and Docker unification.
+
+### Fixed
+- **Nil interface trap**: nil `*CLIManager` passed as `CLIClient` interface was non-nil, routing all messages to CLI mode and crashing with nil pointer panic on every message (Go nil-interface gotcha)
+- **Silent error results**: CLI subprocess error results (auth failure, rate limit, max_turns) were logged but never sent to Telegram, leaving users in silence
+- **finalFlush race condition**: when a streaming flush was in progress, `finalFlush()` returned early and the last chunk of text was lost
+- **Panic stack traces**: supervisor now logs `debug.Stack()` on actor panics for debuggability
+
+### Changed
+- **OAuth auth via env var**: CLI subprocess receives `CLAUDE_CODE_OAUTH_TOKEN` from config's `oauth_token` field instead of reading short-lived token from `~/.claude/.credentials.json`
+- **Unified config**: Docker and local use the same `config.toml` with env var overrides (`CURLYCATCLAW_DB_PATH`, `CURLYCATCLAW_QDRANT_ADDR`, `CURLYCATCLAW_CLI_PATH`) instead of separate `config.docker.toml`
+- **Debian Docker base**: switched from Alpine to Debian bookworm-slim with Claude CLI installed via npm (Alpine's musl can't run the glibc-linked claude binary)
+- **Removed `--bare` flag**: CLI subprocess no longer uses `--bare` mode, which blocked OAuth authentication
+
+### Removed
+- `config.docker.toml` — replaced by env var overrides on unified config
+- `internal/claude/auth.go` — dead code with wrong credential schema
+- `readOAuthToken()` — read wrong short-lived token from credentials.json
+
+### Added
+- `config.oauth_token` field for long-lived token from `claude setup-token`
+- Env var overrides: `CURLYCATCLAW_DB_PATH`, `CURLYCATCLAW_QDRANT_ADDR`, `CURLYCATCLAW_MODEL`, `CURLYCATCLAW_CLI_PATH`
+- Integration tests for CLI path: error result delivery, normal response, finalFlush race
+- `ScanResult` and `NewTestProcess` exports for CLI subprocess testing
+
 ## [0.10.3] - 2026-03-29
 
 Concurrency, correctness, security, and reliability sweep across 15 files.
