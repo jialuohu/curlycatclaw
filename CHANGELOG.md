@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.12.0] - 2026-03-31
+
+CLI mode now has full memory, conversation summaries survive crashes, and the bot remembers context across DMs without leaking into group chats.
+
+### Added
+- **CLI mode summarization**: conversations are now summarized when they expire in CLI mode (Claude Max subscription). Uses `SpawnOneShot` to make one-shot Claude calls, same pattern as cron tasks. Previously, CLI mode had zero cross-conversation memory beyond explicit user facts.
+- **Crash recovery for summarizations**: on startup, the daemon retries conversations stuck in `pending`, `failed`, or `indexed_failed` states from previous runs. Sequential background processing, capped at 20 per restart, oldest first.
+- **Summary index durability**: if Qdrant vector indexing fails after a summary is saved to SQLite, the conversation is marked `indexed_failed` and retried on next startup. Previously, these summaries were invisible to search forever.
+- **Chat-type-aware summary retrieval**: DM summaries are user-scoped (searchable from any DM). Group/supergroup summaries are chat-scoped (stay in that group). Prevents private DM context from leaking into group chat responses. Includes provenance labels in the system prompt.
+- **`IndexSummary`**: new vector store method that includes `chat_type` metadata in Qdrant payloads
+- **`RecoverableSummarizations`** and **`GetSummaryText`**: new store methods for crash recovery
+- **`ChatType` field** on `IncomingMessage` from Telegram's `Chat.Type`
+- **`chat_type` column** on `conversations` and `conversation_summaries` tables (safe migration)
+
+### Changed
+- **Transcript sampling**: `FormatTranscript` now uses head+tail sampling (first 5000 + last 5000 runes) instead of head-only truncation at 4000 chars. Long conversations no longer lose their endings in summaries.
+- **`SearchSummaries`**: filter logic now depends on chat type instead of always filtering by `(user_id, chat_id)`
+- **`ConversationMeta`**: now returns `chatType` from the conversations table
+- **`GetActiveConversation`**: accepts and stores `chatType` parameter
+
 ## [0.11.0] - 2026-03-30
 
 Reminders can now run Claude with a prompt at fire time, turning static text notifications into scheduled AI tasks.
