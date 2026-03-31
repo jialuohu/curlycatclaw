@@ -294,6 +294,51 @@ func (s *Store) SaveSummary(convID string, userID, chatID int64, summary string,
 	return nil
 }
 
+// Summary represents a stored conversation summary.
+type Summary struct {
+	ID        int64
+	Summary   string
+	CreatedAt string
+}
+
+// ListSummaries returns all summaries for a user, newest first.
+func (s *Store) ListSummaries(userID int64) ([]Summary, error) {
+	rows, err := s.db.Query(
+		`SELECT id, summary, created_at FROM conversation_summaries WHERE user_id = ? ORDER BY created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: list summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var summaries []Summary
+	for rows.Next() {
+		var s Summary
+		if err := rows.Scan(&s.ID, &s.Summary, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
+// DeleteSummary deletes a summary by ID, scoped to the user (IDOR protection).
+func (s *Store) DeleteSummary(summaryID int64, userID int64) error {
+	result, err := s.db.Exec(
+		`DELETE FROM conversation_summaries WHERE id = ? AND user_id = ?`,
+		summaryID, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: delete summary: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("summary: summary %d not found", summaryID)
+	}
+	return nil
+}
+
 // SetSummarizationStatus updates the summarization status on a conversation.
 func (s *Store) SetSummarizationStatus(convID string, status string) error {
 	_, err := s.db.Exec(

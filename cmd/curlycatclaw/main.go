@@ -193,6 +193,10 @@ func run(configPath string) error {
 	if cfg.Vector.Enabled {
 		embedder := newEmbedder(cfg.Vector)
 		slog.Info("embedder configured", "name", embedder.Name(), "dim", embedder.Dimension())
+		if cfg.Memory.Enabled && (cfg.Vector.Embedder == "" || cfg.Vector.Embedder == "fnv") {
+			slog.Warn("FNV embedder provides word-overlap matching only, not semantic search. " +
+				"Memory retrieval quality will be limited. Consider 'ollama' or 'voyage' for better results.")
+		}
 
 		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr, embedder)
 		if err != nil {
@@ -247,6 +251,9 @@ func run(configPath string) error {
 	if cfg.Memory.Enabled {
 		factStore = memory.NewFactStore(store.DB(), cfg.Memory.MaxFacts)
 		for _, s := range skills.InitFactSkills(factStore) {
+			skillReg.Register(s)
+		}
+		for _, s := range skills.InitSummarySkills(store) {
 			skillReg.Register(s)
 		}
 
