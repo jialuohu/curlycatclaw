@@ -3,7 +3,7 @@ timezone = "America/Los_Angeles"
 [claude]
 # Choose ONE authentication method:
 #
-# Option 1: CLI subprocess mode (Claude Max subscription).
+# Option 1: CLI subprocess mode (Claude subscription).
 # Run `claude setup-token` to get a long-lived OAuth token.
 # cli_path    = "/home/you/.local/bin/claude"
 # oauth_token = "sk-ant-oat01-..."

@@ -49,7 +49,7 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 - **Actor model**: each component (Telegram, session, etc.) runs in its own goroutine with typed message channels
 - **Supervision**: panic/recover with exponential backoff, resets after 60s healthy run, WaitGroup drain with 30s timeout on shutdown, configurable via `SupervisorConfig` (initial/max backoff, healthy period), indexing semaphore (10 slots) bounds concurrent vector indexing, dedicated summarization semaphore (2 slots) prevents summarization starvation under burst load
 - **Health endpoint**: `GET /health` on 127.0.0.1, enabled by default via `[health]` config, returns 200/503 based on context cancellation, used by Docker healthcheck
-- **Claude client**: two modes — (1) direct API via Go SDK (streaming + tool_use state machine, 120s timeout, `OnPartialText` callback) or (2) CLI subprocess mode via `CLIManager` (long-lived `claude` process per user, stream-json protocol, enables Claude Max subscription)
+- **Claude client**: two modes — (1) direct API via Go SDK (streaming + tool_use state machine, 120s timeout, `OnPartialText` callback) or (2) CLI subprocess mode via `CLIManager` (long-lived `claude` process per user, stream-json protocol, enables Claude subscription)
 - **CLI subprocess**: spawns `claude --print --input-format stream-json --output-format stream-json` per user; auth via `CLAUDE_CODE_OAUTH_TOKEN` env var (long-lived token from `claude setup-token`, configured in `oauth_token` config field); CLI handles token exchange, LLM calls, and tool execution via MCP; curlycatclaw parses events for Telegram streaming and SQLite logging; persistent scan goroutine delivers events via channel for proper context cancellation; deferred cleanup in spawn() prevents zombie processes; optional `WorkDir` for project-scoped work, optional `HomeDir` for isolated Claude home (clean plugin environment)
 - **Streaming responses**: text deltas streamed to Telegram via message edits (500ms debounce, strings.Builder accumulation), tool_use transitions start new messages, error mid-stream appends notice, pre-stream errors send visible feedback, msgID -1 sentinel handled at all sites, `flushing` state flag releases mutex during Telegram I/O to prevent lock contention, final flush converts markdown to Telegram HTML via `internal/mdhtml` (falls back to plain text on parse error)
 - **Image support**: Telegram photos downloaded by channel actor, sent to Claude as base64 image blocks, stored as file_id references (not inline)
@@ -107,7 +107,7 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 
 Copy `config.toml.example` to `~/.curlycatclaw/config.toml` and fill in credentials.
 
-Auth modes: `cli_path` + `oauth_token` (Claude Max subscription via CLI subprocess) or `api_key` (direct API). CLI mode uses `oauth_token` from `claude setup-token` injected as `CLAUDE_CODE_OAUTH_TOKEN` env var.
+Auth modes: `cli_path` + `oauth_token` (Claude subscription via CLI subprocess) or `api_key` (direct API). CLI mode uses `oauth_token` from `claude setup-token` injected as `CLAUDE_CODE_OAUTH_TOKEN` env var.
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 

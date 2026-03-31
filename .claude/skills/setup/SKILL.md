@@ -151,7 +151,7 @@ response before validating.
 **4a. Anthropic authentication**
 
 **If `CLAUDE_CLI_INSTALLED=true` AND `HAS_BROWSER=true`:**
-Say: "Claude CLI detected. Claude Max subscription (recommended) gives you unlimited usage.
+Say: "Claude CLI detected. Claude subscription (recommended) gives you unlimited usage.
 Type `! claude setup-token` below to start the OAuth flow. When it completes, paste the
 token it shows. Or paste an API key from https://console.anthropic.com/settings/keys"
 

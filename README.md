@@ -23,7 +23,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 ### Core
 
 - **Telegram-native** — message your bot like you'd message a friend, with proper HTML formatting (bold, italic, code blocks, links)
-- **Claude-powered** — streaming responses with tool use, direct API or CLI subprocess mode (Claude Max subscription)
+- **Claude-powered** — streaming responses with tool use, direct API or CLI subprocess mode (Claude subscription)
 - **Real-time streaming** — text deltas streamed via message edits (500ms debounce), final message rendered as Telegram HTML
 - **Image understanding** — send photos, Claude sees them via vision
 - **Project work** — `/project <name>` to do coding tasks (plan, implement, review) in a repo via Telegram
@@ -59,7 +59,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Quick Start
 
-You need a [Telegram bot token](https://t.me/BotFather) and either a [Claude API key](https://console.anthropic.com/) or a [Claude Max subscription](https://claude.ai/code). Three ways to install:
+You need a [Telegram bot token](https://t.me/BotFather) and either a [Claude API key](https://console.anthropic.com/) or a [Claude subscription](https://claude.ai/code). Three ways to install:
 
 ### Option 1: Claude Code (recommended, guided)
 
@@ -102,7 +102,7 @@ timezone = "America/Los_Angeles"
 
 [claude]
 # Choose ONE auth method:
-cli_path    = "/home/you/.local/bin/claude"  # Claude Max subscription (via CLI subprocess)
+cli_path    = "/home/you/.local/bin/claude"  # Claude subscription (via CLI subprocess)
 oauth_token = "sk-ant-oat01-..."             # long-lived token from `claude setup-token`
 # api_key  = "sk-ant-..."                    # API key (direct API, separate billing)
 model       = "claude-sonnet-4-6-20250514"
