@@ -24,6 +24,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/security"
+	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/internal/session"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 	"github.com/jialuohu/curlycatclaw/internal/wasm"
@@ -81,6 +82,14 @@ func run(configPath string) error {
 	dataDir := filepath.Dir(cfg.Storage.DBPath)
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
+	}
+
+	// Set up isolated home directory for CLI project work.
+	if cfg.Claude.IsolatedHome != "" {
+		if err := ensureIsolatedHome(cfg.Claude.IsolatedHome); err != nil {
+			return fmt.Errorf("ensure isolated home: %w", err)
+		}
+		slog.Info("isolated home initialized", "path", cfg.Claude.IsolatedHome)
 	}
 
 	// Initialize storage.
@@ -172,6 +181,20 @@ func run(configPath string) error {
 		}
 	}
 	slog.Info("skills registered", "count", len(skillReg.All()))
+
+	// Load external skill collections (exec-based skills from disk).
+	if len(cfg.SkillCollections) > 0 {
+		sl := skillloader.New(skillReg)
+		if err := sl.LoadAll(ctx, cfg.SkillCollections); err != nil {
+			slog.Warn("skill collections", "err", err)
+		}
+		go func() {
+			if err := sl.WatchForChanges(ctx); err != nil {
+				slog.Warn("skillloader: file watcher stopped", "err", err)
+			}
+		}()
+		defer sl.Shutdown()
+	}
 
 	// Initialize prompt budget manager (optional, requires direct API — not available in CLI mode).
 	var budgetMgr *memory.BudgetManager
@@ -500,4 +523,63 @@ func startHealthServer(ctx context.Context, port int) {
 		defer cancel()
 		srv.Shutdown(shutdownCtx) //nolint:errcheck
 	}()
+}
+
+// ensureIsolatedHome creates the isolated home directory structure for CLI
+// project work. It only symlinks ~/.ssh/known_hosts (not the whole .ssh dir),
+// copies ~/.gitconfig, and skips .gnupg entirely.
+func ensureIsolatedHome(homePath string) error {
+	// Create main directory and plugin dir.
+	pluginDir := filepath.Join(homePath, ".claude", "plugins")
+	if err := os.MkdirAll(pluginDir, 0700); err != nil {
+		return fmt.Errorf("create plugin dir: %w", err)
+	}
+
+	// Set up .ssh directory: only symlink known_hosts.
+	sshDir := filepath.Join(homePath, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return fmt.Errorf("create .ssh dir: %w", err)
+	}
+
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get user home: %w", err)
+	}
+
+	knownHostsSrc := filepath.Join(realHome, ".ssh", "known_hosts")
+	knownHostsDst := filepath.Join(sshDir, "known_hosts")
+	if _, err := os.Stat(knownHostsSrc); err == nil {
+		// Only create symlink if it doesn't already exist.
+		if _, err := os.Lstat(knownHostsDst); os.IsNotExist(err) {
+			if err := os.Symlink(knownHostsSrc, knownHostsDst); err != nil {
+				return fmt.Errorf("symlink known_hosts: %w", err)
+			}
+		}
+	}
+
+	// Copy .gitconfig (not symlink, so isolated env can diverge).
+	gitconfigSrc := filepath.Join(realHome, ".gitconfig")
+	gitconfigDst := filepath.Join(homePath, ".gitconfig")
+	if _, err := os.Stat(gitconfigSrc); err == nil {
+		if _, err := os.Stat(gitconfigDst); os.IsNotExist(err) {
+			data, err := os.ReadFile(gitconfigSrc)
+			if err != nil {
+				return fmt.Errorf("read .gitconfig: %w", err)
+			}
+			if err := os.WriteFile(gitconfigDst, data, 0644); err != nil {
+				return fmt.Errorf("write .gitconfig: %w", err)
+			}
+		}
+	}
+
+	// Create minimal .claude/settings.json if it doesn't exist.
+	settingsPath := filepath.Join(homePath, ".claude", "settings.json")
+	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
+		settings := []byte(`{"permissions":{},"preferences":{}}` + "\n")
+		if err := os.WriteFile(settingsPath, settings, 0644); err != nil {
+			return fmt.Errorf("write settings.json: %w", err)
+		}
+	}
+
+	return nil
 }

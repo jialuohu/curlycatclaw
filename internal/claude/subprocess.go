@@ -224,6 +224,8 @@ type SpawnParams struct {
 	SystemPrompt string
 	MCPConfig    string          // JSON string for --mcp-config
 	InitialMsg   json.RawMessage // first message to send (required for spawn, CLI waits for it before init)
+	WorkDir      string          // if set, cmd.Dir is set to this path
+	HomeDir      string          // if set, HOME env var is replaced with this path
 }
 
 // GetOrCreate returns the existing CLI process for a user or spawns a new one.
@@ -359,7 +361,7 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 		args = append(args, "--strict-mcp-config", "--mcp-config", params.MCPConfig)
 		// Block built-in scheduling tools that compete with curlycatclaw's
 		// set_reminder/list_reminders/cancel_reminder MCP skills.
-		args = append(args, "--disallowedTools", "CronCreate,CronDelete,CronList,ToolSearch")
+		args = append(args, "--disallowedTools", "CronCreate,CronDelete,CronList")
 	}
 	if m.model != "" {
 		args = append(args, "--model", m.model)
@@ -367,12 +369,24 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 
 	cmd := exec.CommandContext(ctx, m.cliPath, args...)
 
+	if params.WorkDir != "" {
+		cmd.Dir = params.WorkDir
+	}
+
+	// Build environment: start with current env, apply HomeDir override,
+	// then inject OAuth token.
+	env := os.Environ()
+	if params.HomeDir != "" {
+		env = replaceEnv(env, "HOME", params.HomeDir)
+	}
+
 	// Inject long-lived OAuth token so the CLI handles auth via
 	// token exchange at /api/oauth/claude_cli/create_api_key.
 	if m.oauthToken != "" {
-		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+m.oauthToken)
+		env = replaceEnv(env, "CLAUDE_CODE_OAUTH_TOKEN", m.oauthToken)
 		slog.Info("cli: OAuth token injected via CLAUDE_CODE_OAUTH_TOKEN")
 	}
+	cmd.Env = env
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -688,6 +702,20 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 	n, err := lw.w.Write(p)
 	lw.n += n
 	return len(p), err // report full write to avoid broken pipe
+}
+
+// replaceEnv replaces or appends a KEY=VALUE pair in an environment slice.
+// If the key already exists, its value is replaced in-place. Otherwise, the
+// new entry is appended.
+func replaceEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, e := range env {
+		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
 }
 
 // NewTestProcess creates a CLIProcess from pre-wired pipes for testing.

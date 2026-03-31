@@ -21,18 +21,34 @@ type Config struct {
 	Budget   BudgetConfig  `toml:"budget"`
 	Vector   VectorConfig  `toml:"vector"`
 	Wasm     WasmConfig    `toml:"wasm"`
-	Memory       MemoryConfig  `toml:"memory"`
-	Logging      LoggingConfig `toml:"logging"`
-	Sandbox      SandboxConfig `toml:"sandbox"`
-	Health       HealthConfig  `toml:"health"`
-	ConfirmTools []string      `toml:"confirm_tools"`
+	Memory           MemoryConfig           `toml:"memory"`
+	Logging          LoggingConfig          `toml:"logging"`
+	Sandbox          SandboxConfig          `toml:"sandbox"`
+	Health           HealthConfig           `toml:"health"`
+	ConfirmTools     []string               `toml:"confirm_tools"`
+	Projects         []ProjectConfig        `toml:"projects"`
+	SkillCollections []SkillCollectionConfig `toml:"skill_collections"`
+}
+
+// SkillCollectionConfig defines a directory of external skills.
+type SkillCollectionConfig struct {
+	Path      string `toml:"path"`
+	Namespace string `toml:"namespace"` // optional, defaults to collection name
+}
+
+// ProjectConfig defines a project that can be activated for CLI work.
+type ProjectConfig struct {
+	Name string `toml:"name"`
+	Path string `toml:"path"`
 }
 
 type ClaudeConfig struct {
-	CLIPath    string `toml:"cli_path"`    // path to claude binary (CLI subprocess mode)
-	APIKey     string `toml:"api_key"`     // direct API mode
-	OAuthToken string `toml:"oauth_token"` // long-lived token from `claude setup-token` (CLI mode)
-	Model      string `toml:"model"`
+	CLIPath        string   `toml:"cli_path"`        // path to claude binary (CLI subprocess mode)
+	APIKey         string   `toml:"api_key"`         // direct API mode
+	OAuthToken     string   `toml:"oauth_token"`     // long-lived token from `claude setup-token` (CLI mode)
+	Model          string   `toml:"model"`
+	IsolatedHome   string   `toml:"isolated_home"`   // path to isolated Claude home dir for project work
+	AllowedPlugins []string `toml:"allowed_plugins"` // plugin names user can install via chat
 }
 
 // UseCLI returns true if CLI subprocess mode is configured.
@@ -273,6 +289,43 @@ func (c *Config) validate() error {
 	}
 	if c.Health.Enabled && (c.Health.Port < 1 || c.Health.Port > 65535) {
 		return fmt.Errorf("config: health.port must be between 1 and 65535")
+	}
+	if c.Claude.IsolatedHome != "" {
+		parent := filepath.Dir(c.Claude.IsolatedHome)
+		info, err := os.Stat(parent)
+		if err != nil {
+			return fmt.Errorf("config: claude.isolated_home parent %q does not exist: %w", parent, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("config: claude.isolated_home parent %q is not a directory", parent)
+		}
+	}
+	for i, p := range c.Projects {
+		if p.Name == "" {
+			return fmt.Errorf("config: projects[%d].name is required", i)
+		}
+		if p.Path == "" {
+			return fmt.Errorf("config: projects[%d].path is required", i)
+		}
+		info, err := os.Stat(p.Path)
+		if err != nil {
+			return fmt.Errorf("config: projects[%d].path %q does not exist: %w", i, p.Path, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("config: projects[%d].path %q is not a directory", i, p.Path)
+		}
+	}
+	for i, sc := range c.SkillCollections {
+		if sc.Path == "" {
+			return fmt.Errorf("config: skill_collections[%d].path is required", i)
+		}
+		info, err := os.Stat(sc.Path)
+		if err != nil {
+			return fmt.Errorf("config: skill_collections[%d].path %q does not exist: %w", i, sc.Path, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("config: skill_collections[%d].path %q is not a directory", i, sc.Path)
+		}
 	}
 	return nil
 }
