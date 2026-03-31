@@ -59,34 +59,39 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Quick Start
 
-**Prerequisites:** Docker, a [Telegram bot token](https://t.me/BotFather), and either a [Claude API key](https://console.anthropic.com/) or the [Claude CLI](https://claude.ai/code) (for Max subscription mode).
+You need a [Telegram bot token](https://t.me/BotFather) and either a [Claude API key](https://console.anthropic.com/) or a [Claude Max subscription](https://claude.ai/code). Three ways to install:
+
+### Option 1: Claude Code (recommended, guided)
+
+If you have [Claude Code](https://claude.ai/code) installed, it walks you through everything:
 
 ```bash
-# Clone the repo
-git clone https://github.com/jialuohu/curlycatclaw.git
-cd curlycatclaw
+git clone https://github.com/jialuohu/curlycatclaw.git && cd curlycatclaw && claude
+```
 
-# Configure
-mkdir -p ~/.curlycatclaw
-cp config.toml.example ~/.curlycatclaw/config.toml
-# Edit ~/.curlycatclaw/config.toml with your API keys and Telegram token
+Then type `/setup`. The skill detects your system, installs dependencies, collects credentials, and starts the service.
 
-# Run (includes Qdrant for vector search)
-docker compose up -d
+### Option 2: Docker (one command, no clone needed)
+
+```bash
+mkdir -p ~/.curlycatclaw && curl -sL https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/deploy/docker-compose.yml -o docker-compose.yml && curl -sL https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/config.toml.example -o ~/.curlycatclaw/config.toml && docker compose up -d
+```
+
+Edit `~/.curlycatclaw/config.toml` with your API keys and Telegram token before running. Includes Qdrant for vector search. See [deploy/docker.md](deploy/docker.md) for details.
+
+### Option 3: Build from source
+
+Requires Go 1.25+ and a running [Qdrant](https://qdrant.tech/) instance.
+
+```bash
+git clone https://github.com/jialuohu/curlycatclaw.git && cd curlycatclaw
+go build -o curlycatclaw ./cmd/curlycatclaw
+mkdir -p ~/.curlycatclaw && cp config.toml.example ~/.curlycatclaw/config.toml
+# Edit config.toml with your credentials
+./curlycatclaw
 ```
 
 Then message your Telegram bot. Done.
-
-See [deploy/docker.md](deploy/docker.md) for details, environment variable overrides, and MCP limitations.
-
-### Alternative: Build from source
-
-If you prefer running without Docker (requires Go 1.25+ and a running Qdrant instance):
-
-```bash
-go build -o curlycatclaw ./cmd/curlycatclaw
-./curlycatclaw --config ~/.curlycatclaw/config.toml
-```
 
 ## Configuration
 

@@ -1,0 +1,42 @@
+# Production docker-compose for curlycatclaw.
+# Uses the pre-built image from GitHub Container Registry (no clone needed).
+#
+# Usage:
+#   1. Download this file and config.toml.example
+#   2. Copy config.toml.example to ~/.curlycatclaw/config.toml and fill in credentials
+#   3. docker compose -f docker-compose.yml up -d
+services:
+  curlycatclaw:
+    image: ghcr.io/jialuohu/curlycatclaw:latest
+    restart: unless-stopped
+    volumes:
+      - ~/.curlycatclaw:/data
+    environment:
+      - CURLYCATCLAW_DB_PATH=/data/curlycatclaw.db
+      - CURLYCATCLAW_QDRANT_ADDR=qdrant:6334
+      - HOME=/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  qdrant:
+    image: qdrant/qdrant:v1.14.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  qdrant-data:
