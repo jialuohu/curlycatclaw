@@ -482,6 +482,7 @@ type streamState struct {
 	runeCount int             // rune count of buf (avoids repeated conversion)
 	lastFlush time.Time
 	flushing  bool // true while flush() is doing I/O with mutex released
+	htmlMode  bool // when true, flush() sets HTML=true on outgoing messages (used by finalFlush)
 	mu        sync.Mutex
 	tg        TelegramTransport
 }
@@ -541,6 +542,8 @@ func (ss *streamState) flush() {
 	var newMsgID int
 	var gotID bool
 
+	useHTML := ss.htmlMode
+
 	if msgID <= 0 {
 		// First flush (or retry after timeout sentinel -1): send a new message.
 		resultCh := make(chan int, 1)
@@ -549,6 +552,7 @@ func (ss *streamState) flush() {
 			ChatID:   chatID,
 			Text:     text,
 			ResultCh: resultCh,
+			HTML:     useHTML,
 		}:
 		default:
 			slog.Warn("telegram inbox full, dropping stream message", "chat_id", chatID)
@@ -575,6 +579,7 @@ func (ss *streamState) flush() {
 			ChatID:    chatID,
 			Text:      text,
 			MessageID: msgID,
+			HTML:      useHTML,
 		}:
 		default:
 			slog.Warn("telegram inbox full, dropping stream edit", "chat_id", chatID)
@@ -591,6 +596,7 @@ func (ss *streamState) flush() {
 // finalFlush sends any remaining accumulated text. Called after the stream
 // completes. Thread-safe. Waits for any in-progress flush to finish, then
 // flushes once more if the buffer has grown since the last flush.
+// Sets htmlMode so the final message is sent with Telegram HTML formatting.
 func (ss *streamState) finalFlush() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -601,7 +607,9 @@ func (ss *streamState) finalFlush() {
 		time.Sleep(5 * time.Millisecond)
 		ss.mu.Lock()
 	}
+	ss.htmlMode = true
 	ss.flush()
+	ss.htmlMode = false
 }
 
 // reset clears the stream state for a new message (e.g. after tool execution).
@@ -683,6 +691,7 @@ func (a *Actor) toolUseLoop(
 				a.trySend(telegram.OutgoingMessage{
 					ChatID: chatID,
 					Text:   resp.TextContent,
+					HTML:   true,
 				})
 			}
 			return nil
@@ -927,6 +936,7 @@ func (a *Actor) handleWithCLI(
 		a.trySend(telegram.OutgoingMessage{
 			ChatID: chatID,
 			Text:   fullText,
+			HTML:   true,
 		})
 	}
 
