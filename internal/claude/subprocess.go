@@ -349,6 +349,7 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 		"--verbose",
 		"--no-session-persistence",
 		"--replay-user-messages",
+		"--dangerously-skip-permissions",
 	}
 
 	if params.SystemPrompt != "" {
@@ -356,6 +357,9 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 	}
 	if params.MCPConfig != "" {
 		args = append(args, "--strict-mcp-config", "--mcp-config", params.MCPConfig)
+		// Block built-in scheduling tools that compete with curlycatclaw's
+		// set_reminder/list_reminders/cancel_reminder MCP skills.
+		args = append(args, "--disallowedTools", "CronCreate,CronDelete,CronList")
 	}
 	if m.model != "" {
 		args = append(args, "--model", m.model)

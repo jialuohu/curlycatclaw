@@ -60,6 +60,9 @@ type Actor struct {
 	// cachedAnthropicTools caches parsed MCP tool schemas (computed once per tool set).
 	cachedAnthropicTools []anthropic.ToolUnionParam
 	cachedToolCount      int // len(tools) when cache was built; invalidates on change
+
+	// configPath is the path to config.toml, passed to MCP server subprocesses.
+	configPath string
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -76,6 +79,7 @@ func New(
 	vectorStore *memory.VectorStore,
 	factStore FactProvider,
 	summarizer Summarizer,
+	configPath string,
 ) *Actor {
 	ctxb := memory.NewContextBuilder(store)
 	if budget != nil {
@@ -99,6 +103,7 @@ func New(
 		summarizer:  summarizer,
 		vectorStore: vectorStore,
 		indexSem:    make(chan struct{}, 10),
+		configPath:  configPath,
 	}
 }
 
@@ -864,6 +869,7 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 				"CURLYCATCLAW_USER_ID": fmt.Sprintf("%d", userID),
 				"CURLYCATCLAW_CHAT_ID": fmt.Sprintf("%d", chatID),
 				"CURLYCATCLAW_DB_PATH": a.cfg.Storage.DBPath,
+				"CURLYCATCLAW_CONFIG":  a.configPath,
 			},
 		},
 	}
@@ -890,6 +896,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 	fmt.Fprintf(&sb, "The user's timezone is %s. Current local time: %s.\n", a.cfg.Timezone, now.Format("2006-01-02 15:04 MST"))
 	sb.WriteString("Always use this timezone for scheduling, time references, and \"today/tomorrow/yesterday.\"\n")
 	sb.WriteString("When the user says \"3pm\" they mean 3pm in their timezone, not UTC.\n")
+	sb.WriteString("\nIMPORTANT: For reminders and scheduling, ALWAYS use the set_reminder tool. Never use built-in CronCreate or similar. set_reminder supports one-time, recurring (cron), and Claude-powered cron tasks via the prompt parameter.\n")
 
 	// Tier 1: User facts.
 	if a.cfg.Memory.Enabled && a.facts != nil {

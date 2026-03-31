@@ -174,14 +174,9 @@ func (ce *CronExecutor) runToolLoop(
 
 // executeWithCLI runs the prompt through a one-shot CLI subprocess.
 func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt string) (string, error) {
-	promptJSON, err := json.Marshal(prompt)
-	if err != nil {
-		return "", fmt.Errorf("cron: marshal prompt: %w", err)
-	}
-
 	proc, err := ce.cliMgr.SpawnOneShot(ctx, claude.SpawnParams{
 		SystemPrompt: ce.buildSystemPrompt(userID),
-		InitialMsg:   promptJSON,
+		InitialMsg:   claude.BuildUserMessage(prompt),
 	})
 	if err != nil {
 		return "", fmt.Errorf("cron: spawn CLI: %w", err)

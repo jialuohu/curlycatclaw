@@ -312,12 +312,19 @@ func (ra *ReminderActor) Run(ctx context.Context) error {
 		slog.Error("reminder: failed to load pending reminders", "err", err)
 	}
 
+	// Poll DB periodically for reminders created by the MCP server subprocess,
+	// which writes to the same SQLite DB but can't signal this actor's channel.
+	pollTicker := time.NewTicker(10 * time.Second)
+	defer pollTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case id := <-ra.signalCh:
 			ra.handleSignal(ctx, scheduler, id)
+		case <-pollTicker.C:
+			ra.pollNewReminders(ctx, scheduler)
 		}
 	}
 }
@@ -500,6 +507,44 @@ func (ra *ReminderActor) markFiredIfOneTime(r reminderRow) {
 		)
 		if err != nil {
 			slog.Error("reminder: update status to fired", "id", r.ID, "err", err)
+		}
+	}
+}
+
+// pollNewReminders checks for pending reminders not yet scheduled (created by
+// the MCP server subprocess which shares the DB but not the signal channel).
+func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.Scheduler) {
+	rows, err := ra.db.QueryContext(ctx,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt FROM reminders WHERE status = 'pending'`,
+	)
+	if err != nil {
+		slog.Error("reminder: poll query failed", "err", err)
+		return
+	}
+
+	var unscheduled []reminderRow
+	for rows.Next() {
+		var r reminderRow
+		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt); err != nil {
+			slog.Error("reminder: poll scan", "err", err)
+			continue
+		}
+		ra.mu.Lock()
+		_, tracked := ra.jobs[r.ID]
+		ra.mu.Unlock()
+		if !tracked {
+			unscheduled = append(unscheduled, r)
+		}
+	}
+	rows.Close()
+
+	now := time.Now().UTC()
+	for _, r := range unscheduled {
+		slog.Info("reminder: poll found unscheduled reminder", "id", r.ID)
+		if r.FireAt.Before(now) && r.CronExpr == nil {
+			ra.fireReminder(r)
+		} else {
+			ra.scheduleReminder(scheduler, r)
 		}
 	}
 }

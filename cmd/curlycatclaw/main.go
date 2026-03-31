@@ -302,7 +302,7 @@ func run(configPath string) error {
 	if summarizer != nil {
 		sessionSummarizer = summarizer
 	}
-	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, sessionSummarizer)
+	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, sessionSummarizer, configPath)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
