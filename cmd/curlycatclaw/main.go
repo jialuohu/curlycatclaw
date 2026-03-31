@@ -268,8 +268,44 @@ func run(configPath string) error {
 				}
 				return resp.TextContent, nil
 			})
-		} else {
-			slog.Info("summarizer disabled in CLI mode (requires direct API)")
+		} else if cliManager != nil {
+			// CLI mode: use SpawnOneShot for summarization, same pattern as CronExecutor.
+			summarizer = memory.NewSummarizer(func(ctx context.Context, system, user string) (string, error) {
+				proc, err := cliManager.SpawnOneShot(ctx, claude.SpawnParams{
+					SystemPrompt: system,
+					InitialMsg:   claude.BuildUserMessage(user),
+				})
+				if err != nil {
+					return "", fmt.Errorf("cli summarize: spawn: %w", err)
+				}
+				defer proc.Kill()
+
+				var text strings.Builder
+				events, err := proc.Send(ctx, nil, func(delta string) {
+					text.WriteString(delta)
+				})
+				if err != nil {
+					return "", fmt.Errorf("cli summarize: send: %w", err)
+				}
+
+				for _, ev := range events {
+					if res, ok := ev.(claude.ResultEvent); ok {
+						if res.IsError {
+							errMsg := strings.Join(res.Errors, "; ")
+							if errMsg == "" {
+								errMsg = "unknown CLI error"
+							}
+							return "", fmt.Errorf("cli summarize: %s", errMsg)
+						}
+						if text.Len() == 0 {
+							text.WriteString(res.Result)
+						}
+					}
+				}
+
+				return text.String(), nil
+			})
+			slog.Info("summarizer enabled via CLI subprocess")
 		}
 
 		slog.Info("hierarchical memory enabled", "max_facts", cfg.Memory.MaxFacts)

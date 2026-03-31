@@ -123,6 +123,9 @@ func (a *Actor) Run(ctx context.Context) error {
 	a.runCtx.Store(ctx)
 	slog.Info("session actor started")
 
+	// Retry any conversations stuck from a previous run.
+	a.recoverSummarizations()
+
 	defer func() {
 		// Wait for in-flight vector indexing goroutines (with timeout).
 		done := make(chan struct{})
@@ -162,7 +165,7 @@ func (a *Actor) Run(ctx context.Context) error {
 
 func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage) error {
 	// Get or create conversation for this user.
-	convID, expiredConvID, err := a.store.GetActiveConversation(msg.UserID, msg.ChatID)
+	convID, expiredConvID, err := a.store.GetActiveConversation(msg.UserID, msg.ChatID, msg.ChatType)
 	if err != nil {
 		return fmt.Errorf("get conversation: %w", err)
 	}
@@ -200,7 +203,7 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	}
 
 	// Build system prompt with timezone, user facts, and relevant summaries.
-	systemPrompt := a.buildSystemPrompt(msg.UserID, msg.ChatID, msg.Text)
+	systemPrompt := a.buildSystemPrompt(msg.UserID, msg.ChatID, msg.ChatType, msg.Text)
 
 	// CLI subprocess mode: delegate to claude CLI which handles the agent loop.
 	if a.cliMgr != nil {
@@ -270,7 +273,7 @@ func (a *Actor) asyncSummarize(expiredConvID string) {
 		}
 
 		// Get conversation metadata.
-		userID, chatID, msgCount, firstAt, lastAt, err := a.store.ConversationMeta(expiredConvID)
+		userID, chatID, chatType, msgCount, firstAt, lastAt, err := a.store.ConversationMeta(expiredConvID)
 		if err != nil {
 			slog.Warn("summarize: get meta", "err", err)
 			if serr := a.store.SetSummarizationStatus(expiredConvID, "failed"); serr != nil {
@@ -325,12 +328,16 @@ func (a *Actor) asyncSummarize(expiredConvID string) {
 			return
 		}
 
-		// Index in Qdrant for semantic search.
-		if a.vector != nil {
+		// Index in Qdrant for semantic search (with chat_type metadata).
+		if a.vectorStore != nil {
 			indexCtx, indexCancel := context.WithTimeout(a.bgCtx(), 5*time.Second)
 			defer indexCancel()
-			if err := a.vector.Index(indexCtx, "summary:"+expiredConvID, summary, userID, chatID, "summary"); err != nil {
+			if err := a.vectorStore.IndexSummary(indexCtx, "summary:"+expiredConvID, summary, userID, chatID, chatType); err != nil {
 				slog.Warn("summarize: vector index", "err", err)
+				if serr := a.store.SetSummarizationStatus(expiredConvID, "indexed_failed"); serr != nil {
+					slog.Warn("summarize: set status indexed_failed", "conv", expiredConvID, "err", serr)
+				}
+				return
 			}
 		}
 
@@ -339,6 +346,126 @@ func (a *Actor) asyncSummarize(expiredConvID string) {
 		}
 		slog.Info("conversation summarized", "conv", expiredConvID, "messages", msgCount)
 	}()
+}
+
+// recoverSummarizations retries conversations stuck in pending, failed, or
+// indexed_failed states from a previous run. Runs sequentially in its own
+// goroutine to avoid competing with the indexSem semaphore.
+func (a *Actor) recoverSummarizations() {
+	if a.summarizer == nil {
+		return
+	}
+	ids, err := a.store.RecoverableSummarizations()
+	if err != nil {
+		slog.Warn("recover summarizations: query", "err", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	const maxRetries = 20
+	if len(ids) > maxRetries {
+		slog.Warn("recover summarizations: capping retries", "total", len(ids), "cap", maxRetries)
+		ids = ids[:maxRetries]
+	}
+
+	slog.Info("recovering summarizations from previous run", "count", len(ids))
+	a.indexWg.Add(1)
+	go func() {
+		defer a.indexWg.Done()
+		for _, convID := range ids {
+			a.recoverOneConversation(convID)
+		}
+	}()
+}
+
+func (a *Actor) recoverOneConversation(convID string) {
+	userID, chatID, chatType, msgCount, firstAt, lastAt, err := a.store.ConversationMeta(convID)
+	if err != nil {
+		slog.Warn("recover: get meta", "conv", convID, "err", err)
+		return
+	}
+
+	// Check if summary already exists (indexed_failed case: skip re-generation).
+	existingSummary, _ := a.store.GetSummaryText(convID)
+	if existingSummary != "" {
+		// Summary exists, only need to re-index.
+		if a.vectorStore == nil {
+			// Vector store unavailable, can't re-index. Leave status unchanged for next restart.
+			slog.Warn("recover: vector store unavailable, skipping re-index", "conv", convID)
+			return
+		}
+		indexCtx, cancel := context.WithTimeout(a.bgCtx(), 10*time.Second)
+		defer cancel()
+		if err := a.vectorStore.IndexSummary(indexCtx, "summary:"+convID, existingSummary, userID, chatID, chatType); err != nil {
+			slog.Warn("recover: re-index", "conv", convID, "err", err)
+			return
+		}
+		if serr := a.store.SetSummarizationStatus(convID, "done"); serr != nil {
+			slog.Warn("recover: set done", "conv", convID, "err", serr)
+		}
+		slog.Info("recovered summary (re-indexed)", "conv", convID)
+		return
+	}
+
+	// No summary exists, need full summarization.
+	if msgCount < a.cfg.Memory.MinMsgToSummarize {
+		if serr := a.store.SetSummarizationStatus(convID, "done"); serr != nil {
+			slog.Warn("recover: set done", "conv", convID, "err", serr)
+		}
+		return
+	}
+
+	msgs, err := a.store.GetConversationMessages(convID)
+	if err != nil {
+		slog.Warn("recover: get messages", "conv", convID, "err", err)
+		return
+	}
+
+	sumCtx, cancel := context.WithTimeout(a.bgCtx(), 90*time.Second)
+	defer cancel()
+
+	summary, err := a.summarizer.Summarize(sumCtx, msgs)
+	if err != nil {
+		slog.Warn("recover: summarize", "conv", convID, "err", err)
+		if serr := a.store.SetSummarizationStatus(convID, "failed"); serr != nil {
+			slog.Warn("recover: set failed", "conv", convID, "err", serr)
+		}
+		return
+	}
+
+	if summary == "" {
+		if serr := a.store.SetSummarizationStatus(convID, "done"); serr != nil {
+			slog.Warn("recover: set done", "conv", convID, "err", serr)
+		}
+		return
+	}
+
+	if err := a.store.SaveSummary(convID, userID, chatID, summary, msgCount, firstAt, lastAt); err != nil {
+		slog.Warn("recover: save summary", "conv", convID, "err", err)
+		if serr := a.store.SetSummarizationStatus(convID, "failed"); serr != nil {
+			slog.Warn("recover: set failed", "conv", convID, "err", serr)
+		}
+		return
+	}
+
+	if a.vectorStore != nil {
+		indexCtx, indexCancel := context.WithTimeout(a.bgCtx(), 10*time.Second)
+		defer indexCancel()
+		if err := a.vectorStore.IndexSummary(indexCtx, "summary:"+convID, summary, userID, chatID, chatType); err != nil {
+			slog.Warn("recover: vector index", "conv", convID, "err", err)
+			if serr := a.store.SetSummarizationStatus(convID, "indexed_failed"); serr != nil {
+				slog.Warn("recover: set indexed_failed", "conv", convID, "err", serr)
+			}
+			return
+		}
+	}
+
+	if serr := a.store.SetSummarizationStatus(convID, "done"); serr != nil {
+		slog.Warn("recover: set done", "conv", convID, "err", serr)
+	}
+	slog.Info("recovered summary", "conv", convID, "messages", msgCount)
 }
 
 // streamDebounce is the minimum interval between Telegram message edits
@@ -894,7 +1021,7 @@ func (a *Actor) trySend(msg telegram.OutgoingMessage) {
 	}
 }
 
-func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) string {
+func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg string) string {
 	loc := a.cfg.Location()
 	now := time.Now().In(loc)
 
@@ -959,7 +1086,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 		sumCtx, cancel := context.WithTimeout(a.bgCtx(), time.Duration(searchTimeoutSec)*time.Second)
 		defer cancel()
 		results, err := a.vectorStore.SearchSummaries(
-			sumCtx, currentMsg, userID, chatID,
+			sumCtx, currentMsg, userID, chatID, chatType,
 			a.cfg.Memory.SummaryRelevanceLimit,
 			float32(a.cfg.Memory.SummaryScoreThreshold),
 		)
@@ -974,7 +1101,11 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 				if len(date) > 10 {
 					date = date[:10]
 				}
-				fmt.Fprintf(&sb, "[%s] %s\n", date, r.Text)
+				scope := r.ChatType
+				if scope == "" {
+					scope = "private"
+				}
+				fmt.Fprintf(&sb, "[%s, %s] %s\n", date, scope, r.Text)
 			}
 			sb.WriteString("</conversation_summaries>\n")
 		}
