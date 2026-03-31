@@ -11,7 +11,10 @@ import (
 const (
 	summarySystemPrompt = "You summarize conversations. Be specific with names, files, numbers. No greetings or filler."
 	summaryUserPrompt   = "Summarize this conversation in 2-3 sentences. Focus on: what the user asked about, key decisions made, any action items or follow-ups mentioned.\n\nConversation:\n%s"
-	maxTranscriptChars  = 4000
+	maxTranscriptChars  = 12000
+	// headTailChars is the number of characters to keep from each end when
+	// the full transcript exceeds maxTranscriptChars.
+	headTailChars = 5000
 )
 
 // ConversationSummarizer generates summaries of conversations via a Claude client.
@@ -58,16 +61,16 @@ func FormatTranscript(messages []Message) string {
 		}
 		sb.WriteString(text)
 		sb.WriteString("\n")
-
-		if sb.Len() > maxTranscriptChars {
-			break
-		}
 	}
 
 	result := sb.String()
 	runes := []rune(result)
 	if len(runes) > maxTranscriptChars {
-		result = string(runes[:maxTranscriptChars]) + "..."
+		// Head+tail sampling: keep the beginning and end of the conversation
+		// so the summary captures both the opening topic and final conclusions.
+		head := string(runes[:headTailChars])
+		tail := string(runes[len(runes)-headTailChars:])
+		result = head + "\n[...truncated...]\n" + tail
 	}
 	return strings.TrimSpace(result)
 }

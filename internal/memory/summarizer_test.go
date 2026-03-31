@@ -79,8 +79,8 @@ func TestFormatTranscript_Empty(t *testing.T) {
 }
 
 func TestFormatTranscript_Truncation(t *testing.T) {
-	// Create messages that exceed maxTranscriptChars (4000).
-	longText := strings.Repeat("word ", 1000) // 5000 chars
+	// Create messages that exceed maxTranscriptChars (12000).
+	longText := strings.Repeat("word ", 3000) // 15000 chars
 	content, _ := json.Marshal(longText)
 
 	messages := []Message{
@@ -90,12 +90,15 @@ func TestFormatTranscript_Truncation(t *testing.T) {
 
 	result := FormatTranscript(messages)
 
-	// Result should be truncated to around 4000 chars plus "...".
-	if len(result) > 4010 {
-		t.Errorf("transcript length = %d, expected at most ~4003 (4000 + ...)", len(result))
+	// Result should use head+tail sampling with truncation marker.
+	if !strings.Contains(result, "[...truncated...]") {
+		t.Error("expected truncated transcript to contain '[...truncated...]' marker")
 	}
-	if !strings.HasSuffix(result, "...") {
-		t.Errorf("expected truncated transcript to end with '...', got suffix %q", result[len(result)-10:])
+	// Should have content from the beginning and end.
+	runes := []rune(result)
+	// Head (5000) + marker (~19) + tail (5000) = ~10019 runes
+	if len(runes) > 11000 {
+		t.Errorf("transcript rune length = %d, expected at most ~10019", len(runes))
 	}
 }
 
@@ -170,8 +173,8 @@ func TestFormatTranscript_ImageOnly(t *testing.T) {
 
 func TestFormatTranscript_UTF8(t *testing.T) {
 	// Use multi-byte characters that would be split incorrectly by byte truncation.
-	// Each emoji is 4 bytes; fill past maxTranscriptChars (4000) in runes.
-	longEmoji := strings.Repeat("\U0001f680", 4100) // 4100 rocket emojis
+	// Each emoji is 4 bytes; fill past maxTranscriptChars (12000) in runes.
+	longEmoji := strings.Repeat("\U0001f680", 13000) // 13000 rocket emojis
 	content, _ := json.Marshal(longEmoji)
 
 	messages := []Message{
@@ -183,7 +186,52 @@ func TestFormatTranscript_UTF8(t *testing.T) {
 	if !utf8.ValidString(result) {
 		t.Error("result is not valid UTF-8")
 	}
-	if !strings.HasSuffix(result, "...") {
-		t.Errorf("expected truncated transcript to end with '...', got suffix %q", result[len(result)-10:])
+	if !strings.Contains(result, "[...truncated...]") {
+		t.Error("expected truncated transcript to contain '[...truncated...]' marker")
+	}
+}
+
+func TestFormatTranscript_HeadTailSampling(t *testing.T) {
+	// Create a conversation with distinct beginning and ending content.
+	beginContent, _ := json.Marshal("BEGINNING_MARKER this is the start of the conversation")
+	endContent, _ := json.Marshal("ENDING_MARKER this is the end of the conversation")
+	// Fill the middle with enough content to exceed the limit.
+	middleText := strings.Repeat("middle filler content ", 600) // ~13200 chars
+	middleContent, _ := json.Marshal(middleText)
+
+	messages := []Message{
+		{Role: "user", Content: beginContent},
+		{Role: "assistant", Content: middleContent},
+		{Role: "user", Content: endContent},
+	}
+
+	result := FormatTranscript(messages)
+
+	if !strings.Contains(result, "BEGINNING_MARKER") {
+		t.Error("head+tail sampling should preserve the beginning of the conversation")
+	}
+	if !strings.Contains(result, "ENDING_MARKER") {
+		t.Error("head+tail sampling should preserve the end of the conversation")
+	}
+	if !strings.Contains(result, "[...truncated...]") {
+		t.Error("should contain truncation marker between head and tail")
+	}
+}
+
+func TestFormatTranscript_ShortUnchanged(t *testing.T) {
+	// Short transcript should not be truncated.
+	content, _ := json.Marshal("Hello, how are you?")
+	messages := []Message{
+		{Role: "user", Content: content},
+		{Role: "assistant", Content: content},
+	}
+
+	result := FormatTranscript(messages)
+
+	if strings.Contains(result, "[...truncated...]") {
+		t.Error("short transcript should not contain truncation marker")
+	}
+	if !strings.Contains(result, "Hello, how are you?") {
+		t.Error("short transcript should contain full text")
 	}
 }
