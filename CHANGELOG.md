@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.11.0] - 2026-03-30
+
+Reminders can now run Claude with a prompt at fire time, turning static text notifications into scheduled AI tasks.
+
+### Added
+- **Claude-powered cron tasks**: set a reminder with an optional `prompt` field and Claude executes it at the scheduled time with full tool access (web_search, notes, facts, semantic_search, MCP). Results are sent to your Telegram chat.
+- **`CronExecutor`**: runs scheduled prompts with clean context (user facts only, no conversation history), 3-slot concurrency limiter, 5-minute timeout, rate limit retry
+- **`SpawnOneShot`**: isolated CLI subprocess for cron tasks that doesn't interfere with your active conversation's CLI process
+- **`CronRunner` interface**: decouples reminder actor from session package (avoids circular imports)
+- **`[cron:status]` tags** in `list_reminders` output to distinguish Claude-powered reminders from static ones
+- **Schema migration**: `prompt` column added to reminders table (idempotent, handles duplicate column gracefully)
+
+### Changed
+- **`set_reminder` skill**: accepts optional `prompt` parameter
+- **`NewReminderActor`**: accepts optional `CronRunner` for Claude execution (nil = static text only, backwards compatible)
+- **`fireReminder` refactored**: extracted `trySendTelegram` and `markFiredIfOneTime` helpers
+
 ## [0.10.5] - 2026-03-30
 
 Clean up stale references across goreleaser config and application code.
