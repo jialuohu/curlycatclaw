@@ -34,6 +34,8 @@ type IncomingMessage struct {
 	UserID    int64
 	Text      string
 	MessageID int
+	// ChatType is the Telegram chat type: "private", "group", "supergroup", or "channel".
+	ChatType string
 	// Photos contains base64-encoded image data from attached photos.
 	// The channel actor downloads the best-quality photo from Telegram.
 	Photos []Photo
@@ -169,6 +171,7 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 		UserID:    userID,
 		Text:      text,
 		MessageID: upd.Message.MessageID,
+		ChatType:  upd.Message.Chat.Type,
 	}
 
 	// Download photos if present (use the largest available size).

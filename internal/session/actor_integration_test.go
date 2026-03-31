@@ -86,7 +86,7 @@ type toolLog struct {
 	isError bool
 }
 
-func (m *mockStore) GetActiveConversation(_, _ int64) (string, string, error) {
+func (m *mockStore) GetActiveConversation(_, _ int64, _ string) (string, string, error) {
 	return m.convID, "", nil
 }
 
@@ -102,8 +102,16 @@ func (m *mockStore) SetSummarizationStatus(_ string, _ string) error {
 	return nil
 }
 
-func (m *mockStore) ConversationMeta(_ string) (int64, int64, int, time.Time, time.Time, error) {
-	return 0, 0, 0, time.Time{}, time.Time{}, nil
+func (m *mockStore) ConversationMeta(_ string) (int64, int64, string, int, time.Time, time.Time, error) {
+	return 0, 0, "", 0, time.Time{}, time.Time{}, nil
+}
+
+func (m *mockStore) RecoverableSummarizations() ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockStore) GetSummaryText(_ string) (string, error) {
+	return "", nil
 }
 
 func (m *mockStore) AppendMessage(convID, role string, content json.RawMessage) error {

@@ -37,7 +37,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 ### Extensibility
 
 - **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio
-- **Built-in skills** — web search, notes (size-limited), reminders with optional Claude-powered cron tasks, semantic search (result-capped), persistent user facts
+- **Built-in skills** — web search, notes (size-limited), reminders with optional Claude-powered cron tasks, semantic search (result-capped), persistent user facts, conversation summary management
 - **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security, 10 MiB query result cap, quote-aware SQL parameter binding, atomic hot-reload
 
 ### Operations
@@ -190,11 +190,13 @@ Budget Classification (per turn in Tier 3):
        │ miss
   Haiku LLM (batch) ──► "full" | "summary" (1-line) | "none" (drop)
 
-Conversation Archival (>4h idle):
-  Expired conv ──► Load messages ──► Format (4K) ──► Claude summarize
-                                                           │
-                                          SQLite (text) ◄──┤
-                                          Qdrant (embed) ◄─┘
+Conversation Archival (>4h idle, both API and CLI modes):
+  Expired conv ──► Load messages ──► Format (head+tail 12K) ──► Claude summarize
+                                                                       │
+                                                  SQLite (text) ◄──────┤
+                                                  Qdrant (embed+type) ◄┘
+  Crash recovery: retries pending/failed/indexed_failed on startup
+  Chat-type-aware: DM summaries cross-chat, group summaries stay scoped
 ```
 
 ### Tool Execution
@@ -214,6 +216,8 @@ Claude tool_use ──► skills.Registry.Get(name)
 │  set_reminder    │                   │  ├ db_read (enforced │
 │  remember_fact   │  Env filtered     │  │  :user_id scoping,│
 │  semantic_search │  via allowlist    │  │  UNION blocked)   │
+│  list_summaries  │                   │                      │
+│  delete_summary  │                   │                      │
 │                  │                   │  └ send_message      │
 │  Deps: FactStore │  _user_context    │                      │
 │  DB, VectorStore │  injected per call│ Hot-reload (fsnotify)│
@@ -255,6 +259,8 @@ query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked resu
 | `remember_fact` | Save a persistent fact about you across all conversations |
 | `forget_fact` | Remove a saved fact by ID |
 | `list_facts` | List all persistent facts Claude remembers about you |
+| `list_summaries` | View all stored conversation summaries with IDs and previews |
+| `delete_summary` | Remove an incorrect or unwanted conversation summary by ID |
 
 Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
 

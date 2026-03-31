@@ -193,6 +193,10 @@ func run(configPath string) error {
 	if cfg.Vector.Enabled {
 		embedder := newEmbedder(cfg.Vector)
 		slog.Info("embedder configured", "name", embedder.Name(), "dim", embedder.Dimension())
+		if cfg.Memory.Enabled && (cfg.Vector.Embedder == "" || cfg.Vector.Embedder == "fnv") {
+			slog.Warn("FNV embedder provides word-overlap matching only, not semantic search. " +
+				"Memory retrieval quality will be limited. Consider 'ollama' or 'voyage' for better results.")
+		}
 
 		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr, embedder)
 		if err != nil {
@@ -249,6 +253,9 @@ func run(configPath string) error {
 		for _, s := range skills.InitFactSkills(factStore) {
 			skillReg.Register(s)
 		}
+		for _, s := range skills.InitSummarySkills(store) {
+			skillReg.Register(s)
+		}
 
 		// Create a dedicated client for summarization (requires direct API).
 		if authOpt != nil {
@@ -268,8 +275,44 @@ func run(configPath string) error {
 				}
 				return resp.TextContent, nil
 			})
-		} else {
-			slog.Info("summarizer disabled in CLI mode (requires direct API)")
+		} else if cliManager != nil {
+			// CLI mode: use SpawnOneShot for summarization, same pattern as CronExecutor.
+			summarizer = memory.NewSummarizer(func(ctx context.Context, system, user string) (string, error) {
+				proc, err := cliManager.SpawnOneShot(ctx, claude.SpawnParams{
+					SystemPrompt: system,
+					InitialMsg:   claude.BuildUserMessage(user),
+				})
+				if err != nil {
+					return "", fmt.Errorf("cli summarize: spawn: %w", err)
+				}
+				defer proc.Kill()
+
+				var text strings.Builder
+				events, err := proc.Send(ctx, nil, func(delta string) {
+					text.WriteString(delta)
+				})
+				if err != nil {
+					return "", fmt.Errorf("cli summarize: send: %w", err)
+				}
+
+				for _, ev := range events {
+					if res, ok := ev.(claude.ResultEvent); ok {
+						if res.IsError {
+							errMsg := strings.Join(res.Errors, "; ")
+							if errMsg == "" {
+								errMsg = "unknown CLI error"
+							}
+							return "", fmt.Errorf("cli summarize: %s", errMsg)
+						}
+						if text.Len() == 0 {
+							text.WriteString(res.Result)
+						}
+					}
+				}
+
+				return text.String(), nil
+			})
+			slog.Info("summarizer enabled via CLI subprocess")
 		}
 
 		slog.Info("hierarchical memory enabled", "max_facts", cfg.Memory.MaxFacts)

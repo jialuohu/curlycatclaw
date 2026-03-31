@@ -178,7 +178,7 @@ func TestGetActiveConversation_CreatesNew(t *testing.T) {
 	s := newTestStore(t)
 
 	// No conversations exist yet, should create a new one.
-	id, expiredID, err := s.GetActiveConversation(42, 100)
+	id, expiredID, err := s.GetActiveConversation(42, 100, "private")
 	if err != nil {
 		t.Fatalf("GetActiveConversation: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestGetActiveConversation_ReturnsExisting(t *testing.T) {
 		t.Fatalf("CreateConversation: %v", err)
 	}
 
-	active, expiredID, err := s.GetActiveConversation(42, 100)
+	active, expiredID, err := s.GetActiveConversation(42, 100, "private")
 	if err != nil {
 		t.Fatalf("GetActiveConversation: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestGetActiveConversation_StaleCreatesNew(t *testing.T) {
 		t.Fatalf("update timestamp: %v", err)
 	}
 
-	active, expiredID, err := s.GetActiveConversation(42, 100)
+	active, expiredID, err := s.GetActiveConversation(42, 100, "private")
 	if err != nil {
 		t.Fatalf("GetActiveConversation: %v", err)
 	}
@@ -247,12 +247,12 @@ func TestGetActiveConversation_DifferentChatIDs(t *testing.T) {
 
 	const userID int64 = 42
 
-	id1, _, err := s.GetActiveConversation(userID, 100)
+	id1, _, err := s.GetActiveConversation(userID, 100, "private")
 	if err != nil {
 		t.Fatalf("GetActiveConversation(chatID=100): %v", err)
 	}
 
-	id2, _, err := s.GetActiveConversation(userID, 200)
+	id2, _, err := s.GetActiveConversation(userID, 200, "private")
 	if err != nil {
 		t.Fatalf("GetActiveConversation(chatID=200): %v", err)
 	}
@@ -268,7 +268,7 @@ func TestGetActiveConversation_TransactionConsistency(t *testing.T) {
 	const chatID int64 = 1
 
 	// First call creates a conversation.
-	id1, _, err := s.GetActiveConversation(userID, chatID)
+	id1, _, err := s.GetActiveConversation(userID, chatID, "private")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestGetActiveConversation_TransactionConsistency(t *testing.T) {
 	}
 
 	// Second call within 4h should return the same conversation.
-	id2, _, err := s.GetActiveConversation(userID, chatID)
+	id2, _, err := s.GetActiveConversation(userID, chatID, "private")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestConversationMeta(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	userID, chatID, msgCount, firstAt, lastAt, err := s.ConversationMeta(convID)
+	userID, chatID, _, msgCount, firstAt, lastAt, err := s.ConversationMeta(convID)
 	if err != nil {
 		t.Fatalf("ConversationMeta: %v", err)
 	}
@@ -452,5 +452,81 @@ func TestConversationMeta(t *testing.T) {
 	}
 	if lastAt.Before(firstAt) {
 		t.Errorf("lastAt (%v) should not be before firstAt (%v)", lastAt, firstAt)
+	}
+}
+
+func TestRecoverableSummarizations(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create conversations with various statuses.
+	c1, _ := s.CreateConversation(1, 100)
+	c2, _ := s.CreateConversation(2, 200)
+	c3, _ := s.CreateConversation(3, 300)
+	c4, _ := s.CreateConversation(4, 400)
+
+	s.SetSummarizationStatus(c1, "pending")
+	s.SetSummarizationStatus(c2, "failed")
+	s.SetSummarizationStatus(c3, "indexed_failed")
+	s.SetSummarizationStatus(c4, "done")
+
+	ids, err := s.RecoverableSummarizations()
+	if err != nil {
+		t.Fatalf("RecoverableSummarizations: %v", err)
+	}
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 recoverable, got %d: %v", len(ids), ids)
+	}
+	// Should include pending, failed, indexed_failed but not done.
+	found := map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	for _, want := range []string{c1, c2, c3} {
+		if !found[want] {
+			t.Errorf("expected %s in recoverable list", want)
+		}
+	}
+	if found[c4] {
+		t.Error("'done' conversation should not be in recoverable list")
+	}
+}
+
+func TestRecoverableSummarizations_Empty(t *testing.T) {
+	s := newTestStore(t)
+
+	ids, err := s.RecoverableSummarizations()
+	if err != nil {
+		t.Fatalf("RecoverableSummarizations: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 recoverable, got %d", len(ids))
+	}
+}
+
+func TestGetSummaryText(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, _ := s.CreateConversation(42, 100)
+	now := time.Now().UTC()
+	s.SaveSummary(convID, 42, 100, "User discussed Go testing patterns.", 5, now.Add(-time.Hour), now)
+
+	text, err := s.GetSummaryText(convID)
+	if err != nil {
+		t.Fatalf("GetSummaryText: %v", err)
+	}
+	if text != "User discussed Go testing patterns." {
+		t.Errorf("GetSummaryText = %q, want %q", text, "User discussed Go testing patterns.")
+	}
+}
+
+func TestGetSummaryText_NotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	text, err := s.GetSummaryText("nonexistent")
+	if err != nil {
+		t.Fatalf("GetSummaryText: %v", err)
+	}
+	if text != "" {
+		t.Errorf("expected empty string for missing summary, got %q", text)
 	}
 }

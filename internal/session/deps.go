@@ -18,14 +18,16 @@ type LLMClient interface {
 
 // MessageStore abstracts storage operations used by the session actor.
 type MessageStore interface {
-	GetActiveConversation(userID, chatID int64) (convID string, expiredConvID string, err error)
+	GetActiveConversation(userID, chatID int64, chatType string) (convID string, expiredConvID string, err error)
 	AppendMessage(convID, role string, content json.RawMessage) error
 	LogToolCall(convID, callID, name string, input json.RawMessage) error
 	CompleteToolCall(callID string, output json.RawMessage, isError bool) error
 	GetConversationMessages(convID string) ([]memory.Message, error)
 	SaveSummary(convID string, userID, chatID int64, summary string, msgCount int, firstAt, lastAt time.Time) error
 	SetSummarizationStatus(convID string, status string) error
-	ConversationMeta(convID string) (userID, chatID int64, msgCount int, firstAt, lastAt time.Time, err error)
+	ConversationMeta(convID string) (userID, chatID int64, chatType string, msgCount int, firstAt, lastAt time.Time, err error)
+	RecoverableSummarizations() ([]string, error)
+	GetSummaryText(convID string) (string, error)
 }
 
 // FactProvider abstracts user fact retrieval for the session actor.
