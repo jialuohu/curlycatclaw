@@ -282,6 +282,13 @@ func (m *CLIManager) GetOrCreate(ctx context.Context, userID, chatID int64, para
 	return proc, err
 }
 
+// SpawnOneShot creates a temporary CLI process not tracked in the manager's
+// process map. The caller is responsible for calling Kill() on the returned
+// process. Used for cron tasks that need isolated execution.
+func (m *CLIManager) SpawnOneShot(ctx context.Context, params SpawnParams) (*CLIProcess, error) {
+	return m.spawn(ctx, params)
+}
+
 // Remove kills and removes the process for a user.
 func (m *CLIManager) Remove(userID, chatID int64) {
 	key := userKey{UserID: userID, ChatID: chatID}

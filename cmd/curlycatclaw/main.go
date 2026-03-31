@@ -275,8 +275,20 @@ func run(configPath string) error {
 		slog.Info("hierarchical memory enabled", "max_facts", cfg.Memory.MaxFacts)
 	}
 
+	// Create cron executor for Claude-powered scheduled tasks.
+	// Uses the same Claude client, MCP manager, and skills as the session actor
+	// but runs with a clean context (facts only, no conversation history).
+	var cronRunner skills.CronRunner
+	if claudeClient != nil || cliManager != nil {
+		var sessionFacts session.FactProvider
+		if factStore != nil {
+			sessionFacts = factStore
+		}
+		cronRunner = session.NewCronExecutor(cfg, claudeClient, cliManager, mcpMgr, skillReg, sessionFacts)
+	}
+
 	// Create reminder actor.
-	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh)
+	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh, cronRunner)
 
 	// Create session actor.
 	// Pass explicit nil interfaces (not typed nil pointers) when components
