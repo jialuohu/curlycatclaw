@@ -75,15 +75,15 @@ type execer interface {
 
 // CreateConversation inserts a new conversation for userID and chatID and returns its UUID.
 func (s *Store) CreateConversation(userID int64, chatID int64) (string, error) {
-	return s.insertConversation(s.db, userID, chatID)
+	return s.insertConversation(s.db, userID, chatID, "")
 }
 
 // createConversationTx inserts a new conversation within an existing transaction.
-func (s *Store) createConversationTx(tx *sql.Tx, userID int64, chatID int64) (string, error) {
-	return s.insertConversation(tx, userID, chatID)
+func (s *Store) createConversationTx(tx *sql.Tx, userID int64, chatID int64, chatType string) (string, error) {
+	return s.insertConversation(tx, userID, chatID, chatType)
 }
 
-func (s *Store) insertConversation(e execer, userID int64, chatID int64) (string, error) {
+func (s *Store) insertConversation(e execer, userID int64, chatID int64, chatType string) (string, error) {
 	id, err := newUUID()
 	if err != nil {
 		return "", fmt.Errorf("memory: generate uuid: %w", err)
@@ -91,8 +91,8 @@ func (s *Store) insertConversation(e execer, userID int64, chatID int64) (string
 
 	now := time.Now().UTC()
 	_, err = e.Exec(
-		`INSERT INTO conversations (id, user_id, chat_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		id, userID, chatID, now, now,
+		`INSERT INTO conversations (id, user_id, chat_id, chat_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, userID, chatID, chatType, now, now,
 	)
 	if err != nil {
 		return "", fmt.Errorf("memory: create conversation: %w", err)
@@ -209,7 +209,7 @@ func (s *Store) CompleteToolCall(callID string, output json.RawMessage, isError 
 // The check-and-create is wrapped in a transaction for defense-in-depth.
 // With MaxOpenConns(1), all operations are serialized through a single
 // connection, making this effectively exclusive even as a deferred transaction.
-func (s *Store) GetActiveConversation(userID int64, chatID int64) (convID string, expiredConvID string, err error) {
+func (s *Store) GetActiveConversation(userID, chatID int64, chatType string) (convID string, expiredConvID string, err error) {
 	// With MaxOpenConns(1), all operations are serialized through the single
 	// connection. The transaction provides atomicity for check-then-create.
 	tx, err := s.db.Begin()
@@ -227,7 +227,7 @@ func (s *Store) GetActiveConversation(userID int64, chatID int64) (convID string
 	).Scan(&id, &updatedAt)
 
 	if qErr == sql.ErrNoRows {
-		newID, cErr := s.createConversationTx(tx, userID, chatID)
+		newID, cErr := s.createConversationTx(tx, userID, chatID, chatType)
 		if cErr != nil {
 			return "", "", cErr
 		}
@@ -241,7 +241,7 @@ func (s *Store) GetActiveConversation(userID int64, chatID int64) (convID string
 	}
 
 	if time.Since(updatedAt) > 4*time.Hour {
-		newID, cErr := s.createConversationTx(tx, userID, chatID)
+		newID, cErr := s.createConversationTx(tx, userID, chatID, chatType)
 		if cErr != nil {
 			return "", "", cErr
 		}
@@ -327,11 +327,51 @@ func (s *Store) PendingSummarizations() ([]string, error) {
 	return ids, rows.Err()
 }
 
-// ConversationMeta returns the userID, chatID, and message count for a conversation.
-func (s *Store) ConversationMeta(convID string) (userID, chatID int64, msgCount int, firstAt, lastAt time.Time, err error) {
+// RecoverableSummarizations returns conversation IDs that need summarization retry.
+// This includes conversations stuck in "pending" (crash during summarization),
+// "failed" (transient error), or "indexed_failed" (summary saved but vector index failed).
+func (s *Store) RecoverableSummarizations() ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT id FROM conversations WHERE summarization_status IN ('pending', 'failed', 'indexed_failed') ORDER BY updated_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: recoverable summarizations: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GetSummaryText retrieves an existing summary for a conversation, if one exists.
+// Used during recovery to re-index without re-generating the summary.
+func (s *Store) GetSummaryText(convID string) (string, error) {
+	var summary string
+	err := s.db.QueryRow(
+		`SELECT summary FROM conversation_summaries WHERE conversation_id = ?`, convID,
+	).Scan(&summary)
+	if err == sql.ErrNoRows {
+		return "", nil // no summary found is not an error
+	}
+	if err != nil {
+		return "", fmt.Errorf("memory: get summary text: %w", err)
+	}
+	return summary, nil
+}
+
+// ConversationMeta returns the userID, chatID, chatType, and message count for a conversation.
+func (s *Store) ConversationMeta(convID string) (userID, chatID int64, chatType string, msgCount int, firstAt, lastAt time.Time, err error) {
 	var firstStr, lastStr string
+	var ct sql.NullString
 	err = s.db.QueryRow(
-		`SELECT c.user_id, c.chat_id,
+		`SELECT c.user_id, c.chat_id, c.chat_type,
 		        COUNT(m.id),
 		        COALESCE(MIN(m.created_at), c.created_at),
 		        COALESCE(MAX(m.created_at), c.updated_at)
@@ -340,7 +380,8 @@ func (s *Store) ConversationMeta(convID string) (userID, chatID int64, msgCount 
 		 WHERE c.id = ?
 		 GROUP BY c.id`,
 		convID,
-	).Scan(&userID, &chatID, &msgCount, &firstStr, &lastStr)
+	).Scan(&userID, &chatID, &ct, &msgCount, &firstStr, &lastStr)
+	chatType = ct.String
 	if err != nil {
 		err = fmt.Errorf("memory: conversation meta: %w", err)
 		return
@@ -436,7 +477,9 @@ func (s *Store) migrate() error {
 	}
 
 	// Safe migration: add column if it doesn't exist (ALTER TABLE errors are ignored).
-	s.db.Exec(addSummarizationStatus) //nolint:errcheck // column may already exist
+	s.db.Exec(addSummarizationStatus)                                              //nolint:errcheck // column may already exist
+	s.db.Exec(`ALTER TABLE conversations ADD COLUMN chat_type TEXT DEFAULT ''`)     //nolint:errcheck // column may already exist
+	s.db.Exec(`ALTER TABLE conversation_summaries ADD COLUMN chat_type TEXT DEFAULT ''`) //nolint:errcheck // column may already exist
 	return nil
 }
 

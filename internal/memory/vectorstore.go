@@ -24,6 +24,7 @@ type SearchResult struct {
 	Source    string
 	Score     float32
 	CreatedAt string
+	ChatType  string // "private", "group", "supergroup", or "" (legacy)
 }
 
 // VectorStore provides vector search backed by Qdrant.
@@ -67,7 +68,7 @@ func NewVectorStore(ctx context.Context, addr string, embedder Embedder) (*Vecto
 }
 
 // Index upserts a text document into the appropriate collection.
-// source must be "message" or "note".
+// source must be "message", "note", or "summary".
 func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID int64, chatID int64, source string) error {
 	collection := collectionForSource(source)
 	vec, err := vs.embedder.Embed(ctx, text)
@@ -94,6 +95,37 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 	})
 	if err != nil {
 		return fmt.Errorf("vectorstore: upsert: %w", err)
+	}
+	return nil
+}
+
+// IndexSummary upserts a summary with chat_type metadata for chat-type-aware retrieval.
+func (vs *VectorStore) IndexSummary(ctx context.Context, id string, text string, userID int64, chatID int64, chatType string) error {
+	vec, err := vs.embedder.Embed(ctx, text)
+	if err != nil {
+		return fmt.Errorf("vectorstore: embed: %w", err)
+	}
+
+	payload := qdrant.NewValueMap(map[string]any{
+		"user_id":    userID,
+		"chat_id":    chatID,
+		"chat_type":  chatType,
+		"text":       text,
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+	})
+
+	_, err = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+		CollectionName: collectionSummaries,
+		Points: []*qdrant.PointStruct{
+			{
+				Id:      qdrant.NewID(toUUID(id)),
+				Vectors: qdrant.NewVectorsDense(vec),
+				Payload: payload,
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("vectorstore: upsert summary: %w", err)
 	}
 	return nil
 }
@@ -168,9 +200,11 @@ func (vs *VectorStore) Search(ctx context.Context, query string, userID int64, l
 	return allResults, nil
 }
 
-// SearchSummaries queries the summaries collection for documents matching the query,
-// filtered by (userID, chatID), returning up to limit results above the score threshold.
-func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID, chatID int64, limit int, scoreThreshold float32) ([]SearchResult, error) {
+// SearchSummaries queries the summaries collection for documents matching the query.
+// For private chats: returns all private summaries for this user (cross-DM memory).
+// For group/supergroup chats: returns only summaries from this specific chat.
+// Legacy vectors without chat_type are treated as private.
+func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID, chatID int64, chatType string, limit int, scoreThreshold float32) ([]SearchResult, error) {
 	vec, err := vs.embedder.Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("vectorstore: embed query: %w", err)
@@ -180,11 +214,27 @@ func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID
 	}
 	queryLimit := uint64(limit)
 
-	filter := &qdrant.Filter{
-		Must: []*qdrant.Condition{
-			qdrant.NewMatchInt("user_id", userID),
-			qdrant.NewMatchInt("chat_id", chatID),
-		},
+	var filter *qdrant.Filter
+	if chatType == "private" || chatType == "" {
+		// Private chats: search all private summaries for this user.
+		// Include vectors with empty/missing chat_type (legacy) as private.
+		filter = &qdrant.Filter{
+			Must: []*qdrant.Condition{
+				qdrant.NewMatchInt("user_id", userID),
+			},
+			MustNot: []*qdrant.Condition{
+				qdrant.NewMatchKeyword("chat_type", "group"),
+				qdrant.NewMatchKeyword("chat_type", "supergroup"),
+			},
+		}
+	} else {
+		// Group/supergroup: only this chat's summaries.
+		filter = &qdrant.Filter{
+			Must: []*qdrant.Condition{
+				qdrant.NewMatchInt("user_id", userID),
+				qdrant.NewMatchInt("chat_id", chatID),
+			},
+		}
 	}
 
 	scored, err := vs.client.Query(ctx, &qdrant.QueryPoints{
@@ -217,6 +267,9 @@ func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID
 		}
 		if v, ok := sp.Payload["created_at"]; ok {
 			r.CreatedAt = v.GetStringValue()
+		}
+		if v, ok := sp.Payload["chat_type"]; ok {
+			r.ChatType = v.GetStringValue()
 		}
 		results = append(results, r)
 	}
