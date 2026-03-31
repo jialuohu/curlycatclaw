@@ -33,6 +33,34 @@ type VectorStore struct {
 	embedder Embedder
 }
 
+// NewVectorStoreRaw connects to Qdrant at addr without creating collections or
+// binding an embedder. Used by the migration command which manages collections
+// and embeddings itself.
+func NewVectorStoreRaw(ctx context.Context, addr string) (*VectorStore, error) {
+	host, port, err := parseAddr(addr)
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: parse addr: %w", err)
+	}
+
+	client, err := qdrant.NewClient(&qdrant.Config{
+		Host:     host,
+		Port:     port,
+		PoolSize: 1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: connect: %w", err)
+	}
+
+	// Verify connectivity by listing collections.
+	_, err = client.ListCollections(ctx)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("vectorstore: verify connection: %w", err)
+	}
+
+	return &VectorStore{client: client}, nil
+}
+
 // NewVectorStore connects to Qdrant at addr and ensures required collections exist.
 // The embedder determines vector dimensions and embedding strategy.
 func NewVectorStore(ctx context.Context, addr string, embedder Embedder) (*VectorStore, error) {
@@ -87,7 +115,7 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 		CollectionName: collection,
 		Points: []*qdrant.PointStruct{
 			{
-				Id:      qdrant.NewID(toUUID(id)),
+				Id:      qdrant.NewID(ToUUID(id)),
 				Vectors: qdrant.NewVectorsDense(vec),
 				Payload: payload,
 			},
@@ -118,7 +146,7 @@ func (vs *VectorStore) IndexSummary(ctx context.Context, id string, text string,
 		CollectionName: collectionSummaries,
 		Points: []*qdrant.PointStruct{
 			{
-				Id:      qdrant.NewID(toUUID(id)),
+				Id:      qdrant.NewID(ToUUID(id)),
 				Vectors: qdrant.NewVectorsDense(vec),
 				Payload: payload,
 			},
@@ -277,6 +305,51 @@ func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID
 	return results, nil
 }
 
+// DeleteCollection deletes a Qdrant collection by name.
+// Returns nil if the collection does not exist.
+func (vs *VectorStore) DeleteCollection(ctx context.Context, name string) error {
+	exists, err := vs.client.CollectionExists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("vectorstore: check collection %s: %w", name, err)
+	}
+	if !exists {
+		return nil
+	}
+	err = vs.client.DeleteCollection(ctx, name)
+	if err != nil {
+		return fmt.Errorf("vectorstore: delete collection %s: %w", name, err)
+	}
+	return nil
+}
+
+// CreateCollection creates a Qdrant collection with the given name and vector dimension.
+func (vs *VectorStore) CreateCollection(ctx context.Context, name string, dim uint64) error {
+	return vs.client.CreateCollection(ctx, &qdrant.CreateCollection{
+		CollectionName: name,
+		VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
+			Size:     dim,
+			Distance: qdrant.Distance_Cosine,
+		}),
+	})
+}
+
+// BatchUpsert upserts multiple points into a collection.
+func (vs *VectorStore) BatchUpsert(ctx context.Context, collection string, points []*qdrant.PointStruct) error {
+	_, err := vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+		CollectionName: collection,
+		Points:         points,
+	})
+	if err != nil {
+		return fmt.Errorf("vectorstore: batch upsert: %w", err)
+	}
+	return nil
+}
+
+// CollectionNames returns the names of the three standard collections.
+func CollectionNames() [3]string {
+	return [3]string{collectionMessages, collectionNotes, collectionSummaries}
+}
+
 // Close tears down the gRPC connection.
 // It is safe to call Close on a zero-value VectorStore or multiple times.
 func (vs *VectorStore) Close() error {
@@ -323,8 +396,8 @@ func collectionForSource(source string) string {
 	}
 }
 
-// toUUID converts an arbitrary string ID to a valid UUID format using FNV-128 hashing.
-func toUUID(id string) string {
+// ToUUID converts an arbitrary string ID to a valid UUID format using FNV-128 hashing.
+func ToUUID(id string) string {
 	h := fnv.New128a()
 	h.Write([]byte(id))
 	sum := h.Sum(nil)

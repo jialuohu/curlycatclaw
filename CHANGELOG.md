@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.13.0] - 2026-03-31
+
+Talk to your bot in Telegram and get properly formatted replies. Tell it to work on your projects. Load custom skills from disk. Switch embedding providers without losing data.
+
+### Added
+- **Telegram HTML rendering**: Claude's markdown output is converted to Telegram-safe HTML on final message delivery. Falls back to plain text if Telegram rejects the formatting. New `internal/mdhtml` package.
+- **CLI project work**: `/project <name>` command switches the Claude CLI subprocess to a project directory. Isolated Claude home directory prevents plugin inheritance from local setup.
+- **Plugin management via Telegram**: `install_plugin`, `uninstall_plugin`, `list_plugins`, `enable_plugin`, `disable_plugin` skills manage Claude Code plugins in the isolated home. Plugin names validated against config allowlist. File-based reload signal triggers subprocess respawn.
+- **External skill collections**: Load exec-based skills from directory trees via `[[skill_collections]]` config. Each skill is a `skill.toml` descriptor + executable. Minimal env (PATH/HOME/TMPDIR only) prevents secret leakage. fsnotify hot-reload.
+- **Embedder migration tool**: `curlycatclaw migrate-embedder` command wipes and rebuilds Qdrant vector collections with the configured embedder. Supports `--dry-run`. Adds `BatchEmbed` to the Embedder interface (128-item batches for Voyage AI). Tests embedder connectivity before deleting collections.
+
+### Changed
+- CLI subprocess no longer blocks `ToolSearch` in `--disallowedTools`
+- `replaceEnv` in subprocess.go now copies the slice before mutating (prevents data races)
+- `VoyageEmbedder` and `OllamaEmbedder` now implement `BatchEmbed` for efficient bulk re-embedding
+
+### Fixed
+- URL attribute injection in markdown link conversion (quote escaping)
+- Path traversal in external skill command resolution
+- LD_PRELOAD/DYLD_* blocked in external skill environment
+- Plugin skills now use minimal env (no CURLYCATCLAW_MASTER_KEY leakage)
+- Migration preserves original `created_at` timestamps instead of stamping with current time
+
 ## [0.12.1] - 2026-03-31
 
 Memory system hardening: startup warnings, safer concurrency, and user control over summaries.

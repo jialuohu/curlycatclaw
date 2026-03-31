@@ -560,6 +560,128 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 }
 
+func TestValidate_IsolatedHomeParentMissing(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key", IsolatedHome: "/nonexistent/parent/claude-home"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for nonexistent isolated_home parent")
+	}
+	if !strings.Contains(err.Error(), "isolated_home parent") {
+		t.Errorf("error = %q, want it to mention isolated_home parent", err.Error())
+	}
+}
+
+func TestValidate_IsolatedHomeParentExists(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key", IsolatedHome: filepath.Join(dir, "claude-home")},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate should succeed when parent exists: %v", err)
+	}
+}
+
+func TestValidate_ProjectPathMissing(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Projects: []ProjectConfig{{Name: "test", Path: "/nonexistent/path"}},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for nonexistent project path")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error = %q, want it to mention does not exist", err.Error())
+	}
+}
+
+func TestValidate_ProjectPathNotDir(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(f, []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Projects: []ProjectConfig{{Name: "test", Path: f}},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for project path that is not a directory")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("error = %q, want it to mention not a directory", err.Error())
+	}
+}
+
+func TestValidate_ProjectValid(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Projects: []ProjectConfig{{Name: "test", Path: dir}},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate should succeed for valid project: %v", err)
+	}
+}
+
+func TestValidate_ProjectMissingName(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+		Projects: []ProjectConfig{{Name: "", Path: dir}},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for empty project name")
+	}
+	if !strings.Contains(err.Error(), "name is required") {
+		t.Errorf("error = %q, want it to mention name is required", err.Error())
+	}
+}
+
+func TestLoad_ProjectsFromTOML(t *testing.T) {
+	dir := t.TempDir()
+	content := validTOML + `
+[[projects]]
+name = "myapp"
+path = "` + dir + `"
+`
+	path := writeConfig(t, content)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("Projects = %d, want 1", len(cfg.Projects))
+	}
+	if cfg.Projects[0].Name != "myapp" {
+		t.Errorf("Project name = %q, want %q", cfg.Projects[0].Name, "myapp")
+	}
+	if cfg.Projects[0].Path != dir {
+		t.Errorf("Project path = %q, want %q", cfg.Projects[0].Path, dir)
+	}
+}
+
 func TestLoad_EnvOverridesNotSet(t *testing.T) {
 	path := writeConfig(t, validTOML)
 

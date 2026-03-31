@@ -29,6 +29,12 @@ const (
 	mcpToolTimeout = 30 * time.Second
 )
 
+// userKey identifies a unique user conversation for project tracking.
+type userKey struct {
+	UserID int64
+	ChatID int64
+}
+
 // Actor is the central session actor. It wires together Telegram messages,
 // Claude API calls, MCP tool execution, and conversation memory.
 type Actor struct {
@@ -64,6 +70,10 @@ type Actor struct {
 
 	// configPath is the path to config.toml, passed to MCP server subprocesses.
 	configPath string
+
+	// activeProjects tracks the currently active project per user.
+	activeProjects map[userKey]string
+	projectsMu     sync.RWMutex
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -91,21 +101,22 @@ func New(
 		vi = vectorStore
 	}
 	return &Actor{
-		cfg:         cfg,
-		claude:      claudeClient,
-		cliMgr:      cliMgr,
-		tg:          tg,
-		mcp:         mcpMgr,
-		store:       store,
-		ctxb:        ctxb,
-		skills:      skillReg,
-		vector:      vi,
-		facts:       factStore,
-		summarizer:  summarizer,
-		vectorStore: vectorStore,
-		indexSem:    make(chan struct{}, 10),
-		sumSem:     make(chan struct{}, 2),
-		configPath:  configPath,
+		cfg:            cfg,
+		claude:         claudeClient,
+		cliMgr:         cliMgr,
+		tg:             tg,
+		mcp:            mcpMgr,
+		store:          store,
+		ctxb:           ctxb,
+		skills:         skillReg,
+		vector:         vi,
+		facts:          factStore,
+		summarizer:     summarizer,
+		vectorStore:    vectorStore,
+		indexSem:       make(chan struct{}, 10),
+		sumSem:         make(chan struct{}, 2),
+		configPath:     configPath,
+		activeProjects: make(map[userKey]string),
 	}
 }
 
@@ -166,6 +177,11 @@ func (a *Actor) Run(ctx context.Context) error {
 }
 
 func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage) error {
+	// Handle /project command before any LLM interaction.
+	if strings.HasPrefix(msg.Text, "/project") {
+		return a.handleProjectCommand(msg)
+	}
+
 	// Get or create conversation for this user.
 	convID, expiredConvID, err := a.store.GetActiveConversation(msg.UserID, msg.ChatID, msg.ChatType)
 	if err != nil {
@@ -482,6 +498,7 @@ type streamState struct {
 	runeCount int             // rune count of buf (avoids repeated conversion)
 	lastFlush time.Time
 	flushing  bool // true while flush() is doing I/O with mutex released
+	htmlMode  bool // when true, flush() sets HTML=true on outgoing messages (used by finalFlush)
 	mu        sync.Mutex
 	tg        TelegramTransport
 }
@@ -541,6 +558,8 @@ func (ss *streamState) flush() {
 	var newMsgID int
 	var gotID bool
 
+	useHTML := ss.htmlMode
+
 	if msgID <= 0 {
 		// First flush (or retry after timeout sentinel -1): send a new message.
 		resultCh := make(chan int, 1)
@@ -549,6 +568,7 @@ func (ss *streamState) flush() {
 			ChatID:   chatID,
 			Text:     text,
 			ResultCh: resultCh,
+			HTML:     useHTML,
 		}:
 		default:
 			slog.Warn("telegram inbox full, dropping stream message", "chat_id", chatID)
@@ -575,6 +595,7 @@ func (ss *streamState) flush() {
 			ChatID:    chatID,
 			Text:      text,
 			MessageID: msgID,
+			HTML:      useHTML,
 		}:
 		default:
 			slog.Warn("telegram inbox full, dropping stream edit", "chat_id", chatID)
@@ -591,6 +612,7 @@ func (ss *streamState) flush() {
 // finalFlush sends any remaining accumulated text. Called after the stream
 // completes. Thread-safe. Waits for any in-progress flush to finish, then
 // flushes once more if the buffer has grown since the last flush.
+// Sets htmlMode so the final message is sent with Telegram HTML formatting.
 func (ss *streamState) finalFlush() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -601,7 +623,9 @@ func (ss *streamState) finalFlush() {
 		time.Sleep(5 * time.Millisecond)
 		ss.mu.Lock()
 	}
+	ss.htmlMode = true
 	ss.flush()
+	ss.htmlMode = false
 }
 
 // reset clears the stream state for a new message (e.g. after tool execution).
@@ -683,6 +707,7 @@ func (a *Actor) toolUseLoop(
 				a.trySend(telegram.OutgoingMessage{
 					ChatID: chatID,
 					Text:   resp.TextContent,
+					HTML:   true,
 				})
 			}
 			return nil
@@ -842,11 +867,21 @@ func (a *Actor) handleWithCLI(
 		userJSON = claude.BuildUserMessage(userMsg)
 	}
 
-	proc, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, claude.SpawnParams{
+	spawnParams := claude.SpawnParams{
 		SystemPrompt: systemPrompt,
 		MCPConfig:    mcpConfig,
 		InitialMsg:   userJSON,
-	})
+	}
+
+	// Set working directory and isolated home for project work.
+	if proj := a.getActiveProject(userID, chatID); proj != nil {
+		spawnParams.WorkDir = proj.Path
+	}
+	if a.cfg.Claude.IsolatedHome != "" {
+		spawnParams.HomeDir = a.cfg.Claude.IsolatedHome
+	}
+
+	proc, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, spawnParams)
 	if err != nil {
 		return fmt.Errorf("cli get/create: %w", err)
 	}
@@ -927,6 +962,7 @@ func (a *Actor) handleWithCLI(
 		a.trySend(telegram.OutgoingMessage{
 			ChatID: chatID,
 			Text:   fullText,
+			HTML:   true,
 		})
 	}
 
@@ -978,6 +1014,119 @@ func (a *Actor) handleWithCLI(
 		}
 	}
 
+	// Check for plugin reload signal. A plugin management skill writes this
+	// file after install/uninstall/enable/disable. Kill the process so the
+	// next message spawns fresh with updated MCP config.
+	if a.cfg.Claude.IsolatedHome != "" {
+		reloadPath := filepath.Join(a.cfg.Claude.IsolatedHome, ".curlycatclaw-reload-needed")
+		if _, err := os.Stat(reloadPath); err == nil {
+			os.Remove(reloadPath) //nolint:errcheck
+			a.cliMgr.Remove(userID, chatID)
+			slog.Info("cli: reloaded due to plugin change", "user_id", userID, "chat_id", chatID)
+		}
+	}
+
+	return nil
+}
+
+// handleProjectCommand processes /project commands for project selection.
+func (a *Actor) handleProjectCommand(msg telegram.IncomingMessage) error {
+	text := strings.TrimSpace(msg.Text)
+	key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+
+	// /project with no args: list projects and current selection.
+	if text == "/project" {
+		a.projectsMu.RLock()
+		current := a.activeProjects[key]
+		a.projectsMu.RUnlock()
+
+		var sb strings.Builder
+		if len(a.cfg.Projects) == 0 {
+			sb.WriteString("No projects configured. Add [[projects]] entries to config.toml.")
+		} else {
+			sb.WriteString("Available projects:\n")
+			for _, p := range a.cfg.Projects {
+				marker := "  "
+				if p.Name == current {
+					marker = "> "
+				}
+				fmt.Fprintf(&sb, "%s%s (%s)\n", marker, p.Name, p.Path)
+			}
+			if current == "" {
+				sb.WriteString("\nNo project active. Use /project <name> to select one.")
+			} else {
+				fmt.Fprintf(&sb, "\nActive: %s. Use /project off to deactivate.", current)
+			}
+		}
+
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: sb.String()})
+		return nil
+	}
+
+	// Parse the argument.
+	arg := strings.TrimSpace(strings.TrimPrefix(text, "/project"))
+
+	// /project off: clear active project.
+	if arg == "off" {
+		a.projectsMu.Lock()
+		delete(a.activeProjects, key)
+		a.projectsMu.Unlock()
+
+		if a.cliMgr != nil {
+			a.cliMgr.Remove(msg.UserID, msg.ChatID)
+		}
+
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Project deactivated."})
+		return nil
+	}
+
+	// /project <name>: validate and set active project.
+	var found *config.ProjectConfig
+	for i := range a.cfg.Projects {
+		if a.cfg.Projects[i].Name == arg {
+			found = &a.cfg.Projects[i]
+			break
+		}
+	}
+	if found == nil {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Unknown project %q. Use /project to see available projects.", arg),
+		})
+		return nil
+	}
+
+	a.projectsMu.Lock()
+	a.activeProjects[key] = found.Name
+	a.projectsMu.Unlock()
+
+	// Kill current CLI process so the next message spawns with the new project context.
+	if a.cliMgr != nil {
+		a.cliMgr.Remove(msg.UserID, msg.ChatID)
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   fmt.Sprintf("Switched to project %q at %s.", found.Name, found.Path),
+	})
+	return nil
+}
+
+// getActiveProject returns the active project config for the given user, or nil.
+func (a *Actor) getActiveProject(userID, chatID int64) *config.ProjectConfig {
+	key := userKey{UserID: userID, ChatID: chatID}
+	a.projectsMu.RLock()
+	name := a.activeProjects[key]
+	a.projectsMu.RUnlock()
+
+	if name == "" {
+		return nil
+	}
+	for i := range a.cfg.Projects {
+		if a.cfg.Projects[i].Name == name {
+			return &a.cfg.Projects[i]
+		}
+	}
 	return nil
 }
 
@@ -997,17 +1146,53 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 		selfPath, _ = filepath.Abs(os.Args[0])
 	}
 
+	mcpEnv := map[string]string{
+		"CURLYCATCLAW_USER_ID": fmt.Sprintf("%d", userID),
+		"CURLYCATCLAW_CHAT_ID": fmt.Sprintf("%d", chatID),
+		"CURLYCATCLAW_DB_PATH": a.cfg.Storage.DBPath,
+		"CURLYCATCLAW_CONFIG":  a.configPath,
+	}
+	if a.cfg.Claude.IsolatedHome != "" {
+		mcpEnv["CURLYCATCLAW_ISOLATED_HOME"] = a.cfg.Claude.IsolatedHome
+	}
+	if a.cfg.Claude.CLIPath != "" {
+		mcpEnv["CURLYCATCLAW_CLI_PATH"] = a.cfg.Claude.CLIPath
+	}
+
 	servers := map[string]mcpServer{
 		"curlycatclaw-skills": {
 			Command: selfPath,
 			Args:    []string{"--mcp-server"},
-			Env: map[string]string{
-				"CURLYCATCLAW_USER_ID": fmt.Sprintf("%d", userID),
-				"CURLYCATCLAW_CHAT_ID": fmt.Sprintf("%d", chatID),
-				"CURLYCATCLAW_DB_PATH": a.cfg.Storage.DBPath,
-				"CURLYCATCLAW_CONFIG":  a.configPath,
-			},
+			Env:     mcpEnv,
 		},
+	}
+
+	// Include MCP servers from installed plugins in the isolated home.
+	if a.cfg.Claude.IsolatedHome != "" {
+		pluginDir := filepath.Join(a.cfg.Claude.IsolatedHome, ".claude", "plugins")
+		entries, err := os.ReadDir(pluginDir)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				mcpPath := filepath.Join(pluginDir, entry.Name(), ".mcp.json")
+				data, err := os.ReadFile(mcpPath)
+				if err != nil {
+					continue // no .mcp.json in this plugin
+				}
+				var pluginMCP struct {
+					MCPServers map[string]mcpServer `json:"mcpServers"`
+				}
+				if err := json.Unmarshal(data, &pluginMCP); err != nil {
+					slog.Warn("buildMCPConfig: parse plugin mcp.json", "plugin", entry.Name(), "err", err)
+					continue
+				}
+				for name, srv := range pluginMCP.MCPServers {
+					servers[entry.Name()+"__"+name] = srv
+				}
+			}
+		}
 	}
 
 	wrapper := map[string]any{"mcpServers": servers}
@@ -1111,6 +1296,15 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 			}
 			sb.WriteString("</conversation_summaries>\n")
 		}
+	}
+
+	// Active project context.
+	if proj := a.getActiveProject(userID, chatID); proj != nil {
+		sb.WriteString("\n## Active Project\n")
+		fmt.Fprintf(&sb, "You are working in project %q at %s.\n", proj.Name, proj.Path)
+		sb.WriteString("Use built-in tools (Read, Write, Edit, Bash, Glob, Grep) for file operations.\n")
+		sb.WriteString("You have a clean Claude Code environment. Use install_plugin to add skills/tools as needed.\n")
+		sb.WriteString("The project's CLAUDE.md is auto-loaded by the CLI.\n")
 	}
 
 	return sb.String()

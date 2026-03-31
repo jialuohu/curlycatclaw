@@ -13,6 +13,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/jialuohu/curlycatclaw/config"
+	"github.com/jialuohu/curlycatclaw/internal/mdhtml"
 )
 
 const (
@@ -55,6 +56,7 @@ type OutgoingMessage struct {
 	ReplyTo   int      // 0 means no reply
 	MessageID int      // nonzero = edit existing message instead of sending new
 	ResultCh  chan int  // if non-nil, the created/edited MessageID is sent back
+	HTML      bool     // if true, convert markdown to Telegram HTML before sending
 }
 
 // Channel is the Telegram transport actor. It bridges the Telegram Bot API
@@ -246,12 +248,33 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 			text = string(r[:maxMessageLen-3]) + "..."
 		}
 		edit := tgbotapi.NewEditMessageText(msg.ChatID, msg.MessageID, text)
+		if msg.HTML {
+			edit.Text = mdhtml.ConvertSafe(text)
+			edit.ParseMode = tgbotapi.ModeHTML
+		}
 		if _, err := bot.Send(edit); err != nil {
-			slog.Warn("telegram: failed to edit message",
-				"chat_id", msg.ChatID,
-				"message_id", msg.MessageID,
-				"err", err,
-			)
+			// Retry without parse mode if Telegram can't parse the HTML.
+			if msg.HTML && strings.Contains(err.Error(), "can't parse entities") {
+				slog.Warn("telegram: HTML parse failed, retrying as plain text",
+					"chat_id", msg.ChatID,
+					"message_id", msg.MessageID,
+				)
+				edit.Text = msg.Text
+				edit.ParseMode = ""
+				if _, retryErr := bot.Send(edit); retryErr != nil {
+					slog.Warn("telegram: failed to edit message (plain retry)",
+						"chat_id", msg.ChatID,
+						"message_id", msg.MessageID,
+						"err", retryErr,
+					)
+				}
+			} else {
+				slog.Warn("telegram: failed to edit message",
+					"chat_id", msg.ChatID,
+					"message_id", msg.MessageID,
+					"err", err,
+				)
+			}
 		}
 		if msg.ResultCh != nil {
 			msg.ResultCh <- msg.MessageID
@@ -264,6 +287,10 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 
 	for i, chunk := range chunks {
 		mc := tgbotapi.NewMessage(msg.ChatID, chunk)
+		if msg.HTML {
+			mc.Text = mdhtml.ConvertSafe(chunk)
+			mc.ParseMode = tgbotapi.ModeHTML
+		}
 
 		// Only the first chunk replies to the original message.
 		if i == 0 && msg.ReplyTo != 0 {
@@ -272,15 +299,27 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 
 		sent, err := bot.Send(mc)
 		if err != nil {
-			slog.Error("telegram: failed to send message",
-				"chat_id", msg.ChatID,
-				"chunk", i+1,
-				"err", err,
-			)
-			if msg.ResultCh != nil {
-				msg.ResultCh <- 0
+			// Retry without parse mode if Telegram can't parse the HTML.
+			if msg.HTML && strings.Contains(err.Error(), "can't parse entities") {
+				slog.Warn("telegram: HTML parse failed, retrying as plain text",
+					"chat_id", msg.ChatID,
+					"chunk", i+1,
+				)
+				mc.Text = chunk
+				mc.ParseMode = ""
+				sent, err = bot.Send(mc)
 			}
-			return
+			if err != nil {
+				slog.Error("telegram: failed to send message",
+					"chat_id", msg.ChatID,
+					"chunk", i+1,
+					"err", err,
+				)
+				if msg.ResultCh != nil {
+					msg.ResultCh <- 0
+				}
+				return
+			}
 		}
 
 		// Send back the message ID of the first chunk (for streaming).

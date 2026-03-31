@@ -12,6 +12,10 @@ timezone = "America/Los_Angeles"
 # api_key  = "sk-ant-..."
 #
 model = "claude-sonnet-4-6-20250514"
+# Isolated home directory for CLI project work (keeps plugins/config separate).
+# isolated_home = "/home/you/.curlycatclaw/claude-home"
+# Plugin allowlist: only these plugins can be installed via chat.
+# allowed_plugins = ["context7", "playwright"]
 
 [telegram]
 token = "123456:ABC-DEF..."
@@ -93,6 +97,22 @@ port    = 8080
 
 # Tool confirmation: tool name prefixes that require user confirmation before executing.
 # confirm_tools = ["cancel_reminder", "filesystem__delete"]
+
+# Projects for CLI work (use /project command to switch).
+# [[projects]]
+# name = "myapp"
+# path = "/home/you/projects/myapp"
+#
+# [[projects]]
+# name = "backend"
+# path = "/home/you/projects/backend"
+
+# External skill collections (exec-based skills loaded from disk)
+# Each collection is a directory containing subdirectories with skill.toml files.
+# Skills are registered as namespace__skillname (namespace defaults to dir name).
+# [[skill_collections]]
+# path = "/home/you/.curlycatclaw/skills/my-tools"
+# namespace = "mytools"   # optional, defaults to directory or collection.toml name
 
 # Filesystem sandbox (Linux only, requires kernel 5.13+)
 # [sandbox]

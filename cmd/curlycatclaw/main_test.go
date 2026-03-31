@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +104,68 @@ func TestHealthHandler_Returns200(t *testing.T) {
 	}
 }
 
+func TestRunMigrateEmbedderDryRun(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a minimal config file with vector disabled.
+	configFile := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "test.db")
+	configContent := fmt.Sprintf(`
+[storage]
+db_path = %q
+
+[telegram]
+token = "test-token"
+allowed_user_ids = [1]
+
+[claude]
+api_key = "test-key"
+model = "claude-sonnet-4-20250514"
+
+[vector]
+enabled = false
+`, dbPath)
+	os.WriteFile(configFile, []byte(configContent), 0644)
+
+	// Should fail because vector is not enabled.
+	err := runMigrateEmbedder(configFile, true)
+	if err == nil {
+		t.Fatal("expected error when vector is disabled")
+	}
+}
+
+func TestRunMigrateEmbedderDryRun_WithVector(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create config with vector enabled but using FNV (no external services).
+	configFile := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "test.db")
+	configContent := fmt.Sprintf(`
+[storage]
+db_path = %q
+
+[telegram]
+token = "test-token"
+allowed_user_ids = [1]
+
+[claude]
+api_key = "test-key"
+model = "claude-sonnet-4-20250514"
+
+[vector]
+enabled = true
+qdrant_addr = "localhost:6334"
+embedder = "fnv"
+`, dbPath)
+	os.WriteFile(configFile, []byte(configContent), 0644)
+
+	// Dry-run should succeed (doesn't need Qdrant connection).
+	err := runMigrateEmbedder(configFile, true)
+	if err != nil {
+		t.Fatalf("dry-run should succeed: %v", err)
+	}
+}
+
 func TestHealthHandler_Returns503OnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -119,5 +182,120 @@ func TestHealthHandler_Returns503OnShutdown(t *testing.T) {
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 during shutdown, got %d", resp.StatusCode)
+	}
+}
+
+func TestEnsureIsolatedHome_CreatesStructure(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "isolated")
+
+	if err := ensureIsolatedHome(home); err != nil {
+		t.Fatalf("ensureIsolatedHome: %v", err)
+	}
+
+	// Check directories exist.
+	for _, dir := range []string{
+		home,
+		filepath.Join(home, ".claude"),
+		filepath.Join(home, ".claude", "plugins"),
+		filepath.Join(home, ".ssh"),
+	} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Errorf("expected dir %s to exist: %v", dir, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("expected %s to be a directory", dir)
+		}
+	}
+
+	// Check settings.json exists.
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	if _, err := os.Stat(settingsPath); err != nil {
+		t.Errorf("settings.json should exist: %v", err)
+	}
+}
+
+func TestEnsureIsolatedHome_Idempotent(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "isolated")
+
+	// Call twice; should not error on second call.
+	if err := ensureIsolatedHome(home); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := ensureIsolatedHome(home); err != nil {
+		t.Fatalf("second call (idempotent): %v", err)
+	}
+}
+
+func TestEnsureIsolatedHome_CopiesGitconfig(t *testing.T) {
+	// Create a real home dir with .gitconfig.
+	realHome := t.TempDir()
+	t.Setenv("HOME", realHome)
+
+	gitconfig := filepath.Join(realHome, ".gitconfig")
+	if err := os.WriteFile(gitconfig, []byte("[user]\n\tname = Test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	home := filepath.Join(t.TempDir(), "isolated")
+	if err := ensureIsolatedHome(home); err != nil {
+		t.Fatalf("ensureIsolatedHome: %v", err)
+	}
+
+	dst := filepath.Join(home, ".gitconfig")
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read copied .gitconfig: %v", err)
+	}
+	if string(data) != "[user]\n\tname = Test\n" {
+		t.Errorf(".gitconfig content = %q, want original content", string(data))
+	}
+
+	// Verify it's a copy, not a symlink.
+	info, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error(".gitconfig should be a copy, not a symlink")
+	}
+}
+
+func TestEnsureIsolatedHome_SymlinksKnownHosts(t *testing.T) {
+	realHome := t.TempDir()
+	t.Setenv("HOME", realHome)
+
+	// Create .ssh/known_hosts in real home.
+	sshDir := filepath.Join(realHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	knownHosts := filepath.Join(sshDir, "known_hosts")
+	if err := os.WriteFile(knownHosts, []byte("github.com ssh-rsa AAAA...\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	home := filepath.Join(t.TempDir(), "isolated")
+	if err := ensureIsolatedHome(home); err != nil {
+		t.Fatalf("ensureIsolatedHome: %v", err)
+	}
+
+	dst := filepath.Join(home, ".ssh", "known_hosts")
+	info, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatalf("known_hosts not created: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("known_hosts should be a symlink")
+	}
+
+	// Verify .ssh directory is a real directory, not a symlink.
+	sshInfo, err := os.Lstat(filepath.Join(home, ".ssh"))
+	if err != nil {
+		t.Fatalf("lstat .ssh: %v", err)
+	}
+	if sshInfo.Mode()&os.ModeSymlink != 0 {
+		t.Error(".ssh should be a real directory, not a symlink")
 	}
 }

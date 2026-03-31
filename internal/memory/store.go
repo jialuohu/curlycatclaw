@@ -443,6 +443,139 @@ func (s *Store) ConversationMeta(convID string) (userID, chatID int64, chatType 
 	return
 }
 
+// MigrationText holds text content and its metadata for re-embedding.
+type MigrationText struct {
+	ID        string
+	Text      string
+	UserID    int64
+	ChatID    int64
+	Source    string // "message", "note", "summary"
+	ChatType  string // for summaries
+	CreatedAt string
+}
+
+// AllMessageTexts returns all messages with extractable text for migration.
+// It extracts readable text from the JSON content field using the same logic
+// as the summarizer (extractText).
+func (s *Store) AllMessageTexts() ([]MigrationText, error) {
+	rows, err := s.db.Query(
+		`SELECT m.id, m.role, m.content, c.user_id, c.chat_id, m.created_at
+		 FROM messages m
+		 JOIN conversations c ON m.conversation_id = c.id
+		 ORDER BY m.id ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: all message texts: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MigrationText
+	for rows.Next() {
+		var id int64
+		var role, content string
+		var userID, chatID int64
+		var createdAt string
+		if err := rows.Scan(&id, &role, &content, &userID, &chatID, &createdAt); err != nil {
+			return nil, fmt.Errorf("memory: scan message text: %w", err)
+		}
+
+		msg := Message{Role: role, Content: json.RawMessage(content)}
+		text := extractText(msg)
+		if text == "" {
+			continue
+		}
+
+		results = append(results, MigrationText{
+			ID:        fmt.Sprintf("msg-%d", id),
+			Text:      text,
+			UserID:    userID,
+			ChatID:    chatID,
+			Source:    "message",
+			CreatedAt: createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory: iterate message texts: %w", err)
+	}
+	return results, nil
+}
+
+// AllNoteTexts returns all notes for migration. Text is title + content.
+// Returns nil (no error) if the notes table does not exist.
+func (s *Store) AllNoteTexts() ([]MigrationText, error) {
+	// Notes table is created by skills.InitNoteSkills, not by store migrations.
+	// Check if the table exists before querying.
+	var tableName string
+	err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='notes'`).Scan(&tableName)
+	if err != nil {
+		return nil, nil // table doesn't exist, no notes to migrate
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, user_id, chat_id, title, content FROM notes ORDER BY id ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: all note texts: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MigrationText
+	for rows.Next() {
+		var id, userID, chatID int64
+		var title, content string
+		if err := rows.Scan(&id, &userID, &chatID, &title, &content); err != nil {
+			return nil, fmt.Errorf("memory: scan note text: %w", err)
+		}
+
+		text := title + "\n" + content
+		results = append(results, MigrationText{
+			ID:     fmt.Sprintf("note-%d", id),
+			Text:   text,
+			UserID: userID,
+			ChatID: chatID,
+			Source: "note",
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory: iterate note texts: %w", err)
+	}
+	return results, nil
+}
+
+// AllSummaryTexts returns all conversation summaries for migration.
+func (s *Store) AllSummaryTexts() ([]MigrationText, error) {
+	rows, err := s.db.Query(
+		`SELECT conversation_id, user_id, chat_id, summary, COALESCE(chat_type, '') FROM conversation_summaries ORDER BY id ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: all summary texts: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MigrationText
+	for rows.Next() {
+		var convID string
+		var userID, chatID int64
+		var summary, chatType string
+		if err := rows.Scan(&convID, &userID, &chatID, &summary, &chatType); err != nil {
+			return nil, fmt.Errorf("memory: scan summary text: %w", err)
+		}
+
+		results = append(results, MigrationText{
+			ID:       convID,
+			Text:     summary,
+			UserID:   userID,
+			ChatID:   chatID,
+			Source:   "summary",
+			ChatType: chatType,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory: iterate summary texts: %w", err)
+	}
+	return results, nil
+}
+
 // migrate creates the schema tables if they do not exist.
 func (s *Store) migrate() error {
 	const schema = `

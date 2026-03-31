@@ -22,23 +22,26 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ### Core
 
-- **Telegram-native** — message your bot like you'd message a friend
+- **Telegram-native** — message your bot like you'd message a friend, with proper HTML formatting (bold, italic, code blocks, links)
 - **Claude-powered** — streaming responses with tool use, direct API or CLI subprocess mode (Claude Max subscription)
-- **Real-time streaming** — text deltas streamed via message edits (500ms debounce), new messages per tool-use round
+- **Real-time streaming** — text deltas streamed via message edits (500ms debounce), final message rendered as Telegram HTML
 - **Image understanding** — send photos, Claude sees them via vision
+- **Project work** — `/project <name>` to do coding tasks (plan, implement, review) in a repo via Telegram
 
 ### Memory & Context
 
 - **Conversation memory** — SQLite (WAL mode), sliding window context (25 turns, ~150K tokens)
 - **Hierarchical memory** — three tiers: user facts in system prompt, conversation summaries via Qdrant relevance search, current sliding window
 - **Smart context** — Haiku-powered prompt budget manager classifies turn relevance
-- **Vector search** — semantic retrieval via Qdrant with pluggable embeddings (FNV offline, Ollama local, Voyage AI)
+- **Vector search** — semantic retrieval via Qdrant with pluggable embeddings (FNV offline, Ollama local, Voyage AI), `migrate-embedder` CLI for switching providers
 
 ### Extensibility
 
 - **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio
-- **Built-in skills** — web search, notes (size-limited), reminders with optional Claude-powered cron tasks, semantic search (result-capped), persistent user facts, conversation summary management
+- **Built-in skills** — web search, notes, reminders (cron), semantic search, user facts, summary management, plugin management (install/uninstall/enable/disable via Telegram)
 - **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security, 10 MiB query result cap, quote-aware SQL parameter binding, atomic hot-reload
+- **External skill collections** — load exec-based skills from directory trees (`skill.toml` descriptors), minimal sandboxed env, fsnotify hot-reload
+- **Plugin management** — install/manage Claude Code plugins through Telegram with isolated home directory and config allowlist
 
 ### Operations
 
