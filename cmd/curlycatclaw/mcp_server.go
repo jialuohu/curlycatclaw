@@ -10,6 +10,7 @@ import (
 
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
+	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/skills"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -91,6 +92,24 @@ func runMCPServer() error {
 		for _, s := range skills.InitFactSkills(factStore) {
 			reg.Register(s)
 		}
+	}
+
+	// Plugin management skills (optional, requires CLI + isolated home).
+	cliPath := os.Getenv("CURLYCATCLAW_CLI_PATH")
+	isolatedHome := os.Getenv("CURLYCATCLAW_ISOLATED_HOME")
+	if cliPath != "" && isolatedHome != "" {
+		for _, s := range skills.InitPluginSkills(cliPath, isolatedHome, cfg.Claude.AllowedPlugins) {
+			reg.Register(s)
+		}
+	}
+
+	// External skill collections.
+	if len(cfg.SkillCollections) > 0 {
+		loader := skillloader.New(reg)
+		if err := loader.LoadAll(context.Background(), cfg.SkillCollections); err != nil {
+			slog.Warn("mcp-server: skill collections", "err", err)
+		}
+		// No hot-reload in MCP server subprocess (short-lived).
 	}
 
 	// Semantic search (optional, requires Qdrant).

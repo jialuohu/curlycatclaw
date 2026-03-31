@@ -274,6 +274,71 @@ func TestScanResult_Fields(t *testing.T) {
 	}
 }
 
+func TestReplaceEnv_ExistingKey(t *testing.T) {
+	env := []string{"HOME=/old", "PATH=/usr/bin", "USER=test"}
+	result := replaceEnv(env, "HOME", "/new")
+
+	found := false
+	for _, e := range result {
+		if e == "HOME=/new" {
+			found = true
+		}
+		if e == "HOME=/old" {
+			t.Error("old HOME value should be replaced")
+		}
+	}
+	if !found {
+		t.Error("HOME=/new not found in result")
+	}
+	if len(result) != 3 {
+		t.Errorf("len = %d, want 3 (replace in place)", len(result))
+	}
+}
+
+func TestReplaceEnv_NewKey(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "USER=test"}
+	result := replaceEnv(env, "HOME", "/home/user")
+
+	if len(result) != 3 {
+		t.Errorf("len = %d, want 3 (appended)", len(result))
+	}
+	found := false
+	for _, e := range result {
+		if e == "HOME=/home/user" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("HOME=/home/user not found in result")
+	}
+}
+
+func TestReplaceEnv_EmptyEnv(t *testing.T) {
+	result := replaceEnv(nil, "KEY", "value")
+	if len(result) != 1 || result[0] != "KEY=value" {
+		t.Errorf("result = %v, want [KEY=value]", result)
+	}
+}
+
+func TestReplaceEnv_SimilarPrefix(t *testing.T) {
+	// Ensure HOME_DIR is not matched when replacing HOME.
+	env := []string{"HOME_DIR=/data", "HOME=/old"}
+	result := replaceEnv(env, "HOME", "/new")
+
+	if len(result) != 2 {
+		t.Errorf("len = %d, want 2", len(result))
+	}
+	for _, e := range result {
+		if e == "HOME_DIR=/data" {
+			continue // should be untouched
+		}
+		if e == "HOME=/new" {
+			continue // correctly replaced
+		}
+		t.Errorf("unexpected entry: %q", e)
+	}
+}
+
 func TestBuildImageMessage(t *testing.T) {
 	msg := BuildImageMessage("What's this?", []ImageBlock{
 		{MediaType: "image/jpeg", Data: "base64data"},
