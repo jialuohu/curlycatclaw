@@ -19,11 +19,18 @@ go build -o curlycatclaw ./cmd/curlycatclaw
 go test ./... -count=1
 ```
 
+Before pushing, always run the local CI checks (same as the pre-push hook):
+```bash
+go vet ./...
+go test ./... -count=1
+```
+
 Test expectations:
 - When writing new functions, write a corresponding test
 - When fixing a bug, write a regression test
 - When adding error handling, test both success and error paths
 - Tests use stdlib `testing` package with `t.Fatal`/`t.Error` assertions
+- Always run `go vet` and `go test` locally before pushing to avoid CI failures
 
 ## Versioning
 
@@ -40,8 +47,8 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 - **Supervision**: panic/recover with exponential backoff, resets after 60s healthy run, WaitGroup drain with 30s timeout on shutdown, configurable via `SupervisorConfig` (initial/max backoff, healthy period), indexing semaphore (10 slots) bounds concurrent vector indexing, dedicated summarization semaphore (2 slots) prevents summarization starvation under burst load
 - **Health endpoint**: `GET /health` on 127.0.0.1, enabled by default via `[health]` config, returns 200/503 based on context cancellation, used by Docker healthcheck
 - **Claude client**: two modes — (1) direct API via Go SDK (streaming + tool_use state machine, 120s timeout, `OnPartialText` callback) or (2) CLI subprocess mode via `CLIManager` (long-lived `claude` process per user, stream-json protocol, enables Claude Max subscription)
-- **CLI subprocess**: spawns `claude --print --input-format stream-json --output-format stream-json` per user; auth via `CLAUDE_CODE_OAUTH_TOKEN` env var (long-lived token from `claude setup-token`, configured in `oauth_token` config field); CLI handles token exchange, LLM calls, and tool execution via MCP; curlycatclaw parses events for Telegram streaming and SQLite logging; persistent scan goroutine delivers events via channel for proper context cancellation; deferred cleanup in spawn() prevents zombie processes
-- **Streaming responses**: text deltas streamed to Telegram via message edits (500ms debounce, strings.Builder accumulation), tool_use transitions start new messages, error mid-stream appends notice, pre-stream errors send visible feedback, msgID -1 sentinel handled at all sites, `flushing` state flag releases mutex during Telegram I/O to prevent lock contention
+- **CLI subprocess**: spawns `claude --print --input-format stream-json --output-format stream-json` per user; auth via `CLAUDE_CODE_OAUTH_TOKEN` env var (long-lived token from `claude setup-token`, configured in `oauth_token` config field); CLI handles token exchange, LLM calls, and tool execution via MCP; curlycatclaw parses events for Telegram streaming and SQLite logging; persistent scan goroutine delivers events via channel for proper context cancellation; deferred cleanup in spawn() prevents zombie processes; optional `WorkDir` for project-scoped work, optional `HomeDir` for isolated Claude home (clean plugin environment)
+- **Streaming responses**: text deltas streamed to Telegram via message edits (500ms debounce, strings.Builder accumulation), tool_use transitions start new messages, error mid-stream appends notice, pre-stream errors send visible feedback, msgID -1 sentinel handled at all sites, `flushing` state flag releases mutex during Telegram I/O to prevent lock contention, final flush converts markdown to Telegram HTML via `internal/mdhtml` (falls back to plain text on parse error)
 - **Image support**: Telegram photos downloaded by channel actor, sent to Claude as base64 image blocks, stored as file_id references (not inline)
 - **MCP manager**: persistent stdio server connections, tool namespacing (server__tool), allowlist-based env filtering, user context injection
 - **Memory**: SQLite WAL mode, sliding window context (25 turns, ~150K tokens), conversations keyed by (userID, chatID), transactional check-and-create for active conversations
@@ -49,9 +56,11 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 - **Facts**: persistent per-user facts with category, sanitization (200-rune limit, control char strip, rune-safe UTF-8 truncation), IDOR-protected delete, proactive extraction via system prompt instruction
 - **Conversation archival**: async summarization on conversation expiry (>4h idle) in both direct API and CLI modes (CLI uses `SpawnOneShot`), crash recovery retries `pending`/`failed`/`indexed_failed` conversations on startup (sequential, capped at 20, oldest first), head+tail transcript sampling (first 5000 + last 5000 runes), chat-type-aware retrieval (DM summaries user-scoped, group summaries chat-scoped), `IndexSummary` stores `chat_type` metadata in Qdrant, dedicated `curlycatclaw_summaries` Qdrant collection
 - **Budget manager**: Haiku-powered context classification (keyword fast-path + cache + LLM), budget-aware context building via `BuildContextWithBudget`, opt-in, cache indexed on created_at for cleanup, rune-safe UTF-8 truncation (500-rune limit) for LLM classification prompts
-- **Vector search**: Qdrant gRPC for semantic search, pluggable Embedder interface (FNV offline / Ollama local / Voyage AI paid), configurable search timeout via `vector_search_timeout_seconds` (default 5s)
+- **Vector search**: Qdrant gRPC for semantic search, pluggable Embedder interface (FNV offline / Ollama local / Voyage AI paid), configurable search timeout via `vector_search_timeout_seconds` (default 5s), `BatchEmbed` for efficient bulk operations, `migrate-embedder` CLI command for wipe-and-rebuild migration when switching providers
 - **Config validation**: startup validation of required fields (db_path, MCP server name/command, qdrant_addr when vector enabled, wasm skills_dir when wasm enabled, health port range, budget.model when budget enabled, embedder type fnv/ollama/voyage with required fields per type)
-- **Skills**: built-in Go skills (search, note, remind, semantic_search, remember_fact, forget_fact, list_facts, list_summaries, delete_summary) + Wasm plugin runtime; note has title/content size limits (500 runes / 100KB), semantic_search capped at 50 results, remind validates cron expressions at input time, optional `prompt` field for Claude-powered cron tasks (clean context, facts only, full tool access)
+- **Skills**: built-in Go skills (search, note, remind, semantic_search, remember_fact, forget_fact, list_facts, list_summaries, delete_summary, install_plugin, uninstall_plugin, list_plugins, enable_plugin, disable_plugin) + Wasm plugin runtime + external skill collections; note has title/content size limits (500 runes / 100KB), semantic_search capped at 50 results, remind validates cron expressions at input time, optional `prompt` field for Claude-powered cron tasks (clean context, facts only, full tool access)
+- **External skill collections**: `internal/skillloader` loads exec-based skills from directory trees via `[[skill_collections]]` config; `collection.toml` + per-skill `skill.toml` descriptors; exec adapter spawns per invocation with minimal env (PATH/HOME/TMPDIR only, no daemon secret leakage); fsnotify hot-reload; path traversal prevention; LD_PRELOAD/DYLD_* env blocklist
+- **Project work**: `/project <name>` Telegram command switches CLI subprocess working directory; `[[projects]]` config declares allowed project paths; isolated Claude home (`isolated_home` config) gives subprocess a clean `~/.claude/` with no inherited plugins; plugin management skills validated against `allowed_plugins` config allowlist; file-based reload signal (`~/.curlycatclaw/claude-home/.curlycatclaw-reload-needed`) triggers subprocess respawn after plugin changes
 - **Cron tasks**: `CronExecutor` runs scheduled prompts through Claude with ephemeral context (no conversation DB), user facts in system prompt, full skill/MCP tool access, 3-slot concurrency semaphore, rate limit retry, 5-minute timeout; CLI mode uses `SpawnOneShot` for isolated subprocess; `CronRunner` interface in skills package avoids circular imports
 - **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload (atomic reload with map-based Execute lookup), chat-scoped send_message, db_read enforced user scoping via `:user_id` placeholder (queries on user-scoped tables without `:user_id` are rejected, not just warned; quote-aware replacement, 10 MiB result size cap, rows.Err check), UNION/INTERSECT/EXCEPT/WITH blocked in isSelectOnly, comment-stripped word-boundary table detection, HTTP private IP blocklist (SSRF prevention), connect-time IP verification (DNS rebinding protection), sanitized DB errors, 50 MiB module size cap, compiled module cleanup on unload, skill-name-based registry unregister
 - **Tool transparency**: `[tool]` lines sent to user in Telegram, opt-out via `show_tool_calls`
@@ -82,6 +91,10 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 | `internal/session/cron.go` | CronExecutor for scheduled Claude-powered tasks |
 | `skills/` | Built-in skill implementations |
 | `skills/summary.go` | Summary management skills (list_summaries, delete_summary) |
+| `skills/plugin.go` | Plugin management skills (install, uninstall, enable, disable, list) |
+| `internal/mdhtml/convert.go` | Markdown to Telegram HTML converter |
+| `internal/skillloader/loader.go` | External skill collection loader (exec adapter) |
+| `cmd/curlycatclaw/migrate.go` | Embedder migration tool (wipe-and-rebuild) |
 | `internal/security/sandbox_linux.go` | Landlock filesystem sandbox (Linux) |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
 | `docker-compose.yml` | curlycatclaw + Qdrant orchestration |

@@ -2,7 +2,7 @@
 
 ## [0.13.0] - 2026-03-31
 
-Telegram formatting, project-level coding via Telegram, external skill collections, and embedder migration.
+Talk to your bot in Telegram and get properly formatted replies. Tell it to work on your projects. Load custom skills from disk. Switch embedding providers without losing data.
 
 ### Added
 - **Telegram HTML rendering**: Claude's markdown output is converted to Telegram-safe HTML on final message delivery. Falls back to plain text if Telegram rejects the formatting. New `internal/mdhtml` package.
