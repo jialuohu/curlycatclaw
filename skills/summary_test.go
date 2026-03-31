@@ -16,10 +16,7 @@ type mockSummaryStore struct {
 }
 
 func (m *mockSummaryStore) ListSummaries(userID int64) ([]memory.Summary, error) {
-	var filtered []memory.Summary
-	for _, s := range m.summaries {
-		filtered = append(filtered, s)
-	}
+	filtered := append([]memory.Summary{}, m.summaries...)
 	return filtered, nil
 }
 

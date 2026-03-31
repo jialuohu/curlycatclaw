@@ -70,7 +70,10 @@ func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[strin
 		}
 
 		for _, r := range params.Name {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '@') {
+			isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+			isDigit := r >= '0' && r <= '9'
+			isSafe := r == '-' || r == '_' || r == '@'
+			if !isAlpha && !isDigit && !isSafe {
 				return "", fmt.Errorf("invalid plugin name %q: only alphanumeric, hyphens, underscores, and @ allowed", params.Name)
 			}
 		}

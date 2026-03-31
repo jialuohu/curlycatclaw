@@ -19,18 +19,21 @@ go build -o curlycatclaw ./cmd/curlycatclaw
 go test ./... -count=1
 ```
 
-Before pushing, always run the local CI checks (same as the pre-push hook):
+Before pushing, always run the full local CI checks to match what GitHub Actions runs:
 ```bash
-go vet ./...
-go test ./... -count=1
+golangci-lint run        # must show 0 issues
+go test ./... -count=1   # must all pass
 ```
+
+If `golangci-lint` is not installed, at minimum run `go vet ./...`. But CI uses `golangci-lint v2` with errcheck, staticcheck, and unused enabled, so `go vet` alone is not sufficient. Install it: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
 
 Test expectations:
 - When writing new functions, write a corresponding test
 - When fixing a bug, write a regression test
 - When adding error handling, test both success and error paths
 - Tests use stdlib `testing` package with `t.Fatal`/`t.Error` assertions
-- Always run `go vet` and `go test` locally before pushing to avoid CI failures
+- Always run `golangci-lint run` and `go test` locally before committing to avoid CI failures
+- Never merge a PR with failing CI. Fix lint issues first.
 
 ## Versioning
 

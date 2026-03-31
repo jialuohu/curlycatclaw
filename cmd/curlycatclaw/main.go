@@ -204,7 +204,7 @@ func run(configPath string) error {
 				slog.Warn("skillloader: file watcher stopped", "err", err)
 			}
 		}()
-		defer sl.Shutdown()
+		defer func() { _ = sl.Shutdown() }()
 	}
 
 	// Initialize prompt budget manager (optional, requires direct API — not available in CLI mode).

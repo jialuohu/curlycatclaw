@@ -170,11 +170,7 @@ func convertBold(s string) string {
 }
 
 // convertItalic converts *text* to <i>text</i>.
-// Uses negative lookbehind/lookahead to avoid matching ** (already converted
-// to <b> tags). The regex matches a single * not preceded by another * or >,
-// followed by non-empty content, and closed by a single * not followed by *.
-var italicRe = regexp.MustCompile(`(?:^|[^*>])(\*([^*]+?)\*)(?:[^*]|$)`)
-
+// After bold conversion, ** markers are gone. Remaining single * pairs are italic.
 func convertItalic(s string) string {
 	// We need a custom replacer because the regex captures context chars.
 	// Instead, use a simpler approach: match lone * not part of ** or tags.
