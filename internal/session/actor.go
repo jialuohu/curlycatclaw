@@ -903,7 +903,9 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, currentMsg string) strin
 	fmt.Fprintf(&sb, "The user's timezone is %s. Current local time: %s.\n", a.cfg.Timezone, now.Format("2006-01-02 15:04 MST"))
 	sb.WriteString("Always use this timezone for scheduling, time references, and \"today/tomorrow/yesterday.\"\n")
 	sb.WriteString("When the user says \"3pm\" they mean 3pm in their timezone, not UTC.\n")
-	sb.WriteString("\nIMPORTANT: For reminders and scheduling, ALWAYS use the set_reminder tool. Never use built-in CronCreate or similar. set_reminder supports one-time, recurring (cron), and Claude-powered cron tasks via the prompt parameter.\n")
+	sb.WriteString("\nIMPORTANT: For reminders and scheduling, ALWAYS use the set_reminder tool (via MCP). Never use built-in tools like CronCreate.\n")
+	sb.WriteString("set_reminder parameters: message (string, required), fire_at (ISO 8601 datetime, required), recurring (cron expression, optional), prompt (optional, if set Claude executes it at fire time).\n")
+	sb.WriteString("Call set_reminder directly without searching for tools first.\n")
 
 	// Tier 1: User facts.
 	if a.cfg.Memory.Enabled && a.facts != nil {
