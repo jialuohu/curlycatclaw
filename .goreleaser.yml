@@ -58,22 +58,6 @@ dockers:
     extra_files:
       - config.toml.example
 
-brews:
-  - repository:
-      owner: jialuohu
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
-    name: curlycatclaw
-    homepage: "https://github.com/jialuohu/curlycatclaw"
-    description: "Personal AI agent assistant daemon"
-    license: "MIT"
-    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
-    install: |
-      bin.install "curlycatclaw"
-    test: |
-      system "#{bin}/curlycatclaw", "--version"
-
 release:
   github:
     owner: jialuohu

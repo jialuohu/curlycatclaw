@@ -48,8 +48,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Health endpoint** — `GET /health` on localhost for Docker/monitoring liveness checks
 - **Supervision** — automatic restart with exponential backoff, graceful 30s drain on shutdown
 - **Configurable logging** — level, format (text/json), file output with lumberjack rotation
-- **Docker ready** — Dockerfile + docker-compose with Qdrant, one command to run
-- **Goreleaser** — automated multi-platform releases with checksums and Docker images
+- **Docker ready** — docker-compose with Qdrant included, one command to run
 
 ### Security
 
@@ -60,24 +59,34 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Quick Start
 
-**Prerequisites:** Go 1.25+, a [Telegram bot token](https://t.me/BotFather), and either a [Claude API key](https://console.anthropic.com/) or the [Claude CLI](https://claude.ai/code) (for Max subscription mode).
+**Prerequisites:** Docker, a [Telegram bot token](https://t.me/BotFather), and either a [Claude API key](https://console.anthropic.com/) or the [Claude CLI](https://claude.ai/code) (for Max subscription mode).
 
 ```bash
-# Clone and build
+# Clone the repo
 git clone https://github.com/jialuohu/curlycatclaw.git
 cd curlycatclaw
-go build -o curlycatclaw ./cmd/curlycatclaw
 
 # Configure
 mkdir -p ~/.curlycatclaw
 cp config.toml.example ~/.curlycatclaw/config.toml
-# Edit ~/.curlycatclaw/config.toml with your API keys
+# Edit ~/.curlycatclaw/config.toml with your API keys and Telegram token
 
-# Run
-./curlycatclaw
+# Run (includes Qdrant for vector search)
+docker compose up -d
 ```
 
 Then message your Telegram bot. Done.
+
+See [deploy/docker.md](deploy/docker.md) for details, environment variable overrides, and MCP limitations.
+
+### Alternative: Build from source
+
+If you prefer running without Docker (requires Go 1.25+ and a running Qdrant instance):
+
+```bash
+go build -o curlycatclaw ./cmd/curlycatclaw
+./curlycatclaw --config ~/.curlycatclaw/config.toml
+```
 
 ## Configuration
 
@@ -266,18 +275,6 @@ query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked resu
 | `delete_summary` | Remove an incorrect or unwanted conversation summary by ID |
 
 Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
-
-## Deployment
-
-### Docker (recommended)
-
-```bash
-# Your ~/.curlycatclaw/config.toml is used directly.
-# Docker overrides paths via environment variables automatically.
-docker compose up -d
-```
-
-See [deploy/docker.md](deploy/docker.md) for details and MCP limitations.
 
 ## Testing
 
