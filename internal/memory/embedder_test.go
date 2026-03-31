@@ -185,6 +185,126 @@ func TestVoyageEmbedder_EmptyEmbedding(t *testing.T) {
 	}
 }
 
+func TestFNVEmbedder_BatchEmbed(t *testing.T) {
+	e := FNVEmbedder{}
+	ctx := context.Background()
+
+	texts := []string{"hello world", "foo bar", "test embedding"}
+	vecs, err := e.BatchEmbed(ctx, texts)
+	if err != nil {
+		t.Fatalf("BatchEmbed: %v", err)
+	}
+	if len(vecs) != 3 {
+		t.Fatalf("expected 3 vectors, got %d", len(vecs))
+	}
+
+	// Each vector should match individual Embed results.
+	for i, text := range texts {
+		single, err := e.Embed(ctx, text)
+		if err != nil {
+			t.Fatalf("Embed(%q): %v", text, err)
+		}
+		if len(vecs[i]) != len(single) {
+			t.Fatalf("vector %d: length mismatch: %d vs %d", i, len(vecs[i]), len(single))
+		}
+		for j := range single {
+			if vecs[i][j] != single[j] {
+				t.Fatalf("vector %d dim %d: %f vs %f", i, j, vecs[i][j], single[j])
+			}
+		}
+	}
+}
+
+func TestFNVEmbedder_BatchEmbed_Empty(t *testing.T) {
+	e := FNVEmbedder{}
+	vecs, err := e.BatchEmbed(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BatchEmbed(nil): %v", err)
+	}
+	if len(vecs) != 0 {
+		t.Fatalf("expected 0 vectors for nil input, got %d", len(vecs))
+	}
+}
+
+func TestFNVEmbedder_BatchEmbed_ContextCancel(t *testing.T) {
+	e := FNVEmbedder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := e.BatchEmbed(ctx, []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestOllamaEmbedder_BatchEmbed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req)
+		inputs, ok := req["input"].([]any)
+		if !ok {
+			t.Errorf("expected input to be an array, got %T", req["input"])
+			http.Error(w, "bad request", 400)
+			return
+		}
+		// Return one embedding per input.
+		embeddings := make([][]float64, len(inputs))
+		for i := range inputs {
+			embeddings[i] = []float64{float64(i) * 0.1, float64(i) * 0.2}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"embeddings": embeddings,
+		})
+	}))
+	defer server.Close()
+
+	e := NewOllamaEmbedder(server.URL, "nomic-embed-text", 2)
+	vecs, err := e.BatchEmbed(context.Background(), []string{"hello", "world"})
+	if err != nil {
+		t.Fatalf("BatchEmbed: %v", err)
+	}
+	if len(vecs) != 2 {
+		t.Fatalf("expected 2 vectors, got %d", len(vecs))
+	}
+	if vecs[1][0] != 0.1 || vecs[1][1] != 0.2 {
+		t.Fatalf("unexpected values for vecs[1]: %v", vecs[1])
+	}
+}
+
+func TestVoyageEmbedder_BatchEmbed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req)
+		inputs, ok := req["input"].([]any)
+		if !ok {
+			t.Errorf("expected input to be an array")
+			http.Error(w, "bad request", 400)
+			return
+		}
+		data := make([]map[string]any, len(inputs))
+		for i := range inputs {
+			data[i] = map[string]any{
+				"embedding": []float64{float64(i) * 0.3, float64(i) * 0.4},
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer server.Close()
+
+	e := newTestVoyageEmbedder(server.URL, "test-key")
+	vecs, err := e.BatchEmbed(context.Background(), []string{"a", "b", "c"})
+	if err != nil {
+		t.Fatalf("BatchEmbed: %v", err)
+	}
+	if len(vecs) != 3 {
+		t.Fatalf("expected 3 vectors, got %d", len(vecs))
+	}
+	// vecs[2] should be [0.6, 0.8]
+	if vecs[2][0] != 0.6 || vecs[2][1] != 0.8 {
+		t.Fatalf("unexpected values for vecs[2]: %v", vecs[2])
+	}
+}
+
 // newTestVoyageEmbedder creates a VoyageEmbedder that talks to a test server.
 func newTestVoyageEmbedder(baseURL, apiKey string) *testVoyageEmbedder {
 	return &testVoyageEmbedder{
@@ -201,6 +321,54 @@ type testVoyageEmbedder struct {
 
 func (e *testVoyageEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	return e.embedWithURL(ctx, text, "document", e.baseURL+"/v1/embeddings")
+}
+
+func (e *testVoyageEmbedder) BatchEmbed(ctx context.Context, texts []string) ([][]float32, error) {
+	return e.batchEmbedWithURL(ctx, texts, e.baseURL+"/v1/embeddings")
+}
+
+func (e *testVoyageEmbedder) batchEmbedWithURL(ctx context.Context, texts []string, url string) ([][]float32, error) {
+	body, _ := json.Marshal(map[string]any{
+		"model":      e.model,
+		"input":      texts,
+		"input_type": "document",
+	})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("voyage: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	vecs := make([][]float32, len(result.Data))
+	for i, d := range result.Data {
+		vec := make([]float32, len(d.Embedding))
+		for j, v := range d.Embedding {
+			vec[j] = float32(v)
+		}
+		vecs[i] = vec
+	}
+	return vecs, nil
 }
 
 func (e *testVoyageEmbedder) embedWithURL(ctx context.Context, text, inputType, url string) ([]float32, error) {

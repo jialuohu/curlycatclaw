@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -100,6 +101,68 @@ func TestHealthHandler_Returns200(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestRunMigrateEmbedderDryRun(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a minimal config file with vector disabled.
+	configFile := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "test.db")
+	configContent := fmt.Sprintf(`
+[storage]
+db_path = %q
+
+[telegram]
+token = "test-token"
+allowed_user_ids = [1]
+
+[claude]
+api_key = "test-key"
+model = "claude-sonnet-4-20250514"
+
+[vector]
+enabled = false
+`, dbPath)
+	os.WriteFile(configFile, []byte(configContent), 0644)
+
+	// Should fail because vector is not enabled.
+	err := runMigrateEmbedder(configFile, true)
+	if err == nil {
+		t.Fatal("expected error when vector is disabled")
+	}
+}
+
+func TestRunMigrateEmbedderDryRun_WithVector(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create config with vector enabled but using FNV (no external services).
+	configFile := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "test.db")
+	configContent := fmt.Sprintf(`
+[storage]
+db_path = %q
+
+[telegram]
+token = "test-token"
+allowed_user_ids = [1]
+
+[claude]
+api_key = "test-key"
+model = "claude-sonnet-4-20250514"
+
+[vector]
+enabled = true
+qdrant_addr = "localhost:6334"
+embedder = "fnv"
+`, dbPath)
+	os.WriteFile(configFile, []byte(configContent), 0644)
+
+	// Dry-run should succeed (doesn't need Qdrant connection).
+	err := runMigrateEmbedder(configFile, true)
+	if err != nil {
+		t.Fatalf("dry-run should succeed: %v", err)
 	}
 }
 
