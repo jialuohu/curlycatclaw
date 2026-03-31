@@ -106,6 +106,9 @@ cli_path    = "/home/you/.local/bin/claude"  # Claude subscription (via CLI subp
 oauth_token = "sk-ant-oat01-..."             # long-lived token from `claude setup-token`
 # api_key  = "sk-ant-..."                    # API key (direct API, separate billing)
 model       = "claude-sonnet-4-6-20250514"
+# Plugin management (requires CLI mode)
+# isolated_home   = "/home/you/.curlycatclaw/claude-home"
+# allowed_plugins = ["context7", "playwright"]
 
 [telegram]
 token = "123456:ABC-DEF..."
@@ -278,8 +281,13 @@ query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked resu
 | `list_facts` | List all persistent facts Claude remembers about you |
 | `list_summaries` | View all stored conversation summaries with IDs and previews |
 | `delete_summary` | Remove an incorrect or unwanted conversation summary by ID |
+| `install_plugin` | Install a Claude Code plugin (allowlist-gated) |
+| `uninstall_plugin` | Uninstall a Claude Code plugin |
+| `list_plugins` | List installed Claude Code plugins |
+| `enable_plugin` | Enable a previously disabled plugin |
+| `disable_plugin` | Disable a plugin without uninstalling |
 
-Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
+Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Plugin skills require `cli_path` and `isolated_home` in `[claude]` config. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
 
 ## Testing
 
