@@ -38,6 +38,7 @@ while IFS='=' read -r key value; do
     ANTHROPIC_AUTH_TOKEN) ANTHROPIC_AUTH_TOKEN="$value" ;;
     TELEGRAM_TOKEN)       TELEGRAM_TOKEN="$value" ;;
     TELEGRAM_USER_ID)     TELEGRAM_USER_ID="$value" ;;
+    CLAUDE_CLI_PATH)      CLAUDE_CLI_PATH="$value" ;;
   esac
 done < "$CREDS_FILE"
 

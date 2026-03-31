@@ -36,11 +36,13 @@ Before asking for anything, explain what curlycatclaw is:
 > connects to Telegram as a chat interface, uses Claude as the LLM, and stores
 > conversations + memories in SQLite with Qdrant for semantic search.
 >
-> This setup will install the curlycatclaw binary, start a Qdrant vector database
-> (via Docker), configure your credentials, and verify everything works.
+> This setup will install curlycatclaw, start a Qdrant vector database, configure
+> your credentials, and verify everything works.
+>
+> **Prerequisites:** Docker (recommended) or Go 1.25+.
 >
 > You'll need three things ready:
-> 1. An **Anthropic OAuth token** or **API key** (from console.anthropic.com)
+> 1. An **Anthropic OAuth token** (from `claude setup-token`) or **API key** (from console.anthropic.com)
 > 2. A **Telegram bot token** (from @BotFather)
 > 3. Your **Telegram user ID** (from @userinfobot)
 
@@ -58,10 +60,12 @@ Parse every `KEY=VALUE` line between `--- STATUS ---` and `--- END ---`. These v
 drive all subsequent decisions. Key fields:
 
 - `OS` / `ARCH` — platform identification
-- `INSTALL_METHOD` — `homebrew` or `github_releases` (decision is encoded in the script)
+- `INSTALL_METHOD` — `docker` or `github_releases` (Docker preferred when available)
 - `DOCKER` — `running`, `installed_not_running`, or `not_found`
 - `DOCKER_SUDO` — whether `sudo docker` is needed for this session
 - `CURLYCATCLAW_INSTALLED` / `CURLYCATCLAW_VERSION` / `LATEST_VERSION` — install/upgrade decision
+- `CLAUDE_CLI_INSTALLED` / `CLAUDE_CLI_PATH` / `CLAUDE_CLI_VERSION` — Claude CLI for subprocess mode
+- `HAS_BROWSER` — whether a browser is available (for OAuth flow)
 - `QDRANT_RUNNING` — skip Qdrant setup if already running
 - `CONFIG_EXISTS` — prompt before overwriting
 - `PORT_8080` — health endpoint port availability
@@ -72,20 +76,18 @@ Tell the user what was detected: "Detected: [OS] [ARCH], Docker [status], curlyc
 
 Based on the detection results:
 
+**If `INSTALL_METHOD=docker`:**
+Docker detected. curlycatclaw runs via `docker compose up -d --build`, no binary install
+needed. Skip to Step 4 (Collect Credentials).
+
 **If `CURLYCATCLAW_INSTALLED=true`:**
 - Compare `CURLYCATCLAW_VERSION` with `LATEST_VERSION`
 - If same: "curlycatclaw is up to date. Skipping install."
 - If different: "curlycatclaw [current] is installed but [latest] is available. Update?"
   Use AskUserQuestion: A) Update B) Keep current version
 
-**If `CURLYCATCLAW_INSTALLED=false`:**
+**If `CURLYCATCLAW_INSTALLED=false` and `INSTALL_METHOD=github_releases`:**
 
-**If `INSTALL_METHOD=homebrew`:**
-```bash
-brew install jialuohu/homebrew-tap/curlycatclaw
-```
-
-**If `INSTALL_METHOD=github_releases`:**
 Use `LATEST_VERSION`, `OS`, and `ARCH` to construct the download URL:
 ```bash
 VERSION="<LATEST_VERSION without v prefix>"
@@ -100,10 +102,12 @@ rm /tmp/curlycatclaw.tar.gz
 curlycatclaw --version
 ```
 
-If install fails, diagnose: permission denied (need sudo), brew not linked, download
-URL 404 (check release tag format). Fix and retry.
+If install fails, diagnose: permission denied (need sudo), download URL 404 (check
+release tag format). Fix and retry.
 
 ## 3. Docker + Qdrant
+
+**If `INSTALL_METHOD=docker`:** Qdrant is bundled in docker-compose. Skip to Step 4.
 
 **If `QDRANT_RUNNING=true`:** "Qdrant is already running. Skipping." Go to Step 4.
 
@@ -114,7 +118,7 @@ It requires sudo to install and is a ~500MB download. Install Docker?"
 - A) Yes, install Docker
 - B) I'll install it myself (link to https://docs.docker.com/engine/install/)
 
-If A, on macOS: `brew install --cask docker` then `open -a Docker` and wait.
+If A, on macOS: download Docker Desktop from https://www.docker.com/products/docker-desktop/ then `open -a Docker` and wait.
 If A, on Linux: `curl -fsSL https://get.docker.com | sh` then `sudo usermod -aG docker $USER`.
 
 Note: on Linux, the docker group change is not active in the current session.
@@ -146,13 +150,25 @@ response before validating.
 
 **4a. Anthropic authentication**
 
-Say: "How do you want to authenticate?
-- **Claude Max subscription** (recommended): Run `claude setup-token` in a terminal and paste the token
-- **API key** (separate billing): Get one at https://console.anthropic.com/settings/keys"
+**If `CLAUDE_CLI_INSTALLED=true` AND `HAS_BROWSER=true`:**
+Say: "Claude CLI detected. Claude Max subscription (recommended) gives you unlimited usage.
+Type `! claude setup-token` below to start the OAuth flow. When it completes, paste the
+token it shows. Or paste an API key from https://console.anthropic.com/settings/keys"
+
+**If `CLAUDE_CLI_INSTALLED=true` AND `HAS_BROWSER=false`:**
+Say: "Claude CLI detected, but you're on a headless server (no browser detected).
+Run `claude setup-token` on your local machine where you have a browser, then paste the
+token here. Or paste an API key from https://console.anthropic.com/settings/keys"
+
+**If `CLAUDE_CLI_INSTALLED=false`:**
+Say: "No Claude CLI detected. Paste your Anthropic API key from
+https://console.anthropic.com/settings/keys"
 
 Wait for user response. Validate:
 - Trim leading/trailing whitespace
-- If starts with `sk-ant-oat`: treat as OAuth token from `claude setup-token`, store as `ANTHROPIC_AUTH_TOKEN`, set `CLAUDE_CLI_PATH` to the detected claude binary path
+- If starts with `sk-ant-oat`: treat as OAuth token from `claude setup-token`, store as
+  `ANTHROPIC_AUTH_TOKEN`. Auto-set `CLAUDE_CLI_PATH` from the detect.sh `CLAUDE_CLI_PATH`
+  value. Both `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CLI_PATH` go into the creds temp file.
 - If starts with `sk-ant-`: treat as API key, store as `ANTHROPIC_API_KEY`
 - If empty: "Please paste a valid token or API key. Try again."
 
@@ -222,20 +238,11 @@ If permissions are not 600: `chmod 600 ~/.curlycatclaw/config.toml`
 want to pick a different port. If yes, use the Edit tool to change `port = 8080` in
 the config file, then proceed.
 
-Use AskUserQuestion: "How do you want to run curlycatclaw?"
-
-**If `DOCKER=running` or `DOCKER=installed_not_running`:**
-- A) Docker Compose (recommended, persistent, manages Qdrant too)
-- B) Foreground (for testing, run in a separate terminal)
-
-**Otherwise:**
-- A) Foreground (run in a separate terminal)
-
-**If Docker Compose (A with Docker):**
+**If `INSTALL_METHOD=docker`:**
 
 The same `~/.curlycatclaw/config.toml` is used. Docker overrides paths via environment
 variables (`CURLYCATCLAW_DB_PATH`, `CURLYCATCLAW_QDRANT_ADDR`, `CURLYCATCLAW_CLI_PATH`)
-defined in `docker-compose.yml`. No separate config file needed. Then:
+defined in `docker-compose.yml`. This handles everything including Qdrant:
 
 ```bash
 docker compose up -d --build
@@ -255,7 +262,38 @@ done
 If health check passes, proceed to Step 7. If timeout, check logs:
 `docker compose logs curlycatclaw`.
 
-**If Foreground (A):**
+**If `INSTALL_METHOD=github_releases`:**
+
+Use AskUserQuestion: "How do you want to run curlycatclaw?"
+
+**If `DOCKER=running` or `DOCKER=installed_not_running`:**
+- A) Docker Compose (recommended, persistent, manages Qdrant too)
+- B) Foreground (for testing, run in a separate terminal)
+
+**Otherwise:**
+- A) Foreground (run in a separate terminal)
+
+**If Docker Compose (A with Docker):**
+
+```bash
+docker compose up -d --build
+```
+
+Wait for health check:
+```bash
+for i in $(seq 1 60); do
+  if docker compose ps | grep -q "healthy"; then
+    echo "Health check passed!"
+    break
+  fi
+  sleep 2
+done
+```
+
+If health check passes, proceed to Step 7. If timeout, check logs:
+`docker compose logs curlycatclaw`.
+
+**If Foreground (A or only option):**
 
 Tell the user: "Open a new terminal and run:
 ```
@@ -304,8 +342,7 @@ Parse the STATUS block:
 
 ## Troubleshooting
 
-**Binary not found after install:** Check PATH includes `/usr/local/bin`. On macOS with
-Homebrew, the binary is in the brew prefix.
+**Binary not found after install:** Check PATH includes `/usr/local/bin`.
 
 **Qdrant won't start:** Check Docker is running (`docker info`). Check port conflicts.
 Check container logs: `docker logs curlycatclaw-qdrant`.

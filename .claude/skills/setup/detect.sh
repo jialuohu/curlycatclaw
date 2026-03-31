@@ -20,21 +20,6 @@ case "$RAW_ARCH" in
   *)       ARCH="unsupported" ;;
 esac
 
-# Homebrew availability
-if command -v brew >/dev/null 2>&1; then
-  BREW_AVAILABLE="true"
-else
-  BREW_AVAILABLE="false"
-fi
-
-# Install method decision: Homebrew on macOS only; GitHub Releases on Linux always
-# (Linux Homebrew tap does not publish prebuilt bottles, would compile from source)
-if [ "$OS" = "darwin" ] && [ "$BREW_AVAILABLE" = "true" ]; then
-  INSTALL_METHOD="homebrew"
-else
-  INSTALL_METHOD="github_releases"
-fi
-
 # Docker status (timeout prevents hanging on a malfunctioning daemon)
 if timeout 5 docker info >/dev/null 2>&1; then
   DOCKER="running"
@@ -42,6 +27,13 @@ elif command -v docker >/dev/null 2>&1; then
   DOCKER="installed_not_running"
 else
   DOCKER="not_found"
+fi
+
+# Install method: Docker preferred, GitHub Releases as fallback
+if [ "$DOCKER" = "running" ] || [ "$DOCKER" = "installed_not_running" ]; then
+  INSTALL_METHOD="docker"
+else
+  INSTALL_METHOD="github_releases"
 fi
 
 # Docker sudo detection: can the user run docker without sudo?
@@ -67,6 +59,24 @@ if command -v curlycatclaw >/dev/null 2>&1; then
 else
   CURLYCATCLAW_INSTALLED="false"
   CURLYCATCLAW_VERSION=""
+fi
+
+# Claude CLI detection (needed for CLI subprocess mode)
+if command -v claude >/dev/null 2>&1; then
+  CLAUDE_CLI_INSTALLED="true"
+  CLAUDE_CLI_PATH=$(command -v claude)
+  CLAUDE_CLI_VERSION=$(claude --version 2>/dev/null | head -1 || echo "unknown")
+else
+  CLAUDE_CLI_INSTALLED="false"
+  CLAUDE_CLI_PATH=""
+  CLAUDE_CLI_VERSION=""
+fi
+
+# Headless detection (can we open a browser for OAuth?)
+if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] || [ "$OS" = "darwin" ]; then
+  HAS_BROWSER="true"
+else
+  HAS_BROWSER="false"
 fi
 
 # Latest release version (via GitHub API, best-effort)
@@ -114,12 +124,15 @@ cat << EOF
 --- STATUS ---
 OS=$OS
 ARCH=$ARCH
-BREW_AVAILABLE=$BREW_AVAILABLE
 INSTALL_METHOD=$INSTALL_METHOD
 DOCKER=$DOCKER
 DOCKER_SUDO=$DOCKER_SUDO
 CURLYCATCLAW_INSTALLED=$CURLYCATCLAW_INSTALLED
 CURLYCATCLAW_VERSION=$CURLYCATCLAW_VERSION
+CLAUDE_CLI_INSTALLED=$CLAUDE_CLI_INSTALLED
+CLAUDE_CLI_PATH=$CLAUDE_CLI_PATH
+CLAUDE_CLI_VERSION=$CLAUDE_CLI_VERSION
+HAS_BROWSER=$HAS_BROWSER
 LATEST_VERSION=$LATEST_VERSION
 QDRANT_RUNNING=$QDRANT_RUNNING
 CONFIG_EXISTS=$CONFIG_EXISTS
