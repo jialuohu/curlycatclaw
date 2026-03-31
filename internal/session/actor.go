@@ -1135,9 +1135,12 @@ func (a *Actor) getActiveProject(userID, chatID int64) *config.ProjectConfig {
 // plus any external MCP servers from the config.
 func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	type mcpServer struct {
-		Command string            `json:"command"`
+		Command string            `json:"command,omitempty"`
 		Args    []string          `json:"args,omitempty"`
 		Env     map[string]string `json:"env,omitempty"`
+		Type    string            `json:"type,omitempty"`
+		URL     string            `json:"url,omitempty"`
+		Headers map[string]string `json:"headers,omitempty"`
 	}
 
 	// Resolve to absolute path so the CLI can spawn it regardless of cwd.
@@ -1168,28 +1171,48 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	}
 
 	// Include MCP servers from installed plugins in the isolated home.
+	// Reads installed_plugins.json (the CLI's plugin manifest) and follows
+	// each plugin's installPath to discover .mcp.json server declarations.
 	if a.cfg.Claude.IsolatedHome != "" {
-		pluginDir := filepath.Join(a.cfg.Claude.IsolatedHome, ".claude", "plugins")
-		entries, err := os.ReadDir(pluginDir)
-		if err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				mcpPath := filepath.Join(pluginDir, entry.Name(), ".mcp.json")
-				data, err := os.ReadFile(mcpPath)
-				if err != nil {
-					continue // no .mcp.json in this plugin
-				}
-				var pluginMCP struct {
-					MCPServers map[string]mcpServer `json:"mcpServers"`
-				}
-				if err := json.Unmarshal(data, &pluginMCP); err != nil {
-					slog.Warn("buildMCPConfig: parse plugin mcp.json", "plugin", entry.Name(), "err", err)
-					continue
-				}
-				for name, srv := range pluginMCP.MCPServers {
-					servers[entry.Name()+"__"+name] = srv
+		manifestPath := filepath.Join(a.cfg.Claude.IsolatedHome, ".claude", "plugins", "installed_plugins.json")
+		manifestData, err := os.ReadFile(manifestPath)
+		if err != nil {
+			slog.Debug("buildMCPConfig: no plugin manifest", "path", manifestPath)
+		} else {
+			var manifest struct {
+				Plugins map[string][]struct {
+					InstallPath string `json:"installPath"`
+				} `json:"plugins"`
+			}
+			if err := json.Unmarshal(manifestData, &manifest); err != nil {
+				slog.Warn("buildMCPConfig: parse installed_plugins.json", "err", err)
+			} else {
+				for _, installs := range manifest.Plugins {
+					for _, inst := range installs {
+						if inst.InstallPath == "" {
+							continue
+						}
+						mcpPath := filepath.Join(inst.InstallPath, ".mcp.json")
+						mcpData, err := os.ReadFile(mcpPath)
+						if err != nil {
+							continue
+						}
+						// .mcp.json is a flat map: {"name": {"command": "...", "args": [...]}}
+						var pluginServers map[string]mcpServer
+						if err := json.Unmarshal(mcpData, &pluginServers); err != nil {
+							slog.Warn("buildMCPConfig: parse plugin mcp.json",
+								"path", mcpPath, "err", err)
+							continue
+						}
+						for name, srv := range pluginServers {
+							if _, builtin := servers[name]; builtin {
+								slog.Warn("buildMCPConfig: plugin server name collides with built-in, skipping",
+									"name", name, "path", mcpPath)
+								continue
+							}
+							servers[name] = srv
+						}
+					}
 				}
 			}
 		}

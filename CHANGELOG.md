@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.1] - 2026-03-31
+
+Plugins you install via Telegram now actually work. The bot reads the real plugin manifest and passes MCP servers to the CLI subprocess correctly. Previously, plugin discovery was broken since day one.
+
+### Fixed
+- **Plugin MCP server discovery**: `buildMCPConfig` now reads `installed_plugins.json` manifest and follows each plugin's `installPath` to find `.mcp.json` server declarations. Previously scanned wrong directory structure and expected wrong JSON format, resulting in zero plugins ever being discovered.
+- **Collision guard**: Plugin servers that collide with built-in server names (e.g. `curlycatclaw-skills`) are skipped with a warning instead of silently overwriting.
+- **HTTP-type MCP servers**: Extended `mcpServer` struct to support `type`, `url`, and `headers` fields for HTTP-based MCP servers (like Linear, GitHub).
+
+### Added
+- **`CURLYCATCLAW_ISOLATED_HOME` env override**: Docker deployments can now override `isolated_home` via environment variable, matching the pattern used by `cli_path`, `db_path`, and `qdrant_addr`.
+- **Plugin skills in README**: Documented `install_plugin`, `uninstall_plugin`, `list_plugins`, `enable_plugin`, `disable_plugin` in the Built-in Skills table and Configuration example.
+- **TODOS.md**: Created project TODO tracker.
+
 ## [0.13.0] - 2026-03-31
 
 Talk to your bot in Telegram and get properly formatted replies. Tell it to work on your projects. Load custom skills from disk. Switch embedding providers without losing data.

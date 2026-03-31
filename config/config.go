@@ -232,6 +232,9 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("CURLYCATCLAW_CLI_PATH"); v != "" {
 		c.Claude.CLIPath = v
 	}
+	if v := os.Getenv("CURLYCATCLAW_ISOLATED_HOME"); v != "" {
+		c.Claude.IsolatedHome = v
+	}
 }
 
 func (c *Config) validate() error {
