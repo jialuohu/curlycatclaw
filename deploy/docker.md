@@ -24,6 +24,7 @@ Docker uses the same `config.toml` as local, with these env vars overriding path
 | `CURLYCATCLAW_DB_PATH` | `/data/curlycatclaw.db` | SQLite path inside container |
 | `CURLYCATCLAW_QDRANT_ADDR` | `qdrant:6334` | Compose networking |
 | `CURLYCATCLAW_CLI_PATH` | `/usr/local/bin/claude` | Claude CLI installed via npm |
+| `CURLYCATCLAW_ISOLATED_HOME` | `/data/claude-home` | Isolated Claude home for plugin management |
 | `HOME` | `/data` | So CLI finds config at /data |
 
 ## MCP Servers

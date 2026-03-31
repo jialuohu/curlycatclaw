@@ -2,7 +2,7 @@
 
 ## [0.13.1] - 2026-03-31
 
-Plugin MCP discovery was broken since day one. The bot could install plugins but never actually loaded their MCP servers into the CLI subprocess. Now it reads the real plugin manifest and passes servers correctly.
+Plugins you install via Telegram now actually work. The bot reads the real plugin manifest and passes MCP servers to the CLI subprocess correctly. Previously, plugin discovery was broken since day one.
 
 ### Fixed
 - **Plugin MCP server discovery**: `buildMCPConfig` now reads `installed_plugins.json` manifest and follows each plugin's `installPath` to find `.mcp.json` server declarations. Previously scanned wrong directory structure and expected wrong JSON format, resulting in zero plugins ever being discovered.
