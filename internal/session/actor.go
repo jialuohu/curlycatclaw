@@ -691,6 +691,13 @@ func (a *Actor) handleWithCLI(
 
 	mcpConfig := a.buildMCPConfig(userID, chatID)
 
+	// Inject current time into user message since the CLI process's system
+	// prompt (set at spawn) has a stale "Current local time" after the first message.
+	loc := a.cfg.Location()
+	now := time.Now().In(loc)
+	timePrefix := fmt.Sprintf("[Current time: %s]\n", now.Format("2006-01-02 15:04 MST"))
+	userMsg = timePrefix + userMsg
+
 	// Build the user message for the CLI's stream-json input.
 	var userJSON json.RawMessage
 	if len(photos) > 0 {
