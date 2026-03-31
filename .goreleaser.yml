@@ -46,20 +46,42 @@ changelog:
       - "^chore:"
 
 dockers:
-  - id: curlycatclaw
+  - id: curlycatclaw-amd64
     ids: [curlycatclaw]
     dockerfile: Dockerfile.goreleaser
-    images:
-      - "ghcr.io/jialuohu/curlycatclaw"
-    tags:
-      - "{{ .Version }}"
-      - "{{ .Major }}.{{ .Minor }}"
-      - "latest"
-    platforms:
-      - linux/amd64
-      - linux/arm64
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
     extra_files:
       - config.toml.example
+  - id: curlycatclaw-arm64
+    ids: [curlycatclaw]
+    dockerfile: Dockerfile.goreleaser
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    extra_files:
+      - config.toml.example
+
+docker_manifests:
+  - name_template: "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}-amd64"
+      - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/jialuohu/curlycatclaw:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}-amd64"
+      - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/jialuohu/curlycatclaw:latest"
+    image_templates:
+      - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}-amd64"
+      - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}-arm64"
 
 brews:
   - repository:
