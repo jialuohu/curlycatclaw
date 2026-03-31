@@ -37,6 +37,8 @@ func main() {
 	configPath := flag.String("config", defaultConfigPath(), "path to config.toml")
 	versionFlag := flag.Bool("version", false, "print version and exit")
 	mcpServerFlag := flag.Bool("mcp-server", false, "run as MCP stdio server (spawned by claude CLI)")
+	migrateEmbedderFlag := flag.Bool("migrate-embedder", false, "wipe and rebuild vector collections with the configured embedder, then exit")
+	migrateDryRun := flag.Bool("dry-run", false, "with --migrate-embedder: count texts only, do not modify collections")
 	flag.Parse()
 
 	if *versionFlag {
@@ -53,6 +55,15 @@ func main() {
 	if *mcpServerFlag {
 		if err := runMCPServer(); err != nil {
 			slog.Error("mcp-server fatal", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Embedder migration mode: wipe and rebuild vector collections.
+	if *migrateEmbedderFlag {
+		if err := runMigrateEmbedder(*configPath, *migrateDryRun); err != nil {
+			slog.Error("migrate-embedder fatal", "err", err)
 			os.Exit(1)
 		}
 		return

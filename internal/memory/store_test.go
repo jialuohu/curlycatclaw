@@ -530,3 +530,184 @@ func TestGetSummaryText_NotFound(t *testing.T) {
 		t.Errorf("expected empty string for missing summary, got %q", text)
 	}
 }
+
+func TestAllMessageTexts(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	// Add messages with different content formats.
+	simple, _ := json.Marshal("Hello, world!")
+	if err := s.AppendMessage(convID, "user", simple); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	blocks, _ := json.Marshal([]map[string]string{
+		{"type": "text", "text": "Response text"},
+	})
+	if err := s.AppendMessage(convID, "assistant", blocks); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// Tool result message (should be skipped by extractText since it has no readable text).
+	toolContent, _ := json.Marshal(map[string]string{"type": "tool_use", "id": "call_1"})
+	if err := s.AppendMessage(convID, "assistant", toolContent); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	texts, err := s.AllMessageTexts()
+	if err != nil {
+		t.Fatalf("AllMessageTexts: %v", err)
+	}
+
+	// Should have 2 texts (tool_use block has no extractable text).
+	if len(texts) != 2 {
+		t.Fatalf("expected 2 texts, got %d", len(texts))
+	}
+
+	if texts[0].Text != "Hello, world!" {
+		t.Errorf("texts[0].Text = %q, want %q", texts[0].Text, "Hello, world!")
+	}
+	if texts[0].Source != "message" {
+		t.Errorf("texts[0].Source = %q, want %q", texts[0].Source, "message")
+	}
+	if texts[0].UserID != 42 {
+		t.Errorf("texts[0].UserID = %d, want 42", texts[0].UserID)
+	}
+	if texts[0].ChatID != 100 {
+		t.Errorf("texts[0].ChatID = %d, want 100", texts[0].ChatID)
+	}
+
+	if texts[1].Text != "Response text" {
+		t.Errorf("texts[1].Text = %q, want %q", texts[1].Text, "Response text")
+	}
+}
+
+func TestAllMessageTexts_Empty(t *testing.T) {
+	s := newTestStore(t)
+
+	texts, err := s.AllMessageTexts()
+	if err != nil {
+		t.Fatalf("AllMessageTexts: %v", err)
+	}
+	if len(texts) != 0 {
+		t.Fatalf("expected 0 texts, got %d", len(texts))
+	}
+}
+
+func TestAllNoteTexts(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create notes table (normally done by skills.InitNoteSkills).
+	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS notes (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL DEFAULT 0,
+		chat_id    INTEGER NOT NULL DEFAULT 0,
+		title      TEXT NOT NULL,
+		content    TEXT NOT NULL,
+		created_at DATETIME NOT NULL
+	)`)
+	if err != nil {
+		t.Fatalf("create notes table: %v", err)
+	}
+
+	now := time.Now().UTC()
+	_, err = s.db.Exec(
+		`INSERT INTO notes (user_id, chat_id, title, content, created_at) VALUES (?, ?, ?, ?, ?)`,
+		42, 100, "Test Note", "Some content here", now,
+	)
+	if err != nil {
+		t.Fatalf("insert note: %v", err)
+	}
+
+	texts, err := s.AllNoteTexts()
+	if err != nil {
+		t.Fatalf("AllNoteTexts: %v", err)
+	}
+	if len(texts) != 1 {
+		t.Fatalf("expected 1 text, got %d", len(texts))
+	}
+	if texts[0].Text != "Test Note\nSome content here" {
+		t.Errorf("texts[0].Text = %q, want %q", texts[0].Text, "Test Note\nSome content here")
+	}
+	if texts[0].Source != "note" {
+		t.Errorf("texts[0].Source = %q, want %q", texts[0].Source, "note")
+	}
+	if texts[0].UserID != 42 {
+		t.Errorf("texts[0].UserID = %d, want 42", texts[0].UserID)
+	}
+}
+
+func TestAllNoteTexts_NoTable(t *testing.T) {
+	s := newTestStore(t)
+
+	// notes table does not exist.
+	texts, err := s.AllNoteTexts()
+	if err != nil {
+		t.Fatalf("AllNoteTexts: %v", err)
+	}
+	if len(texts) != 0 {
+		t.Fatalf("expected 0 texts when table missing, got %d", len(texts))
+	}
+}
+
+func TestAllSummaryTexts(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	// Set chat_type on the conversation.
+	_, err = s.db.Exec(`UPDATE conversations SET chat_type = 'private' WHERE id = ?`, convID)
+	if err != nil {
+		t.Fatalf("set chat_type: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := s.SaveSummary(convID, 42, 100, "User discussed testing patterns.", 5, now.Add(-time.Hour), now); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+
+	// Set chat_type on the summary.
+	_, err = s.db.Exec(`UPDATE conversation_summaries SET chat_type = 'private' WHERE conversation_id = ?`, convID)
+	if err != nil {
+		t.Fatalf("set summary chat_type: %v", err)
+	}
+
+	texts, err := s.AllSummaryTexts()
+	if err != nil {
+		t.Fatalf("AllSummaryTexts: %v", err)
+	}
+	if len(texts) != 1 {
+		t.Fatalf("expected 1 text, got %d", len(texts))
+	}
+	if texts[0].Text != "User discussed testing patterns." {
+		t.Errorf("texts[0].Text = %q, want %q", texts[0].Text, "User discussed testing patterns.")
+	}
+	if texts[0].Source != "summary" {
+		t.Errorf("texts[0].Source = %q, want %q", texts[0].Source, "summary")
+	}
+	if texts[0].ChatType != "private" {
+		t.Errorf("texts[0].ChatType = %q, want %q", texts[0].ChatType, "private")
+	}
+	if texts[0].ID != convID {
+		t.Errorf("texts[0].ID = %q, want %q", texts[0].ID, convID)
+	}
+}
+
+func TestAllSummaryTexts_Empty(t *testing.T) {
+	s := newTestStore(t)
+
+	texts, err := s.AllSummaryTexts()
+	if err != nil {
+		t.Fatalf("AllSummaryTexts: %v", err)
+	}
+	if len(texts) != 0 {
+		t.Fatalf("expected 0 texts, got %d", len(texts))
+	}
+}
