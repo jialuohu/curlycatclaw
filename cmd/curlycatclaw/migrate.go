@@ -90,6 +90,11 @@ func runMigrateEmbedder(configPath string, dryRun bool) error {
 	}
 	defer vs.Close()
 
+	// Verify embedder connectivity before destructive operations.
+	if _, err := embedder.Embed(ctx, "migration connectivity test"); err != nil {
+		return fmt.Errorf("embedder connectivity test failed: %w", err)
+	}
+
 	// Delete existing collections.
 	collections := memory.CollectionNames()
 	for _, name := range collections {
@@ -151,7 +156,7 @@ func migrateTexts(ctx context.Context, vs *memory.VectorStore, embedder memory.E
 				"user_id":    t.UserID,
 				"chat_id":    t.ChatID,
 				"text":       t.Text,
-				"created_at": time.Now().UTC().Format(time.RFC3339),
+				"created_at": t.CreatedAt,
 			})
 			points[j] = &qdrant.PointStruct{
 				Id:      qdrant.NewID(memory.ToUUID(t.ID)),
@@ -195,7 +200,7 @@ func migrateSummaries(ctx context.Context, vs *memory.VectorStore, embedder memo
 				"chat_id":    t.ChatID,
 				"chat_type":  t.ChatType,
 				"text":       t.Text,
-				"created_at": time.Now().UTC().Format(time.RFC3339),
+				"created_at": t.CreatedAt,
 			})
 			points[j] = &qdrant.PointStruct{
 				Id:      qdrant.NewID(memory.ToUUID(t.ID)),

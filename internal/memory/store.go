@@ -445,12 +445,13 @@ func (s *Store) ConversationMeta(convID string) (userID, chatID int64, chatType 
 
 // MigrationText holds text content and its metadata for re-embedding.
 type MigrationText struct {
-	ID       string
-	Text     string
-	UserID   int64
-	ChatID   int64
-	Source   string // "message", "note", "summary"
-	ChatType string // for summaries
+	ID        string
+	Text      string
+	UserID    int64
+	ChatID    int64
+	Source    string // "message", "note", "summary"
+	ChatType  string // for summaries
+	CreatedAt string
 }
 
 // AllMessageTexts returns all messages with extractable text for migration.
@@ -458,7 +459,7 @@ type MigrationText struct {
 // as the summarizer (extractText).
 func (s *Store) AllMessageTexts() ([]MigrationText, error) {
 	rows, err := s.db.Query(
-		`SELECT m.id, m.role, m.content, c.user_id, c.chat_id
+		`SELECT m.id, m.role, m.content, c.user_id, c.chat_id, m.created_at
 		 FROM messages m
 		 JOIN conversations c ON m.conversation_id = c.id
 		 ORDER BY m.id ASC`,
@@ -473,7 +474,8 @@ func (s *Store) AllMessageTexts() ([]MigrationText, error) {
 		var id int64
 		var role, content string
 		var userID, chatID int64
-		if err := rows.Scan(&id, &role, &content, &userID, &chatID); err != nil {
+		var createdAt string
+		if err := rows.Scan(&id, &role, &content, &userID, &chatID, &createdAt); err != nil {
 			return nil, fmt.Errorf("memory: scan message text: %w", err)
 		}
 
@@ -484,11 +486,12 @@ func (s *Store) AllMessageTexts() ([]MigrationText, error) {
 		}
 
 		results = append(results, MigrationText{
-			ID:     fmt.Sprintf("msg-%d", id),
-			Text:   text,
-			UserID: userID,
-			ChatID: chatID,
-			Source: "message",
+			ID:        fmt.Sprintf("msg-%d", id),
+			Text:      text,
+			UserID:    userID,
+			ChatID:    chatID,
+			Source:    "message",
+			CreatedAt: createdAt,
 		})
 	}
 	if err := rows.Err(); err != nil {

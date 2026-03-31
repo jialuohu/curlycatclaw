@@ -154,6 +154,7 @@ func convertLinks(s string) string {
 		text := sub[1]
 		// The URL was HTML-escaped in phase 3; unescape it for the href.
 		url := html.UnescapeString(sub[2])
+		url = strings.ReplaceAll(url, "\"", "&quot;")
 		return fmt.Sprintf(`<a href="%s">%s</a>`, url, text)
 	})
 }

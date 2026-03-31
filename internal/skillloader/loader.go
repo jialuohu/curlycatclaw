@@ -179,6 +179,16 @@ func (l *Loader) loadSkill(skillDir, namespace string) (*LoadedSkill, error) {
 		command = filepath.Join(skillDir, command)
 	}
 
+	absCommand, err := filepath.Abs(command)
+	if err != nil {
+		return nil, fmt.Errorf("resolve command path: %w", err)
+	}
+	absSkillDir, _ := filepath.Abs(skillDir)
+	if !strings.HasPrefix(absCommand, absSkillDir+string(filepath.Separator)) && absCommand != absSkillDir {
+		return nil, fmt.Errorf("command %q resolves outside skill directory %q", desc.Exec.Command, skillDir)
+	}
+	command = absCommand
+
 	// Verify the executable exists and is executable.
 	info, err := os.Stat(command)
 	if err != nil {

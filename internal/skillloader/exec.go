@@ -69,7 +69,15 @@ func buildMinimalEnv(skillEnv map[string]string) []string {
 	}
 	env = append(env, "TMPDIR=/tmp")
 
+	blocked := map[string]bool{
+		"LD_PRELOAD": true, "LD_LIBRARY_PATH": true,
+		"DYLD_INSERT_LIBRARIES": true, "DYLD_LIBRARY_PATH": true,
+		"DYLD_FRAMEWORK_PATH": true,
+	}
 	for k, v := range skillEnv {
+		if blocked[k] {
+			continue
+		}
 		env = append(env, k+"="+v)
 	}
 	return env
@@ -77,6 +85,22 @@ func buildMinimalEnv(skillEnv map[string]string) []string {
 
 func (a *ExecAdapter) Start(_ context.Context) error { return nil }
 func (a *ExecAdapter) Stop() error                    { return nil }
+
+type limitWriter struct {
+	buf *bytes.Buffer
+	max int
+}
+
+func (lw *limitWriter) Write(p []byte) (int, error) {
+	remaining := lw.max - lw.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	return lw.buf.Write(p)
+}
 
 // Execute runs the subprocess with the given input, enforcing the
 // configured timeout via context.
@@ -100,9 +124,10 @@ func (a *ExecAdapter) Execute(ctx context.Context, input json.RawMessage, user s
 	cmd.Env = a.env
 	cmd.Stdin = bytes.NewReader(payload)
 
+	const maxOutput = 10 << 20
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = &limitWriter{buf: &stdout, max: maxOutput}
+	cmd.Stderr = &limitWriter{buf: &stderr, max: maxOutput}
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {

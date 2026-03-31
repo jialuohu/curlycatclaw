@@ -709,13 +709,15 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 // new entry is appended.
 func replaceEnv(env []string, key, value string) []string {
 	prefix := key + "="
-	for i, e := range env {
+	result := make([]string, len(env))
+	copy(result, env)
+	for i, e := range result {
 		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
-			env[i] = prefix + value
-			return env
+			result[i] = prefix + value
+			return result
 		}
 	}
-	return append(env, prefix+value)
+	return append(result, prefix+value)
 }
 
 // NewTestProcess creates a CLIProcess from pre-wired pipes for testing.

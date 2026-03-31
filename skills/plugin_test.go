@@ -107,39 +107,23 @@ func TestWriteReloadFlag(t *testing.T) {
 	}
 }
 
-func TestReplaceHomeEnv(t *testing.T) {
-	env := []string{"HOME=/old", "PATH=/usr/bin"}
-	result := replaceHomeEnv(env, "/new")
-
-	found := false
+func TestBuildPluginEnv(t *testing.T) {
+	result := buildPluginEnv("/isolated")
+	hasHome := false
+	hasMasterKey := false
 	for _, e := range result {
-		if e == "HOME=/new" {
-			found = true
+		if e == "HOME=/isolated" {
+			hasHome = true
 		}
-		if e == "HOME=/old" {
-			t.Error("old HOME should be replaced")
-		}
-	}
-	if !found {
-		t.Error("HOME=/new not found")
-	}
-}
-
-func TestReplaceHomeEnv_NoExisting(t *testing.T) {
-	env := []string{"PATH=/usr/bin"}
-	result := replaceHomeEnv(env, "/new")
-
-	if len(result) != 2 {
-		t.Errorf("len = %d, want 2", len(result))
-	}
-	found := false
-	for _, e := range result {
-		if e == "HOME=/new" {
-			found = true
+		if strings.HasPrefix(e, "CURLYCATCLAW_MASTER_KEY=") {
+			hasMasterKey = true
 		}
 	}
-	if !found {
-		t.Error("HOME=/new should be appended")
+	if !hasHome {
+		t.Error("HOME=/isolated not found")
+	}
+	if hasMasterKey {
+		t.Error("CURLYCATCLAW_MASTER_KEY should NOT be in plugin env")
 	}
 }
 

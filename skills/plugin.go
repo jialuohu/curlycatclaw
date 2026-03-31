@@ -69,6 +69,12 @@ func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[strin
 			return "", fmt.Errorf("plugin name is required")
 		}
 
+		for _, r := range params.Name {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '@') {
+				return "", fmt.Errorf("invalid plugin name %q: only alphanumeric, hyphens, underscores, and @ allowed", params.Name)
+			}
+		}
+
 		// Validate against allowlist for install.
 		if allowlist != nil && !allowlist[params.Name] {
 			var allowed []string
@@ -79,7 +85,7 @@ func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[strin
 		}
 
 		cmd := exec.CommandContext(ctx, cliPath, "plugin", action, params.Name)
-		cmd.Env = replaceHomeEnv(os.Environ(), isolatedHome)
+		cmd.Env = buildPluginEnv(isolatedHome)
 
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -97,7 +103,7 @@ func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[strin
 func makePluginListExecute(cliPath, isolatedHome string) func(ctx context.Context, input json.RawMessage) (string, error) {
 	return func(ctx context.Context, _ json.RawMessage) (string, error) {
 		cmd := exec.CommandContext(ctx, cliPath, "plugin", "list")
-		cmd.Env = replaceHomeEnv(os.Environ(), isolatedHome)
+		cmd.Env = buildPluginEnv(isolatedHome)
 
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -118,20 +124,17 @@ func writeReloadFlag(isolatedHome string) {
 	os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
 }
 
-// replaceHomeEnv replaces the HOME variable in an env slice.
-func replaceHomeEnv(env []string, home string) []string {
-	result := make([]string, 0, len(env))
-	found := false
-	for _, e := range env {
-		if strings.HasPrefix(e, "HOME=") {
-			result = append(result, "HOME="+home)
-			found = true
-		} else {
-			result = append(result, e)
-		}
+// buildPluginEnv constructs a minimal environment for plugin subprocesses,
+// preventing leakage of daemon secrets.
+func buildPluginEnv(isolatedHome string) []string {
+	env := make([]string, 0, 4)
+	if v := os.Getenv("PATH"); v != "" {
+		env = append(env, "PATH="+v)
 	}
-	if !found {
-		result = append(result, "HOME="+home)
+	env = append(env, "HOME="+isolatedHome)
+	env = append(env, "TMPDIR=/tmp")
+	if v := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); v != "" {
+		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+v)
 	}
-	return result
+	return env
 }
