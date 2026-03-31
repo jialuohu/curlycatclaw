@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.1] - 2026-03-31
+
+Memory system hardening: startup warnings, safer concurrency, and user control over summaries.
+
+### Added
+- **Startup warning** when FNV embedder is used with memory enabled, recommending Ollama or Voyage for semantic search quality
+- **`list_summaries` skill**: view all stored conversation summaries with IDs, dates, and previews
+- **`delete_summary` skill**: remove incorrect or unwanted summaries by ID (IDOR-protected)
+- **Dedicated summarization semaphore** (`sumSem`, capacity 2): summarization can no longer be silently dropped when message indexing fills the shared semaphore
+
+### Changed
+- **Summary prompt framing**: now warns Claude that summaries may contain errors from prior assistant responses, to use as hints only, and to tell the user if a summary seems wrong
+
 ## [0.12.0] - 2026-03-31
 
 CLI mode now has full memory, conversation summaries survive crashes, and the bot remembers context across DMs without leaking into group chats.
