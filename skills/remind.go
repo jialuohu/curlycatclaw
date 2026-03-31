@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,12 @@ import (
 
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 )
+
+// CronRunner executes a prompt through Claude with clean context.
+// Implemented by session.CronExecutor; defined here to avoid circular imports.
+type CronRunner interface {
+	Execute(ctx context.Context, userID, chatID int64, prompt string) (string, error)
+}
 
 // InitRemindSkills creates the reminders table (if not exists) and returns
 // the set_reminder, list_reminders, and cancel_reminder skills.
@@ -32,10 +39,17 @@ func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]
 		return nil, fmt.Errorf("skills: create reminders table: %w", err)
 	}
 
+	// Migrate: add prompt column for Claude-powered cron tasks.
+	if _, err := db.Exec(`ALTER TABLE reminders ADD COLUMN prompt TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return nil, fmt.Errorf("skills: add prompt column: %w", err)
+		}
+	}
+
 	setSkill := &Skill{
 		Name:        "set_reminder",
 		Description: "Set a reminder that will fire at the specified time. Optionally make it recurring with a cron expression.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string","description":"Reminder message"},"fire_at":{"type":"string","description":"When to fire the reminder (ISO 8601 datetime, e.g. 2025-01-15T09:00:00)"},"recurring":{"type":"string","description":"Optional cron expression for recurring reminders (e.g. 0 9 * * MON-FRI)"}},"required":["message","fire_at"]}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string","description":"Reminder label/message"},"fire_at":{"type":"string","description":"When to fire (ISO 8601 datetime, e.g. 2025-01-15T09:00:00)"},"recurring":{"type":"string","description":"Optional cron expression for recurring reminders (e.g. 0 9 * * MON-FRI)"},"prompt":{"type":"string","description":"Optional: if set, Claude executes this prompt at fire time with tool access (web_search, notes, facts, etc) and sends the result to your chat. Example: 'Check my notes and summarize what I need to do today'"}},"required":["message","fire_at"]}`),
 		Execute:     makeSetReminderExecute(db, signalCh, loc),
 	}
 
@@ -60,6 +74,7 @@ type setReminderInput struct {
 	Message   string `json:"message"`
 	FireAt    string `json:"fire_at"`
 	Recurring string `json:"recurring"`
+	Prompt    string `json:"prompt"`
 }
 
 func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -98,9 +113,14 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 			cronExpr = &params.Recurring
 		}
 
+		var prompt *string
+		if params.Prompt != "" {
+			prompt = &params.Prompt
+		}
+
 		res, err := db.ExecContext(ctx,
-			`INSERT INTO reminders (user_id, chat_id, message, fire_at, cron_expr, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
-			user.UserID, user.ChatID, params.Message, fireAtUTC, cronExpr, now,
+			`INSERT INTO reminders (user_id, chat_id, message, fire_at, cron_expr, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+			user.UserID, user.ChatID, params.Message, fireAtUTC, cronExpr, prompt, now,
 		)
 		if err != nil {
 			return "", fmt.Errorf("set reminder: %w", err)
@@ -123,6 +143,9 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 		if cronExpr != nil {
 			result += fmt.Sprintf(" (recurring: %s)", *cronExpr)
 		}
+		if prompt != nil {
+			result += " [cron: Claude will execute the prompt at fire time]"
+		}
 		return result, nil
 	}
 }
@@ -144,12 +167,12 @@ func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.C
 		var err error
 		if params.Status != "" {
 			rows, err = db.QueryContext(ctx,
-				`SELECT id, message, fire_at, cron_expr, status, created_at FROM reminders WHERE user_id = ? AND status = ? ORDER BY fire_at`,
+				`SELECT id, message, fire_at, cron_expr, prompt, status, created_at FROM reminders WHERE user_id = ? AND status = ? ORDER BY fire_at`,
 				user.UserID, params.Status,
 			)
 		} else {
 			rows, err = db.QueryContext(ctx,
-				`SELECT id, message, fire_at, cron_expr, status, created_at FROM reminders WHERE user_id = ? ORDER BY fire_at`,
+				`SELECT id, message, fire_at, cron_expr, prompt, status, created_at FROM reminders WHERE user_id = ? ORDER BY fire_at`,
 				user.UserID,
 			)
 		}
@@ -164,13 +187,17 @@ func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.C
 			var id int64
 			var message, status string
 			var fireAt, createdAt time.Time
-			var cronExpr *string
-			if err := rows.Scan(&id, &message, &fireAt, &cronExpr, &status, &createdAt); err != nil {
+			var cronExpr, prompt *string
+			if err := rows.Scan(&id, &message, &fireAt, &cronExpr, &prompt, &status, &createdAt); err != nil {
 				return "", fmt.Errorf("scan reminder: %w", err)
 			}
 			count++
 			localFire := fireAt.In(loc).Format("2006-01-02 15:04")
-			entry := fmt.Sprintf("#%d [%s] %s — %s", id, status, localFire, message)
+			tag := status
+			if prompt != nil {
+				tag = "cron:" + status
+			}
+			entry := fmt.Sprintf("#%d [%s] %s — %s", id, tag, localFire, message)
 			if cronExpr != nil {
 				entry += fmt.Sprintf(" (recurring: %s)", *cronExpr)
 			}
@@ -243,18 +270,21 @@ type ReminderActor struct {
 	tgInbox  chan<- telegram.OutgoingMessage
 	loc      *time.Location
 	signalCh <-chan int64
+	cronExec CronRunner // nil = no cron task support (static text only)
 
 	mu   sync.Mutex
 	jobs map[int64]gocron.Job
 }
 
-// NewReminderActor creates a new ReminderActor.
-func NewReminderActor(db *sql.DB, tgInbox chan<- telegram.OutgoingMessage, loc *time.Location, signalCh <-chan int64) *ReminderActor {
+// NewReminderActor creates a new ReminderActor. cronExec may be nil to disable
+// Claude-powered cron tasks (reminders with prompts will fall back to static text).
+func NewReminderActor(db *sql.DB, tgInbox chan<- telegram.OutgoingMessage, loc *time.Location, signalCh <-chan int64, cronExec CronRunner) *ReminderActor {
 	return &ReminderActor{
 		db:       db,
 		tgInbox:  tgInbox,
 		loc:      loc,
 		signalCh: signalCh,
+		cronExec: cronExec,
 		jobs:     make(map[int64]gocron.Job),
 	}
 }
@@ -297,7 +327,7 @@ func (ra *ReminderActor) Run(ctx context.Context) error {
 // which avoids deadlocks with single-connection pools (e.g., in-memory SQLite).
 func (ra *ReminderActor) loadPendingReminders(ctx context.Context, scheduler gocron.Scheduler) error {
 	rows, err := ra.db.QueryContext(ctx,
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr FROM reminders WHERE status = 'pending'`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt FROM reminders WHERE status = 'pending'`,
 	)
 	if err != nil {
 		return fmt.Errorf("query pending reminders: %w", err)
@@ -306,7 +336,7 @@ func (ra *ReminderActor) loadPendingReminders(ctx context.Context, scheduler goc
 	var reminders []reminderRow
 	for rows.Next() {
 		var r reminderRow
-		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt); err != nil {
 			slog.Error("reminder: scan row", "err", err)
 			continue
 		}
@@ -336,9 +366,9 @@ func (ra *ReminderActor) handleSignal(ctx context.Context, scheduler gocron.Sche
 	var r reminderRow
 	var status string
 	err := ra.db.QueryRowContext(ctx,
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, status FROM reminders WHERE id = ?`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, status FROM reminders WHERE id = ?`,
 		id,
-	).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &status)
+	).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &status)
 	if err != nil {
 		slog.Error("reminder: query signal target", "id", id, "err", err)
 		return
@@ -392,26 +422,77 @@ func (ra *ReminderActor) scheduleReminder(scheduler gocron.Scheduler, r reminder
 }
 
 // fireReminder sends the reminder message via Telegram and updates the DB status.
-// Uses a blocking send with timeout so reminders are not silently dropped.
-// On send failure, status stays "pending" for retry on next actor restart.
+// If the reminder has a prompt and CronRunner is available, it invokes Claude instead.
 func (ra *ReminderActor) fireReminder(r reminderRow) {
+	if r.Prompt != nil && *r.Prompt != "" && ra.cronExec != nil {
+		ra.fireCronTask(r)
+		return
+	}
+
 	msg := telegram.OutgoingMessage{
 		ChatID: r.ChatID,
 		Text:   "Reminder: " + r.Message,
 	}
 
 	// Blocking send with 5s timeout. Reminders are too important to silently drop.
+	if !ra.trySendTelegram(r.ID, msg) {
+		return // Don't update status — will retry on next startup.
+	}
+
+	ra.markFiredIfOneTime(r)
+}
+
+// fireCronTask invokes Claude with the reminder's prompt and sends the result.
+func (ra *ReminderActor) fireCronTask(r reminderRow) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	slog.Info("reminder: executing cron task", "id", r.ID, "chat_id", r.ChatID)
+
+	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt)
+	if err != nil {
+		slog.Error("reminder: cron task failed", "id", r.ID, "err", err)
+		errMsg := telegram.OutgoingMessage{
+			ChatID: r.ChatID,
+			Text:   fmt.Sprintf("[Cron task failed] %s: %v", r.Message, err),
+		}
+		ra.trySendTelegram(r.ID, errMsg)
+		// For one-time: still mark fired (error was delivered).
+		// For recurring: keep pending (will retry next schedule).
+		if r.CronExpr == nil {
+			ra.markFiredIfOneTime(r)
+		}
+		return
+	}
+
+	msg := telegram.OutgoingMessage{
+		ChatID: r.ChatID,
+		Text:   fmt.Sprintf("**%s**\n\n%s", r.Message, result),
+	}
+	if !ra.trySendTelegram(r.ID, msg) {
+		return
+	}
+
+	ra.markFiredIfOneTime(r)
+}
+
+// trySendTelegram attempts to send a message to Telegram with a 5s timeout.
+// Returns true if sent, false if timed out.
+func (ra *ReminderActor) trySendTelegram(reminderID int64, msg telegram.OutgoingMessage) bool {
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
 	case ra.tgInbox <- msg:
-		slog.Info("reminder: fired", "id", r.ID, "chat_id", r.ChatID)
+		slog.Info("reminder: fired", "id", reminderID, "chat_id", msg.ChatID)
+		return true
 	case <-timer.C:
-		slog.Error("reminder: telegram inbox full after 5s, keeping pending for retry", "id", r.ID)
-		return // Don't update status — will retry on next startup.
+		slog.Error("reminder: telegram inbox full after 5s, keeping pending for retry", "id", reminderID)
+		return false
 	}
+}
 
-	// Only mark fired after successful send. For recurring, keep as pending.
+// markFiredIfOneTime marks a one-time (non-recurring) reminder as fired.
+func (ra *ReminderActor) markFiredIfOneTime(r reminderRow) {
 	if r.CronExpr == nil {
 		_, err := ra.db.Exec(
 			`UPDATE reminders SET status = 'fired' WHERE id = ? AND status = 'pending'`,
@@ -450,4 +531,5 @@ type reminderRow struct {
 	Message  string
 	FireAt   time.Time
 	CronExpr *string
+	Prompt   *string
 }

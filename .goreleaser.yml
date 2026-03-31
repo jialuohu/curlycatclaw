@@ -32,7 +32,6 @@ archives:
       - LICENSE*
       - README.md
       - config.toml.example
-      - deploy/curlycatclaw.service
 
 checksum:
   name_template: "checksums.txt"
@@ -46,7 +45,7 @@ changelog:
       - "^ci:"
       - "^chore:"
 
-dockers_v2:
+dockers:
   - id: curlycatclaw
     ids: [curlycatclaw]
     dockerfile: Dockerfile.goreleaser

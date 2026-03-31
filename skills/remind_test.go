@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -366,7 +367,7 @@ func TestReminderActor_FiresPastDueOnStartup(t *testing.T) {
 	tgInbox := make(chan telegram.OutgoingMessage, 16)
 
 	actorSignalCh := make(chan int64, 16)
-	ra := NewReminderActor(db, tgInbox, time.UTC, actorSignalCh)
+	ra := NewReminderActor(db, tgInbox, time.UTC, actorSignalCh, nil)
 
 	// Run the actor in a goroutine with a short-lived context.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -429,7 +430,7 @@ func TestReminderActor_CancellationPreventsFireing(t *testing.T) {
 	tgInbox := make(chan telegram.OutgoingMessage, 16)
 
 	actorSignalCh := make(chan int64, 16)
-	ra := NewReminderActor(db, tgInbox, time.UTC, actorSignalCh)
+	ra := NewReminderActor(db, tgInbox, time.UTC, actorSignalCh, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
@@ -538,7 +539,7 @@ func TestReminderActor_CancelStopsScheduledJob(t *testing.T) {
 	tgInbox := make(chan telegram.OutgoingMessage, 16)
 
 	actorSignalCh := make(chan int64, 16)
-	ra := NewReminderActor(db, tgInbox, time.UTC, actorSignalCh)
+	ra := NewReminderActor(db, tgInbox, time.UTC, actorSignalCh, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -588,4 +589,214 @@ func TestReminderActor_CancelStopsScheduledJob(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// --- Cron task tests ---
+
+func TestSetReminder_WithPrompt(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	futureTime := time.Now().Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05")
+	input, _ := json.Marshal(setReminderInput{
+		Message: "Morning briefing",
+		FireAt:  futureTime,
+		Prompt:  "Check my notes and summarize what I need to do today",
+	})
+
+	result, err := skills["set_reminder"].Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("set_reminder: %v", err)
+	}
+	if !strings.Contains(result, "Morning briefing") {
+		t.Errorf("result = %q, want it to contain the message", result)
+	}
+	if !strings.Contains(result, "[cron:") {
+		t.Errorf("result = %q, want it to contain [cron: tag", result)
+	}
+
+	// Verify prompt stored in DB.
+	var prompt sql.NullString
+	err = db.QueryRow(`SELECT prompt FROM reminders WHERE id = 1`).Scan(&prompt)
+	if err != nil {
+		t.Fatalf("query prompt: %v", err)
+	}
+	if !prompt.Valid || prompt.String != "Check my notes and summarize what I need to do today" {
+		t.Errorf("prompt = %v, want the stored prompt text", prompt)
+	}
+
+	<-signalCh // drain
+}
+
+func TestSetReminder_WithoutPrompt_NoPromptInDB(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	futureTime := time.Now().Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05")
+	input, _ := json.Marshal(setReminderInput{
+		Message: "Plain reminder",
+		FireAt:  futureTime,
+	})
+
+	_, err := skills["set_reminder"].Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("set_reminder: %v", err)
+	}
+
+	var prompt sql.NullString
+	err = db.QueryRow(`SELECT prompt FROM reminders WHERE id = 1`).Scan(&prompt)
+	if err != nil {
+		t.Fatalf("query prompt: %v", err)
+	}
+	if prompt.Valid {
+		t.Errorf("prompt should be NULL for non-cron reminder, got %q", prompt.String)
+	}
+
+	<-signalCh // drain
+}
+
+func TestListReminders_CronTag(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	futureTime := time.Now().Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05")
+
+	// Create one regular and one cron reminder.
+	input1, _ := json.Marshal(setReminderInput{Message: "Plain", FireAt: futureTime})
+	input2, _ := json.Marshal(setReminderInput{Message: "Cron", FireAt: futureTime, Prompt: "do stuff"})
+
+	skills["set_reminder"].Execute(ctx, input1)
+	<-signalCh
+	skills["set_reminder"].Execute(ctx, input2)
+	<-signalCh
+
+	result, err := skills["list_reminders"].Execute(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list_reminders: %v", err)
+	}
+	if !strings.Contains(result, "[pending]") {
+		t.Errorf("result should contain [pending] for plain reminder: %s", result)
+	}
+	if !strings.Contains(result, "[cron:pending]") {
+		t.Errorf("result should contain [cron:pending] for cron reminder: %s", result)
+	}
+}
+
+// mockCronRunner is a test double for CronRunner.
+type mockCronRunner struct {
+	result string
+	err    error
+	called bool
+}
+
+func (m *mockCronRunner) Execute(_ context.Context, _, _ int64, _ string) (string, error) {
+	m.called = true
+	return m.result, m.err
+}
+
+func TestFireCronTask_Success(t *testing.T) {
+	db := newTestDBSingleConn(t)
+	signalCh := make(chan int64, 16)
+	_, err := InitRemindSkills(db, signalCh, time.UTC)
+	if err != nil {
+		t.Fatalf("InitRemindSkills: %v", err)
+	}
+
+	tgInbox := make(chan telegram.OutgoingMessage, 16)
+	mock := &mockCronRunner{result: "Here's your summary: all good"}
+	ra := NewReminderActor(db, tgInbox, time.UTC, signalCh, mock)
+
+	// Insert a cron reminder directly.
+	prompt := "summarize my notes"
+	fireAt := time.Now().Add(-1 * time.Second).UTC() // past due
+	db.Exec(`INSERT INTO reminders (user_id, chat_id, message, fire_at, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+		1, 10, "Morning briefing", fireAt, prompt, time.Now().UTC())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- ra.Run(ctx) }()
+
+	// Wait for the cron task to fire.
+	select {
+	case msg := <-tgInbox:
+		if !strings.Contains(msg.Text, "Morning briefing") {
+			t.Errorf("expected header with reminder label, got: %s", msg.Text)
+		}
+		if !strings.Contains(msg.Text, "Here's your summary") {
+			t.Errorf("expected cron result in message, got: %s", msg.Text)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for cron task to fire")
+	}
+
+	if !mock.called {
+		t.Error("CronRunner.Execute was not called")
+	}
+
+	cancel()
+	<-done
+}
+
+func TestFireCronTask_Error(t *testing.T) {
+	db := newTestDBSingleConn(t)
+	signalCh := make(chan int64, 16)
+	_, err := InitRemindSkills(db, signalCh, time.UTC)
+	if err != nil {
+		t.Fatalf("InitRemindSkills: %v", err)
+	}
+
+	tgInbox := make(chan telegram.OutgoingMessage, 16)
+	mock := &mockCronRunner{err: fmt.Errorf("rate limit exceeded")}
+	ra := NewReminderActor(db, tgInbox, time.UTC, signalCh, mock)
+
+	prompt := "do stuff"
+	fireAt := time.Now().Add(-1 * time.Second).UTC()
+	db.Exec(`INSERT INTO reminders (user_id, chat_id, message, fire_at, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+		1, 10, "Failed task", fireAt, prompt, time.Now().UTC())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- ra.Run(ctx) }()
+
+	select {
+	case msg := <-tgInbox:
+		if !strings.Contains(msg.Text, "[Cron task failed]") {
+			t.Errorf("expected error notification, got: %s", msg.Text)
+		}
+		if !strings.Contains(msg.Text, "rate limit") {
+			t.Errorf("expected error message in notification, got: %s", msg.Text)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for error notification")
+	}
+
+	cancel()
+	<-done
+}
+
+func TestMigration_DuplicateColumn(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+
+	// First init creates the table with prompt column.
+	_, err := InitRemindSkills(db, signalCh, time.UTC)
+	if err != nil {
+		t.Fatalf("first InitRemindSkills: %v", err)
+	}
+
+	// Second init should not fail (ALTER TABLE duplicate column is handled).
+	_, err = InitRemindSkills(db, signalCh, time.UTC)
+	if err != nil {
+		t.Fatalf("second InitRemindSkills should be idempotent: %v", err)
+	}
 }

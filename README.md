@@ -37,7 +37,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 ### Extensibility
 
 - **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio
-- **Built-in skills** — web search, notes (size-limited), reminders (cron-validated), semantic search (result-capped), persistent user facts
+- **Built-in skills** — web search, notes (size-limited), reminders with optional Claude-powered cron tasks, semantic search (result-capped), persistent user facts
 - **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security, 10 MiB query result cap, quote-aware SQL parameter binding, atomic hot-reload
 
 ### Operations
@@ -248,7 +248,7 @@ query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked resu
 | `web_search` | Search the web via DuckDuckGo |
 | `save_note` | Save a note (user-scoped, persisted to SQLite) |
 | `search_notes` | Search saved notes by keyword |
-| `set_reminder` | Set a reminder with time and optional recurrence |
+| `set_reminder` | Set a reminder with time, optional recurrence, and optional Claude-powered prompt |
 | `list_reminders` | List pending/fired reminders |
 | `cancel_reminder` | Cancel a scheduled reminder |
 | `semantic_search` | Search conversation history and notes by meaning (requires Qdrant) |

@@ -25,6 +25,15 @@ Test expectations:
 - When adding error handling, test both success and error paths
 - Tests use stdlib `testing` package with `t.Fatal`/`t.Error` assertions
 
+## Versioning
+
+Version is tracked in the `VERSION` file (currently source of truth). Follows semver (`x.y.z`):
+- **x (major)**: Reserved — only bumped when explicitly decided by the maintainer
+- **y (minor)**: New features
+- **z (patch)**: Bug fixes and patches
+
+Goreleaser injects the version into the binary via `-X main.version={{.Version}}` from git tags. Update `VERSION` and `CHANGELOG.md` when releasing.
+
 ## Architecture
 
 - **Actor model**: each component (Telegram, session, etc.) runs in its own goroutine with typed message channels
@@ -42,7 +51,8 @@ Test expectations:
 - **Budget manager**: Haiku-powered context classification (keyword fast-path + cache + LLM), budget-aware context building via `BuildContextWithBudget`, opt-in, cache indexed on created_at for cleanup, rune-safe UTF-8 truncation (500-rune limit) for LLM classification prompts
 - **Vector search**: Qdrant gRPC for semantic search, pluggable Embedder interface (FNV offline / Ollama local / Voyage AI paid), configurable search timeout via `vector_search_timeout_seconds` (default 5s)
 - **Config validation**: startup validation of required fields (db_path, MCP server name/command, qdrant_addr when vector enabled, wasm skills_dir when wasm enabled, health port range, budget.model when budget enabled, embedder type fnv/ollama/voyage with required fields per type)
-- **Skills**: built-in Go skills (search, note, remind, semantic_search, remember_fact, forget_fact, list_facts) + Wasm plugin runtime; note has title/content size limits (500 runes / 100KB), semantic_search capped at 50 results, remind validates cron expressions at input time
+- **Skills**: built-in Go skills (search, note, remind, semantic_search, remember_fact, forget_fact, list_facts) + Wasm plugin runtime; note has title/content size limits (500 runes / 100KB), semantic_search capped at 50 results, remind validates cron expressions at input time, optional `prompt` field for Claude-powered cron tasks (clean context, facts only, full tool access)
+- **Cron tasks**: `CronExecutor` runs scheduled prompts through Claude with ephemeral context (no conversation DB), user facts in system prompt, full skill/MCP tool access, 3-slot concurrency semaphore, rate limit retry, 5-minute timeout; CLI mode uses `SpawnOneShot` for isolated subprocess; `CronRunner` interface in skills package avoids circular imports
 - **Wasm runtime**: wazero-based with capability model, JSON-over-shared-memory, hot-reload (atomic reload with map-based Execute lookup), chat-scoped send_message, db_read enforced user scoping via `:user_id` placeholder (queries on user-scoped tables without `:user_id` are rejected, not just warned; quote-aware replacement, 10 MiB result size cap, rows.Err check), UNION/INTERSECT/EXCEPT/WITH blocked in isSelectOnly, comment-stripped word-boundary table detection, HTTP private IP blocklist (SSRF prevention), connect-time IP verification (DNS rebinding protection), sanitized DB errors, 50 MiB module size cap, compiled module cleanup on unload, skill-name-based registry unregister
 - **Tool transparency**: `[tool]` lines sent to user in Telegram, opt-out via `show_tool_calls`
 - **Tool confirmation**: `confirm_tools` prefix list for sensitive operations, stateless via Claude re-ask
@@ -69,6 +79,7 @@ Test expectations:
 | `internal/memory/summarizer.go` | Conversation summarizer (transcript formatting + Claude) |
 | `internal/memory/vectorstore.go` | Qdrant vector search (messages, notes, summaries) |
 | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
+| `internal/session/cron.go` | CronExecutor for scheduled Claude-powered tasks |
 | `skills/` | Built-in skill implementations |
 | `internal/security/sandbox_linux.go` | Landlock filesystem sandbox (Linux) |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
