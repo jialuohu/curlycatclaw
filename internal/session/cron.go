@@ -188,7 +188,7 @@ func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64
 	var text strings.Builder
 	events, err := proc.Send(ctx, nil, func(delta string) {
 		text.WriteString(delta)
-	})
+	}, nil)
 	if err != nil {
 		return "", fmt.Errorf("cron: CLI send: %w", err)
 	}

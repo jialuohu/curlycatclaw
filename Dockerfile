@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION}" \
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates tzdata curl nodejs npm \
+    ca-certificates tzdata curl git nodejs npm \
     && npm install -g @anthropic-ai/claude-code \
     && apt-get purge -y npm && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInitPluginSkills_ReturnsAllSkills(t *testing.T) {
@@ -124,6 +125,64 @@ func TestBuildPluginEnv(t *testing.T) {
 	}
 	if hasMasterKey {
 		t.Error("CURLYCATCLAW_MASTER_KEY should NOT be in plugin env")
+	}
+}
+
+func TestEnsureMarketplace_SkipsWhenFresh(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, ".claude", "plugins")
+	if err := os.MkdirAll(pluginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Create a fresh known_marketplaces.json (mod time = now).
+	if err := os.WriteFile(filepath.Join(pluginDir, "known_marketplaces.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should skip entirely (no CLI call needed, path is invalid anyway).
+	err := ensureMarketplace("/nonexistent-binary", dir)
+	if err != nil {
+		t.Fatalf("expected nil error for fresh marketplace, got: %v", err)
+	}
+}
+
+func TestEnsureMarketplace_FailsWhenMissingAndNoCLI(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, ".claude", "plugins")
+	if err := os.MkdirAll(pluginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// No known_marketplaces.json, invalid CLI path.
+	err := ensureMarketplace("/nonexistent-binary", dir)
+	if err == nil {
+		t.Fatal("expected error when CLI is missing and marketplace not bootstrapped")
+	}
+	if !strings.Contains(err.Error(), "marketplace add") {
+		t.Errorf("error = %q, want marketplace add mention", err.Error())
+	}
+}
+
+func TestEnsureMarketplace_UpdatesWhenStale(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, ".claude", "plugins")
+	if err := os.MkdirAll(pluginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Create a stale known_marketplaces.json (mod time = 25h ago).
+	mktPath := filepath.Join(pluginDir, "known_marketplaces.json")
+	if err := os.WriteFile(mktPath, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	staleTime := time.Now().Add(-25 * time.Hour)
+	if err := os.Chtimes(mktPath, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should try to update (will fail with invalid CLI, but that's non-fatal for update).
+	err := ensureMarketplace("/nonexistent-binary", dir)
+	// Update failure is non-fatal, so no error returned.
+	if err != nil {
+		t.Fatalf("expected nil error (stale update failure is non-fatal), got: %v", err)
 	}
 }
 

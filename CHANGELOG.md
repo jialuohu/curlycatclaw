@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.0] - 2026-04-01
+
+Plugin installs just work now. The bot auto-bootstraps the official marketplace on first install, keeps it fresh, and shows you what tools it's using in real time instead of freezing mid-sentence.
+
+### Added
+- **Marketplace auto-bootstrap**: First `install_plugin` call automatically registers the official Claude plugin marketplace. Subsequent installs skip the setup (idempotent). Marketplace data older than 24h is auto-updated via git pull. No config needed.
+- **Real-time tool notifications**: `[tool]` messages now appear in Telegram the moment Claude starts using a tool, not after the entire response completes. Text streams, tool notification fires, tool executes, text resumes. No more frozen screens during tool calls.
+- **git in Docker image**: The container now includes git, required for marketplace clone operations.
+
+### Changed
+- `Send()` in CLI subprocess now accepts an `onToolUse` callback for real-time tool start events
+- Tool transparency messages moved from post-hoc event loop to streaming callback
+- `parseStreamDelta()` now parses `content_block_start` events with `tool_use` type
+
 ## [0.13.1] - 2026-03-31
 
 Plugins you install via Telegram now actually work. The bot reads the real plugin manifest and passes MCP servers to the CLI subprocess correctly. Previously, plugin discovery was broken since day one.

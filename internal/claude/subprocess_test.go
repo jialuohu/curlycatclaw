@@ -62,6 +62,49 @@ func TestParseStreamEvent_TextDelta_NonTextSkipped(t *testing.T) {
 	}
 }
 
+func TestParseStreamEvent_ToolUseStart(t *testing.T) {
+	line := []byte(`{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_abc","name":"install_plugin","input":{}}}}`)
+
+	event, err := parseStreamEvent(line)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tu, ok := event.(ToolUseStartEvent)
+	if !ok {
+		t.Fatalf("expected ToolUseStartEvent, got %T", event)
+	}
+	if tu.Name != "install_plugin" {
+		t.Errorf("name = %q, want %q", tu.Name, "install_plugin")
+	}
+}
+
+func TestParseStreamEvent_ToolUseStart_TextBlockIgnored(t *testing.T) {
+	// content_block_start with type "text" should NOT produce a ToolUseStartEvent.
+	line := []byte(`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`)
+
+	event, err := parseStreamEvent(line)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event != nil {
+		t.Errorf("expected nil for text content_block_start, got %T", event)
+	}
+}
+
+func TestParseStreamEvent_ToolUseStart_EmptyName(t *testing.T) {
+	// content_block_start with tool_use but empty name should be skipped.
+	line := []byte(`{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_abc","name":"","input":{}}}}`)
+
+	event, err := parseStreamEvent(line)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event != nil {
+		t.Errorf("expected nil for empty tool name, got %T", event)
+	}
+}
+
 func TestParseStreamEvent_AssistantMessage_TextOnly(t *testing.T) {
 	line := []byte(`{"type":"assistant","uuid":"msg-1","session_id":"sess-1","message":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"Hello, world!"}],"model":"claude-sonnet-4-6-20250514","stop_reason":"end_turn"}}`)
 

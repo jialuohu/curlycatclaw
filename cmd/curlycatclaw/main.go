@@ -324,7 +324,7 @@ func run(configPath string) error {
 				var text strings.Builder
 				events, err := proc.Send(ctx, nil, func(delta string) {
 					text.WriteString(delta)
-				})
+				}, nil)
 				if err != nil {
 					return "", fmt.Errorf("cli summarize: send: %w", err)
 				}
