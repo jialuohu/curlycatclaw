@@ -9,8 +9,9 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION}" \
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates tzdata curl git nodejs npm \
-    && npm install -g @anthropic-ai/claude-code \
+    ca-certificates tzdata curl git nodejs npm python3 pipx \
+    && npm install -g @anthropic-ai/claude-code bun \
+    && PIPX_HOME=/usr/local/pipx PIPX_BIN_DIR=/usr/local/bin pipx install uv \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -d /data curlycatclaw
 COPY --from=builder /curlycatclaw /usr/local/bin/curlycatclaw

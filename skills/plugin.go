@@ -114,6 +114,11 @@ func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[strin
 		if action == "install" {
 			msg += "\n\nThe plugin's tools will be available starting with the user's next message."
 			msg += " Tell the user the plugin is ready and they can start using it."
+
+			// Check if the plugin's MCP server command is available.
+			if warning := checkPluginCommand(isolatedHome, params.Name); warning != "" {
+				msg += "\n\n" + warning
+			}
 		}
 
 		return msg, nil
@@ -137,6 +142,75 @@ func makePluginListExecute(cliPath, isolatedHome string) func(ctx context.Contex
 		}
 		return result, nil
 	}
+}
+
+// checkPluginCommand reads the newly installed plugin's .mcp.json to find
+// what command it needs, and checks if that command is available. Returns a
+// warning string if the command is missing, empty string if all good.
+func checkPluginCommand(isolatedHome, pluginName string) string {
+	manifestPath := filepath.Join(isolatedHome, ".claude", "plugins", "installed_plugins.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return ""
+	}
+	var manifest struct {
+		Plugins map[string][]struct {
+			InstallPath string `json:"installPath"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return ""
+	}
+
+	// Find the plugin's installPath (match by prefix since manifest key includes @marketplace).
+	var installPath string
+	for key, installs := range manifest.Plugins {
+		if strings.HasPrefix(key, pluginName+"@") || key == pluginName {
+			if len(installs) > 0 && installs[0].InstallPath != "" {
+				installPath = installs[0].InstallPath
+				break
+			}
+		}
+	}
+	if installPath == "" {
+		return ""
+	}
+
+	mcpData, err := os.ReadFile(filepath.Join(installPath, ".mcp.json"))
+	if err != nil {
+		return ""
+	}
+
+	// Parse .mcp.json to find command (handles both flat and nested mcpServers format).
+	var servers map[string]struct {
+		Command string `json:"command"`
+		Type    string `json:"type"`
+	}
+	if err := json.Unmarshal(mcpData, &servers); err != nil {
+		// Try nested mcpServers format.
+		var nested struct {
+			MCPServers map[string]struct {
+				Command string `json:"command"`
+				Type    string `json:"type"`
+			} `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(mcpData, &nested); err != nil {
+			return ""
+		}
+		servers = nested.MCPServers
+	}
+
+	for _, srv := range servers {
+		if srv.Type == "http" || srv.Command == "" {
+			continue // HTTP servers don't need a local command
+		}
+		if _, err := exec.LookPath(srv.Command); err != nil {
+			return fmt.Sprintf("WARNING: This plugin requires '%s' which is not installed. "+
+				"The plugin's MCP server will fail to start. "+
+				"Tell the user they need to add '%s' to the Docker image.", srv.Command, srv.Command)
+		}
+	}
+	return ""
 }
 
 // writeReloadFlag creates the reload signal file.
