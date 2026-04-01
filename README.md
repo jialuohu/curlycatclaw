@@ -108,7 +108,6 @@ oauth_token = "sk-ant-oat01-..."             # long-lived token from `claude set
 model       = "claude-sonnet-4-6-20250514"
 # Plugin management (requires CLI mode)
 # isolated_home   = "/home/you/.curlycatclaw/claude-home"
-# allowed_plugins = ["context7", "playwright"]
 
 [telegram]
 token = "123456:ABC-DEF..."
