@@ -2,6 +2,7 @@ package mdhtml
 
 import (
 	"html"
+	"strings"
 	"testing"
 )
 
@@ -304,5 +305,39 @@ func TestConvert_ConsecutiveCodeBlocks(t *testing.T) {
 	want := "<pre><code class=\"language-go\">x := 1</code></pre>\n\n<pre><code class=\"language-python\">y = 2</code></pre>"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestConvert_Table(t *testing.T) {
+	input := "Here's a table:\n\n| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |\n\nAfter the table."
+	got := Convert(input)
+
+	// Table should be wrapped in <pre> tags.
+	if !strings.Contains(got, "<pre>") {
+		t.Errorf("expected <pre> for table, got: %q", got)
+	}
+	// Separator row should be removed.
+	if strings.Contains(got, "---") {
+		t.Errorf("separator row should be removed, got: %q", got)
+	}
+	// Header and data rows should be preserved.
+	if !strings.Contains(got, "Alice") || !strings.Contains(got, "Bob") {
+		t.Errorf("table content missing, got: %q", got)
+	}
+	// Text before and after should be outside <pre>.
+	if !strings.Contains(got, "table:") {
+		t.Errorf("text before table missing, got: %q", got)
+	}
+	if !strings.Contains(got, "After the table.") {
+		t.Errorf("text after table missing, got: %q", got)
+	}
+}
+
+func TestConvert_NoTable(t *testing.T) {
+	// Text with | but not a table should not be wrapped in <pre>.
+	input := "Use A | B for alternatives."
+	got := Convert(input)
+	if strings.Contains(got, "<pre>") {
+		t.Errorf("non-table pipe should not become <pre>, got: %q", got)
 	}
 }

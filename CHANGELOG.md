@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.4] - 2026-04-01
+
+### Changed
+- **Skip redundant web_search in CLI mode** — the CLI subprocess already has a built-in WebSearch tool. The custom DuckDuckGo-based `web_search` MCP skill is now only registered in direct API mode where no CLI is available.
+
 ## [0.14.3] - 2026-04-01
 
 Plugins that need bun, python, or uvx now work out of the box. If a plugin needs a command that's missing, the bot tells you.
