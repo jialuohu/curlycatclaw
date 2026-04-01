@@ -902,7 +902,7 @@ func (a *Actor) handleWithCLI(
 	events, err := proc.Send(ctx, userJSON, func(delta string) {
 		ss.onDelta(delta)
 	}, func(toolName string) {
-		// Plain flush (not finalFlush — avoid premature HTML conversion),
+		// Flush accumulated text as Telegram HTML before showing tool notification,
 		// then reset so post-tool text starts a new Telegram message.
 		ss.mu.Lock()
 		for ss.flushing {
@@ -910,7 +910,9 @@ func (a *Actor) handleWithCLI(
 			time.Sleep(5 * time.Millisecond)
 			ss.mu.Lock()
 		}
+		ss.htmlMode = true
 		ss.flush()
+		ss.htmlMode = false
 		ss.mu.Unlock()
 		ss.reset()
 
