@@ -58,8 +58,10 @@ func runMCPServer() error {
 	defer store.Close()
 
 	// Build skill registry.
+	// Note: web_search is NOT registered here because the CLI subprocess
+	// already has a built-in WebSearch tool. It IS registered in main.go
+	// for direct API mode where no CLI is available.
 	reg := skills.NewRegistry()
-	reg.Register(skills.NewWebSearchSkill())
 
 	noteSkills, err := skills.InitNoteSkills(store.DB())
 	if err != nil {
