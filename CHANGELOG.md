@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.5] - 2026-04-01
+
+### Changed
+- **Telegram formatting guidance in system prompt** — Claude now uses bullet points and lists instead of markdown tables. Tables render poorly on mobile Telegram, so the system prompt tells Claude to avoid them.
+
 ## [0.14.4] - 2026-04-01
 
 ### Changed
