@@ -51,8 +51,9 @@ cp ~/.curlycatclaw/curlycatclaw.db ./backup.db
 
 ## Encrypted MCP Credentials
 
-Create a `.env` file in the project root:
+Add the master key to the `environment` section in `docker-compose.yml`:
 
-```
-CURLYCATCLAW_MASTER_KEY=<64 hex chars for encrypted MCP credentials>
+```yaml
+environment:
+  - CURLYCATCLAW_MASTER_KEY=<64 hex chars for encrypted MCP credentials>
 ```
