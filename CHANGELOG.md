@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.1] - 2026-04-01
+
+After installing a plugin, the bot knows what it does and how to use it. No more "I don't know what context7 is" after you just installed it.
+
+### Added
+- **Plugin awareness in system prompt**: Installed plugins are listed with descriptions so Claude knows what they do and uses them proactively. Known plugins (context7, playwright) get specific guidance.
+- **Enhanced install message**: After installing a plugin, Claude tells the user the tools will be ready on the next message.
+- **Defensive pre-turn reload check**: Subprocess reload now also happens at the start of each message, guaranteeing the next message after a plugin install gets the updated tools.
+
+### Removed
+- **`.env.example`**: Unused file. `CURLYCATCLAW_MASTER_KEY` is documented in `deploy/docker.md` and README.
+
+### Changed
+- `deploy/docker.md`: Updated encrypted credentials section to use docker-compose environment instead of `.env` file.
+
 ## [0.14.0] - 2026-04-01
 
 Plugin installs just work now. The bot auto-bootstraps the official marketplace on first install, keeps it fresh, and shows you what tools it's using in real time instead of freezing mid-sentence.
