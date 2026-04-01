@@ -281,11 +281,15 @@ query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked resu
 | `list_facts` | List all persistent facts Claude remembers about you |
 | `list_summaries` | View all stored conversation summaries with IDs and previews |
 | `delete_summary` | Remove an incorrect or unwanted conversation summary by ID |
-| `install_plugin` | Install a Claude Code plugin (allowlist-gated) |
+| `install_plugin` | Install a Claude Code plugin (allowlist-gated, auto-searches for marketplace) |
 | `uninstall_plugin` | Uninstall a Claude Code plugin |
 | `list_plugins` | List installed Claude Code plugins |
 | `enable_plugin` | Enable a previously disabled plugin |
 | `disable_plugin` | Disable a plugin without uninstalling |
+| `update_plugin` | Update one or all installed plugins to latest version |
+| `add_marketplace` | Add a third-party plugin marketplace (GitHub repo) |
+| `remove_marketplace` | Remove a marketplace and auto-uninstall its plugins |
+| `list_marketplaces` | List configured plugin marketplaces |
 
 Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Plugin skills require `cli_path` and `isolated_home` in `[claude]` config. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
 

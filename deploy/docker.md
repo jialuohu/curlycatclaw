@@ -27,16 +27,18 @@ Docker uses the same `config.toml` as local, with these env vars overriding path
 | `CURLYCATCLAW_ISOLATED_HOME` | `/data/claude-home` | Isolated Claude home for plugin management |
 | `HOME` | `/data` | So CLI finds config at /data |
 
-## MCP Servers
+## MCP Servers & Plugin Runtimes
 
-MCP servers are launched via `exec.Command` (stdio transport). The Debian-based
-Docker image includes Node.js (for Claude CLI) but not Python or other runtimes.
-MCP servers that require these will not work inside the container.
+MCP servers are launched via `exec.Command` (stdio transport). The Docker image
+includes runtimes for the most common plugin types:
 
-Options:
-- Run MCP-dependent servers on the host and connect via network
-- Use a custom Dockerfile with the required runtimes installed
-- Disable MCP servers in your Docker config
+- **npx** (Node.js) — context7, firebase, playwright, sentry
+- **bun** — discord, imessage, fakechat
+- **python3 / uvx** — Python-based MCP servers
+- **git** — marketplace clone operations
+
+Plugins that need `docker` or `php` are not supported inside the container.
+The bot warns you after install if the required command is missing.
 
 ## Data
 
