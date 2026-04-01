@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // InitPluginSkills returns skills for managing Claude Code plugins in an
@@ -87,6 +90,14 @@ func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[strin
 			return "", fmt.Errorf("plugin %q is not in the allowed list. Allowed: %s", params.Name, strings.Join(allowed, ", "))
 		}
 
+		// Bootstrap marketplace on first install attempt (lazy, idempotent).
+		// Runs after allowlist check to avoid network calls for rejected plugins.
+		if action == "install" {
+			if err := ensureMarketplace(cliPath, isolatedHome); err != nil {
+				return "", fmt.Errorf("marketplace bootstrap failed: %w", err)
+			}
+		}
+
 		cmd := exec.CommandContext(ctx, cliPath, "plugin", action, params.Name)
 		cmd.Env = buildPluginEnv(isolatedHome)
 
@@ -125,6 +136,70 @@ func makePluginListExecute(cliPath, isolatedHome string) func(ctx context.Contex
 func writeReloadFlag(isolatedHome string) {
 	path := filepath.Join(isolatedHome, ".curlycatclaw-reload-needed")
 	os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
+}
+
+var defaultMarketplaces = []string{"anthropics/claude-plugins-official"}
+
+const marketplaceMaxAge = 24 * time.Hour
+
+var marketplaceMu sync.Mutex
+
+// ensureMarketplace registers the default marketplace if missing, or updates
+// it if stale (>24h since last update). Called lazily on plugin install.
+// Uses a mutex to prevent concurrent git clones/pulls from racing.
+// Assumes known_marketplaces.json is written atomically by the Claude CLI
+// (verified against Claude Code v1.0.x).
+func ensureMarketplace(cliPath, isolatedHome string) error {
+	knownMkt := filepath.Join(isolatedHome, ".claude", "plugins", "known_marketplaces.json")
+
+	// Fast path: marketplace exists and is fresh. No lock needed.
+	if info, err := os.Stat(knownMkt); err == nil {
+		if time.Since(info.ModTime()) < marketplaceMaxAge {
+			return nil
+		}
+	}
+
+	marketplaceMu.Lock()
+	defer marketplaceMu.Unlock()
+
+	// Re-check under lock (another goroutine may have just updated).
+	info, err := os.Stat(knownMkt)
+	if err != nil {
+		// Missing: bootstrap (clone).
+		for _, source := range defaultMarketplaces {
+			if err := runMarketplaceCmd(cliPath, isolatedHome, "add", source); err != nil {
+				return err
+			}
+		}
+		slog.Info("marketplace bootstrapped", "home", isolatedHome)
+		return nil
+	}
+
+	// Exists but stale: update (pull).
+	if time.Since(info.ModTime()) >= marketplaceMaxAge {
+		if err := runMarketplaceCmd(cliPath, isolatedHome, "update", ""); err != nil {
+			slog.Warn("marketplace update failed, using stale data", "err", err)
+		} else {
+			slog.Info("marketplace updated", "home", isolatedHome)
+		}
+	}
+	return nil
+}
+
+func runMarketplaceCmd(cliPath, isolatedHome, action, arg string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	args := []string{"plugin", "marketplace", action}
+	if arg != "" {
+		args = append(args, arg)
+	}
+	cmd := exec.CommandContext(ctx, cliPath, args...)
+	cmd.Env = buildPluginEnv(isolatedHome)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("marketplace %s %s: %s: %w", action, arg, strings.TrimSpace(string(output)), err)
+	}
+	return nil
 }
 
 // buildPluginEnv constructs a minimal environment for plugin subprocesses,
