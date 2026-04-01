@@ -28,6 +28,11 @@ func Convert(markdown string) string {
 	var inlineBlocks []string
 	markdown, inlineBlocks = extractInlineCode(markdown)
 
+	// Phase 2.5: Convert markdown tables to <pre> blocks.
+	// Must happen before HTML escaping so pipe chars aren't escaped.
+	var tableBlocks []string
+	markdown, tableBlocks = extractTables(markdown)
+
 	// Phase 3: Escape HTML entities in the remaining text.
 	markdown = html.EscapeString(markdown)
 
@@ -55,10 +60,13 @@ func Convert(markdown string) string {
 	// Phase 11: Strip horizontal rules (---)
 	markdown = stripHorizontalRules(markdown)
 
-	// Phase 12: Restore fenced code blocks.
+	// Phase 12: Restore table blocks.
+	markdown = restoreTableBlocks(markdown, tableBlocks)
+
+	// Phase 13: Restore fenced code blocks.
 	markdown = restoreFencedBlocks(markdown, fencedBlocks)
 
-	// Phase 13: Restore inline code.
+	// Phase 14: Restore inline code.
 	markdown = restoreInlineCode(markdown, inlineBlocks)
 
 	return markdown
@@ -257,6 +265,84 @@ func convertListBullets(s string) string {
 // stripHorizontalRules removes lines that are just --- (three or more dashes).
 // After HTML escaping, --- stays as --- (no special chars).
 var hrRe = regexp.MustCompile(`(?m)^-{3,}\s*$`)
+
+// ---------------------------------------------------------------------------
+// Table conversion
+// ---------------------------------------------------------------------------
+
+const tablePlaceholder = "\x00TABLE_BLOCK_"
+
+// extractTables finds markdown tables and replaces them with placeholders.
+// Tables are consecutive lines that contain | characters, with at least a
+// header row and a separator row (|---|).
+func extractTables(s string) (string, []string) {
+	lines := strings.Split(s, "\n")
+	var result []string
+	var blocks []string
+	var tableLines []string
+
+	flushTable := func() {
+		if len(tableLines) >= 2 {
+			// Check if we have a separator row (|---|)
+			hasSep := false
+			for _, l := range tableLines {
+				trimmed := strings.TrimSpace(l)
+				if strings.Contains(trimmed, "---") && strings.Contains(trimmed, "|") {
+					hasSep = true
+					break
+				}
+			}
+			if hasSep {
+				// Convert table to pre block content.
+				var cleaned []string
+				for _, l := range tableLines {
+					trimmed := strings.TrimSpace(l)
+					// Skip separator rows (|---|---|)
+					if strings.Contains(trimmed, "---") && !strings.ContainsAny(trimmed, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") {
+						continue
+					}
+					cleaned = append(cleaned, trimmed)
+				}
+				block := strings.Join(cleaned, "\n")
+				placeholder := fmt.Sprintf("%s%d\x00", tablePlaceholder, len(blocks))
+				blocks = append(blocks, block)
+				result = append(result, placeholder)
+				tableLines = nil
+				return
+			}
+		}
+		// Not a valid table, restore lines as-is.
+		result = append(result, tableLines...)
+		tableLines = nil
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "|") && (strings.HasPrefix(trimmed, "|") || strings.Contains(trimmed, " | ")) {
+			tableLines = append(tableLines, line)
+		} else {
+			if len(tableLines) > 0 {
+				flushTable()
+			}
+			result = append(result, line)
+		}
+	}
+	if len(tableLines) > 0 {
+		flushTable()
+	}
+
+	return strings.Join(result, "\n"), blocks
+}
+
+// restoreTableBlocks replaces table placeholders with <pre> formatted tables.
+func restoreTableBlocks(s string, blocks []string) string {
+	for i, block := range blocks {
+		placeholder := fmt.Sprintf("%s%d\x00", tablePlaceholder, i)
+		escaped := html.EscapeString(block)
+		s = strings.Replace(s, placeholder, "<pre>"+escaped+"</pre>", 1)
+	}
+	return s
+}
 
 func stripHorizontalRules(s string) string {
 	return hrRe.ReplaceAllString(s, "")
