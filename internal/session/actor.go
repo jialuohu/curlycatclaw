@@ -1266,6 +1266,10 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "You are a helpful personal assistant.\n\n")
+	sb.WriteString("You are communicating via Telegram. Format responses for mobile readability:\n")
+	sb.WriteString("- Use bullet points and numbered lists instead of markdown tables.\n")
+	sb.WriteString("- Tables render poorly in Telegram. Always convert tabular data to a list format.\n")
+	sb.WriteString("- Use bold (**text**) for emphasis and `code` for technical terms.\n\n")
 	fmt.Fprintf(&sb, "The user's timezone is %s. Current local time: %s.\n", a.cfg.Timezone, now.Format("2006-01-02 15:04 MST"))
 	sb.WriteString("Always use this timezone for scheduling, time references, and \"today/tomorrow/yesterday.\"\n")
 	sb.WriteString("When the user says \"3pm\" they mean 3pm in their timezone, not UTC.\n")
