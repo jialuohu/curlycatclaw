@@ -8,7 +8,11 @@ import (
 	"os"
 	"strconv"
 
+	"path/filepath"
+	"time"
+
 	"github.com/jialuohu/curlycatclaw/config"
+	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/skills"
@@ -100,7 +104,7 @@ func runMCPServer() error {
 	cliPath := os.Getenv("CURLYCATCLAW_CLI_PATH")
 	isolatedHome := os.Getenv("CURLYCATCLAW_ISOLATED_HOME")
 	if cliPath != "" && isolatedHome != "" {
-		for _, s := range skills.InitPluginSkills(cliPath, isolatedHome, cfg.Claude.AllowedPlugins) {
+		for _, s := range skills.InitPluginSkills(cliPath, isolatedHome) {
 			reg.Register(s)
 		}
 	}
@@ -112,6 +116,40 @@ func runMCPServer() error {
 			slog.Warn("mcp-server: skill collections", "err", err)
 		}
 		// No hot-reload in MCP server subprocess (short-lived).
+	}
+
+	// Runtime extension registry (exec extensions + management skills).
+	extRegistryPath := filepath.Join(filepath.Dir(dbPath), "extensions.json")
+	extReg, err := extension.Load(extRegistryPath)
+	if err != nil {
+		slog.Warn("mcp-server: extension registry load failed", "err", err)
+	} else {
+		for _, ext := range extReg.ByType(extension.TypeExec) {
+			adapter := skillloader.NewExecAdapter(ext.Command, ext.Args, "", ext.Env, 30*time.Second)
+			registryName := extension.ExecSkillPrefix + ext.Name
+			extCopy := ext // capture for closure
+			reg.Register(&skills.Skill{
+				Name:        registryName,
+				Description: extCopy.Description,
+				InputSchema: extCopy.InputSchema,
+				Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+					user := skills.GetUser(ctx)
+					return adapter.Execute(ctx, input, user)
+				},
+			})
+		}
+
+		extReloadFunc := func() {
+			ih := os.Getenv("CURLYCATCLAW_ISOLATED_HOME")
+			if ih != "" {
+				path := filepath.Join(ih, ".curlycatclaw-reload-needed")
+				os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
+			}
+		}
+		// mcpMgr is nil in MCP server subprocess mode.
+		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc) {
+			reg.Register(s)
+		}
 	}
 
 	// Semantic search (optional, requires Qdrant).

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -21,11 +22,12 @@ import (
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/actor"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
+	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/security"
-	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/internal/session"
+	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 	"github.com/jialuohu/curlycatclaw/internal/wasm"
 	"github.com/jialuohu/curlycatclaw/skills"
@@ -101,6 +103,11 @@ func run(configPath string) error {
 			return fmt.Errorf("ensure isolated home: %w", err)
 		}
 		slog.Info("isolated home initialized", "path", cfg.Claude.IsolatedHome)
+
+		// Pre-install standard plugins on first startup.
+		if cfg.Claude.UseCLI() {
+			skills.EnsureDefaultPlugins(cfg.Claude.CLIPath, cfg.Claude.IsolatedHome)
+		}
 	}
 
 	// Initialize storage.
@@ -206,6 +213,50 @@ func run(configPath string) error {
 		}()
 		defer func() { _ = sl.Shutdown() }()
 	}
+
+	// Load runtime extension registry (persisted MCP servers + exec skills).
+	extRegistryPath := filepath.Join(dataDir, "extensions.json")
+	extReg, err := extension.Load(extRegistryPath)
+	if err != nil {
+		slog.Warn("extension registry load failed, starting empty", "path", extRegistryPath, "err", err)
+		extReg = extension.Empty(extRegistryPath)
+	}
+	for _, ext := range extReg.ByType(extension.TypeMCP) {
+		mcpCfg := config.MCPServerConfig{
+			Name:    ext.Name,
+			Command: ext.Command,
+			Args:    ext.Args,
+			Env:     ext.Env,
+		}
+		if err := mcpMgr.AddServer(ctx, mcpCfg, nil); err != nil {
+			slog.Warn("extension: failed to start MCP server", "name", ext.Name, "err", err)
+		}
+	}
+	for _, ext := range extReg.ByType(extension.TypeExec) {
+		adapter := skillloader.NewExecAdapter(ext.Command, ext.Args, "", ext.Env, 30*time.Second)
+		registryName := extension.ExecSkillPrefix + ext.Name
+		extCopy := ext // capture for closure
+		skillReg.Register(&skills.Skill{
+			Name:        registryName,
+			Description: extCopy.Description,
+			InputSchema: extCopy.InputSchema,
+			Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+				user := skills.GetUser(ctx)
+				return adapter.Execute(ctx, input, user)
+			},
+		})
+		slog.Info("extension: exec skill registered", "name", registryName)
+	}
+	extReloadFunc := func() {
+		if cfg.Claude.IsolatedHome != "" {
+			path := filepath.Join(cfg.Claude.IsolatedHome, ".curlycatclaw-reload-needed")
+			os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
+		}
+	}
+	for _, s := range extension.InitExtensionSkills(extReg, mcpMgr, skillReg, extReloadFunc) {
+		skillReg.Register(s)
+	}
+	slog.Info("extension registry loaded", "path", extRegistryPath, "count", len(extReg.All()))
 
 	// Initialize prompt budget manager (optional, requires direct API — not available in CLI mode).
 	var budgetMgr *memory.BudgetManager
@@ -379,7 +430,7 @@ func run(configPath string) error {
 	if summarizer != nil {
 		sessionSummarizer = summarizer
 	}
-	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, sessionSummarizer, configPath)
+	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, sessionSummarizer, configPath, extReg)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
