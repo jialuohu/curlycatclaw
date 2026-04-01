@@ -1057,7 +1057,7 @@ func TestHandleWithCLI_ErrorResult(t *testing.T) {
 
 	// Send a message and collect events.
 	userJSON := claude.BuildUserMessage("hello")
-	events, err := proc.Send(ctx, userJSON, nil)
+	events, err := proc.Send(ctx, userJSON, nil, nil)
 	if err != nil {
 		t.Fatalf("proc.Send: %v", err)
 	}
@@ -1168,7 +1168,7 @@ func TestHandleWithCLI_NormalResponse(t *testing.T) {
 	userJSON := claude.BuildUserMessage("hi")
 	events, err := proc.Send(ctx, userJSON, func(delta string) {
 		ss.onDelta(delta)
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("proc.Send: %v", err)
 	}

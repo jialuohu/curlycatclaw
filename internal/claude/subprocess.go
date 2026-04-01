@@ -39,6 +39,14 @@ type TextDeltaEvent struct {
 
 func (TextDeltaEvent) cliEvent() {}
 
+// ToolUseStartEvent fires when Claude begins a tool call (before execution).
+// Parsed from content_block_start events in the stream.
+type ToolUseStartEvent struct {
+	Name string
+}
+
+func (ToolUseStartEvent) cliEvent() {}
+
 // ToolUseEvent is emitted when the assistant invokes a tool.
 type ToolUseEvent struct {
 	ID    string
@@ -98,7 +106,9 @@ type CLIProcess struct {
 // Send writes a user message to the CLI's stdin and reads streaming events
 // until a ResultEvent is received. The onPartialText callback (if non-nil)
 // fires for each text delta, enabling real-time streaming to Telegram.
-func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartialText func(string)) ([]CLIEvent, error) {
+// The onToolUse callback (if non-nil) fires when a tool call starts, before
+// the tool executes, enabling real-time [tool] notifications.
+func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartialText func(string), onToolUse func(string)) ([]CLIEvent, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lastUsed = time.Now()
@@ -162,9 +172,12 @@ func (p *CLIProcess) Send(ctx context.Context, userMsg json.RawMessage, onPartia
 
 			events = append(events, event)
 
-			// Fire streaming callback for text deltas.
+			// Fire streaming callbacks.
 			if td, ok := event.(TextDeltaEvent); ok && onPartialText != nil {
 				onPartialText(td.Text)
+			}
+			if tu, ok := event.(ToolUseStartEvent); ok && onToolUse != nil {
+				onToolUse(tu.Name)
 			}
 
 			// Result means this turn is done.
@@ -554,7 +567,11 @@ func parseStreamDelta(line []byte) (CLIEvent, error) {
 	}
 
 	var inner struct {
-		Type  string `json:"type"`
+		Type         string `json:"type"`
+		ContentBlock struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"content_block"`
 		Delta struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -562,6 +579,11 @@ func parseStreamDelta(line []byte) (CLIEvent, error) {
 	}
 	if err := json.Unmarshal(raw.Event, &inner); err != nil {
 		return nil, nil // unparseable inner event
+	}
+
+	// Tool use start: fires before tool execution begins.
+	if inner.Type == "content_block_start" && inner.ContentBlock.Type == "tool_use" && inner.ContentBlock.Name != "" {
+		return ToolUseStartEvent{Name: inner.ContentBlock.Name}, nil
 	}
 
 	if inner.Type == "content_block_delta" && inner.Delta.Type == "text_delta" && inner.Delta.Text != "" {

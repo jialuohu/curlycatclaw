@@ -888,6 +888,25 @@ func (a *Actor) handleWithCLI(
 
 	events, err := proc.Send(ctx, userJSON, func(delta string) {
 		ss.onDelta(delta)
+	}, func(toolName string) {
+		// Plain flush (not finalFlush — avoid premature HTML conversion),
+		// then reset so post-tool text starts a new Telegram message.
+		ss.mu.Lock()
+		for ss.flushing {
+			ss.mu.Unlock()
+			time.Sleep(5 * time.Millisecond)
+			ss.mu.Lock()
+		}
+		ss.flush()
+		ss.mu.Unlock()
+		ss.reset()
+
+		if a.cfg.Telegram.ShowToolCalls {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: chatID,
+				Text:   fmt.Sprintf("[tool] %s", toolName),
+			})
+		}
 	})
 	if err != nil {
 		// Process may have died; remove it so next message spawns a fresh one.
@@ -924,17 +943,12 @@ func (a *Actor) handleWithCLI(
 				}
 				fullText += e.TextContent
 			}
-			// Log tool calls for transparency.
+			// Log tool calls to DB (user-facing [tool] notifications are
+			// now sent in real-time via the onToolUse callback above).
 			for _, tc := range e.ToolCalls {
-				if a.cfg.Telegram.ShowToolCalls {
-					a.trySend(telegram.OutgoingMessage{
-						ChatID: chatID,
-						Text:   fmt.Sprintf("[tool] %s", tc.Name),
-					})
-				}
 				if err := a.store.LogToolCall(convID, tc.ID, tc.Name, tc.Input); err != nil {
-						slog.Warn("failed to log tool call", "err", err, "tool", tc.Name)
-					}
+					slog.Warn("failed to log tool call", "err", err, "tool", tc.Name)
+				}
 			}
 		case claude.ResultEvent:
 			if e.IsError {
