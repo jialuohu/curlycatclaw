@@ -13,8 +13,7 @@ Runtime extension registry and plugin system overhaul. Add and remove MCP server
 - **Extension system prompt**: Claude is directed to use `add_extension`/`remove_extension` instead of manually editing `.mcp.json` files.
 
 ### Changed
-- **Plugin allowlist removed**: any plugin can now be installed via chat, no `allowed_plugins` config needed.
-- **`allowed_plugins` → removed**: replaced by hardcoded standard plugins that auto-install. Users don't configure plugins in config.toml anymore.
+- **Plugin allowlist removed**: any plugin can now be installed via chat. The `allowed_plugins` config field is gone, replaced by hardcoded standard plugins that auto-install on first startup.
 
 ### Fixed
 - **Extension file permissions**: `extensions.json` written with 0600 (not 0644) since it may contain API keys.
