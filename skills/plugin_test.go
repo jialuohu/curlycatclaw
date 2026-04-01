@@ -12,8 +12,8 @@ import (
 
 func TestInitPluginSkills_ReturnsAllSkills(t *testing.T) {
 	skills := InitPluginSkills("/usr/bin/claude", "/tmp/isolated", []string{"context7"})
-	if len(skills) != 5 {
-		t.Fatalf("expected 5 plugin skills, got %d", len(skills))
+	if len(skills) != 9 {
+		t.Fatalf("expected 9 plugin skills, got %d", len(skills))
 	}
 
 	names := make(map[string]bool)
@@ -21,7 +21,7 @@ func TestInitPluginSkills_ReturnsAllSkills(t *testing.T) {
 		names[s.Name] = true
 	}
 
-	for _, expected := range []string{"install_plugin", "uninstall_plugin", "list_plugins", "enable_plugin", "disable_plugin"} {
+	for _, expected := range []string{"install_plugin", "uninstall_plugin", "list_plugins", "enable_plugin", "disable_plugin", "add_marketplace", "remove_marketplace", "list_marketplaces", "update_plugin"} {
 		if !names[expected] {
 			t.Errorf("missing skill %q", expected)
 		}
@@ -276,6 +276,55 @@ func TestCheckPluginCommand_HTTPSkipped(t *testing.T) {
 	warning := checkPluginCommand(dir, "test")
 	if warning != "" {
 		t.Errorf("expected no warning for HTTP plugin, got: %s", warning)
+	}
+}
+
+func TestEnsurePluginsUpdated_SkipsWhenFresh(t *testing.T) {
+	dir := t.TempDir()
+	pluginsDir := filepath.Join(dir, ".claude", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh plugin (updated just now).
+	manifest, _ := json.Marshal(map[string]any{
+		"plugins": map[string]any{
+			"context7@mkt": []any{map[string]any{
+				"installPath": "/tmp/fake",
+				"lastUpdated": time.Now().Format(time.RFC3339),
+			}},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Should not panic or call any CLI (cliPath is invalid).
+	ensurePluginsUpdated("/nonexistent-binary", dir)
+}
+
+func TestInstalledPluginKeys(t *testing.T) {
+	dir := t.TempDir()
+	pluginsDir := filepath.Join(dir, ".claude", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := json.Marshal(map[string]any{
+		"plugins": map[string]any{
+			"context7@mkt":     []any{map[string]any{}},
+			"playwright@other": []any{map[string]any{}},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0644); err != nil {
+		t.Fatal(err)
+	}
+	keys := installedPluginKeys(dir)
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys, got %d: %v", len(keys), keys)
+	}
+	// Keys should include the @marketplace suffix.
+	for _, k := range keys {
+		if !strings.Contains(k, "@") {
+			t.Errorf("key %q missing @marketplace suffix", k)
+		}
 	}
 }
 
