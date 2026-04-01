@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.0] - 2026-04-01
+
+Full plugin and marketplace management via Telegram. Add third-party marketplaces, update plugins, and the bot auto-searches for missing marketplaces when you try to install something new.
+
+### Added
+- **Marketplace management skills**: `add_marketplace`, `remove_marketplace`, `list_marketplaces` let you manage plugin sources via Telegram. Remove auto-uninstalls plugins from that marketplace. Default marketplace (claude-plugins-official) is protected.
+- **Plugin update skill**: `update_plugin` updates a specific plugin or all installed plugins. Uses full `name@marketplace` keys for reliable updates.
+- **Lazy plugin auto-update**: stale plugins (>7 days since last update) are automatically updated when you install a new plugin. Non-blocking, failures logged.
+- **Autonomous marketplace discovery**: when a plugin isn't found, the bot searches the web for its marketplace repo, adds it, and retries the install automatically.
+- **Skills include plugins**: when you ask "what can you do?", the bot includes installed plugins in its answer.
+
+### Fixed
+- **Bulk plugin update**: uses full `name@marketplace` keys instead of stripped names. Previously failed because the CLI needs the marketplace qualifier.
+
 ## [0.14.5] - 2026-04-01
 
 ### Changed
