@@ -843,6 +843,19 @@ func (a *Actor) handleWithCLI(
 ) error {
 	ss := &streamState{chatID: chatID, tg: a.tg}
 
+	// Defensive: check for reload signal from a previous turn's plugin change.
+	// Normally handled at end of the previous handleWithCLI call, but this
+	// catches edge cases (error paths, crashes) and guarantees the subprocess
+	// spawned for THIS message has updated MCP config.
+	if a.cfg.Claude.IsolatedHome != "" {
+		reloadPath := filepath.Join(a.cfg.Claude.IsolatedHome, ".curlycatclaw-reload-needed")
+		if _, err := os.Stat(reloadPath); err == nil {
+			os.Remove(reloadPath) //nolint:errcheck
+			a.cliMgr.Remove(userID, chatID)
+			slog.Info("cli: pre-turn reload due to plugin change", "user_id", userID, "chat_id", chatID)
+		}
+	}
+
 	mcpConfig := a.buildMCPConfig(userID, chatID)
 
 	// Inject current time into user message since the CLI process's system
@@ -1344,7 +1357,74 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 		sb.WriteString("The project's CLAUDE.md is auto-loaded by the CLI.\n")
 	}
 
+	// Installed plugin guidance.
+	if a.cfg.Claude.IsolatedHome != "" {
+		plugins := discoverPluginNames(a.cfg.Claude.IsolatedHome)
+		if len(plugins) > 0 {
+			sb.WriteString("\n## Installed Plugins\n")
+			sb.WriteString("These plugins are installed and their MCP tools are available to you.\n")
+			for _, name := range plugins {
+				if desc, ok := knownPluginDescriptions[name]; ok {
+					fmt.Fprintf(&sb, "- **%s**: %s\n", name, desc)
+				} else {
+					fmt.Fprintf(&sb, "- **%s**: Plugin tools available.\n", name)
+				}
+			}
+			sb.WriteString("Use these tools proactively when relevant to the user's request.\n")
+		}
+	}
+
 	return sb.String()
+}
+
+// knownPluginDescriptions maps plugin MCP server names to human-readable
+// descriptions for the system prompt. Maintained alongside allowed_plugins config.
+var knownPluginDescriptions = map[string]string{
+	"context7":   "Up-to-date library/framework documentation. Use for any question about APIs, SDKs, or library usage instead of relying on training data.",
+	"playwright": "Browser automation. Use for web testing, screenshots, and page interaction.",
+}
+
+// discoverPluginNames reads the installed plugin manifest and returns the
+// MCP server names from each plugin's .mcp.json. Used by buildSystemPrompt
+// to tell Claude what plugins are available.
+func discoverPluginNames(isolatedHome string) []string {
+	manifestPath := filepath.Join(isolatedHome, ".claude", "plugins", "installed_plugins.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil
+	}
+	var manifest struct {
+		Plugins map[string][]struct {
+			InstallPath string `json:"installPath"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil
+	}
+	var names []string
+	seen := make(map[string]bool)
+	for _, installs := range manifest.Plugins {
+		for _, inst := range installs {
+			if inst.InstallPath == "" {
+				continue
+			}
+			mcpData, err := os.ReadFile(filepath.Join(inst.InstallPath, ".mcp.json"))
+			if err != nil {
+				continue
+			}
+			var servers map[string]json.RawMessage
+			if err := json.Unmarshal(mcpData, &servers); err != nil {
+				continue
+			}
+			for name := range servers {
+				if !seen[name] {
+					seen[name] = true
+					names = append(names, name)
+				}
+			}
+		}
+	}
+	return names
 }
 
 // storedToolResult matches the JSON shape of a tool_result block stored by

@@ -109,7 +109,14 @@ func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[strin
 		// Signal reload needed for mutation operations.
 		writeReloadFlag(isolatedHome)
 
-		return fmt.Sprintf("Plugin %s %sd successfully.\n%s", params.Name, action, strings.TrimSpace(string(output))), nil
+		msg := fmt.Sprintf("Plugin %s %sd successfully.\n%s", params.Name, action, strings.TrimSpace(string(output)))
+
+		if action == "install" {
+			msg += "\n\nThe plugin's tools will be available starting with the user's next message."
+			msg += " Tell the user the plugin is ready and they can start using it."
+		}
+
+		return msg, nil
 	}
 }
 

@@ -552,6 +552,62 @@ func TestBuildMCPConfig_PassesIsolatedHomeEnv(t *testing.T) {
 	}
 }
 
+func TestDiscoverPluginNames(t *testing.T) {
+	t.Run("with_plugins", func(t *testing.T) {
+		dir := t.TempDir()
+		pluginsDir := filepath.Join(dir, ".claude", "plugins")
+		if err := os.MkdirAll(pluginsDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		installDir := filepath.Join(dir, "cache", "context7")
+		if err := os.MkdirAll(installDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		mcpData, _ := json.Marshal(map[string]any{
+			"context7": map[string]any{"command": "npx", "args": []string{"-y", "@upstash/context7-mcp"}},
+		})
+		if err := os.WriteFile(filepath.Join(installDir, ".mcp.json"), mcpData, 0644); err != nil {
+			t.Fatal(err)
+		}
+		manifest, _ := json.Marshal(map[string]any{
+			"version": 2,
+			"plugins": map[string]any{
+				"context7@mkt": []any{map[string]any{"installPath": installDir}},
+			},
+		})
+		if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		names := discoverPluginNames(dir)
+		if len(names) != 1 || names[0] != "context7" {
+			t.Errorf("names = %v, want [context7]", names)
+		}
+	})
+
+	t.Run("no_manifest", func(t *testing.T) {
+		names := discoverPluginNames(t.TempDir())
+		if names != nil {
+			t.Errorf("expected nil, got %v", names)
+		}
+	})
+
+	t.Run("empty_manifest", func(t *testing.T) {
+		dir := t.TempDir()
+		pluginsDir := filepath.Join(dir, ".claude", "plugins")
+		if err := os.MkdirAll(pluginsDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), []byte(`{"plugins":{}}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		names := discoverPluginNames(dir)
+		if len(names) != 0 {
+			t.Errorf("expected empty, got %v", names)
+		}
+	})
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
 }
