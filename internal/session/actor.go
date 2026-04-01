@@ -1270,6 +1270,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("- Use bullet points and numbered lists instead of markdown tables.\n")
 	sb.WriteString("- Tables render poorly in Telegram. Always convert tabular data to a list format.\n")
 	sb.WriteString("- Use bold (**text**) for emphasis and `code` for technical terms.\n\n")
+	sb.WriteString("When the user asks about your skills, capabilities, or what you can do, include installed plugins in your answer. Plugins extend your abilities with additional tools.\n\n")
 	fmt.Fprintf(&sb, "The user's timezone is %s. Current local time: %s.\n", a.cfg.Timezone, now.Format("2006-01-02 15:04 MST"))
 	sb.WriteString("Always use this timezone for scheduling, time references, and \"today/tomorrow/yesterday.\"\n")
 	sb.WriteString("When the user says \"3pm\" they mean 3pm in their timezone, not UTC.\n")
