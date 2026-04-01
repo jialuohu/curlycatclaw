@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.3] - 2026-04-01
+
+Plugins that need bun, python, or uvx now work out of the box. If a plugin needs a command that's missing, the bot tells you.
+
+### Added
+- **Docker: bun, python3, uv/uvx runtimes** — pre-installed in the Docker image so plugin MCP servers that use these commands work without manual setup.
+- **Plugin command check on install** — after installing a plugin, checks if the required runtime command is available. Warns the user if the command is missing so they know before they try to use it. HTTP-based plugins are skipped (no local command needed).
+
 ## [0.14.2] - 2026-04-01
 
 ### Fixed
