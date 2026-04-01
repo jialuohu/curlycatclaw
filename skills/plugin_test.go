@@ -186,6 +186,99 @@ func TestEnsureMarketplace_UpdatesWhenStale(t *testing.T) {
 	}
 }
 
+func TestCheckPluginCommand_Available(t *testing.T) {
+	dir := t.TempDir()
+	pluginsDir := filepath.Join(dir, ".claude", "plugins")
+	installDir := filepath.Join(dir, "cache", "test-plugin")
+	if err := os.MkdirAll(pluginsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(installDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Plugin that uses "ls" (always available).
+	mcpData, _ := json.Marshal(map[string]any{
+		"test": map[string]any{"command": "ls", "args": []string{"-la"}},
+	})
+	if err := os.WriteFile(filepath.Join(installDir, ".mcp.json"), mcpData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := json.Marshal(map[string]any{
+		"plugins": map[string]any{
+			"test@mkt": []any{map[string]any{"installPath": installDir}},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0644); err != nil {
+		t.Fatal(err)
+	}
+	warning := checkPluginCommand(dir, "test")
+	if warning != "" {
+		t.Errorf("expected no warning for available command, got: %s", warning)
+	}
+}
+
+func TestCheckPluginCommand_Missing(t *testing.T) {
+	dir := t.TempDir()
+	pluginsDir := filepath.Join(dir, ".claude", "plugins")
+	installDir := filepath.Join(dir, "cache", "test-plugin")
+	if err := os.MkdirAll(pluginsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(installDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Plugin that uses a nonexistent command.
+	mcpData, _ := json.Marshal(map[string]any{
+		"test": map[string]any{"command": "nonexistent-runtime-xyz", "args": []string{}},
+	})
+	if err := os.WriteFile(filepath.Join(installDir, ".mcp.json"), mcpData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := json.Marshal(map[string]any{
+		"plugins": map[string]any{
+			"test@mkt": []any{map[string]any{"installPath": installDir}},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0644); err != nil {
+		t.Fatal(err)
+	}
+	warning := checkPluginCommand(dir, "test")
+	if !strings.Contains(warning, "nonexistent-runtime-xyz") {
+		t.Errorf("expected warning about missing command, got: %q", warning)
+	}
+}
+
+func TestCheckPluginCommand_HTTPSkipped(t *testing.T) {
+	dir := t.TempDir()
+	pluginsDir := filepath.Join(dir, ".claude", "plugins")
+	installDir := filepath.Join(dir, "cache", "test-plugin")
+	if err := os.MkdirAll(pluginsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(installDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// HTTP plugin (no command needed).
+	mcpData, _ := json.Marshal(map[string]any{
+		"test": map[string]any{"type": "http", "url": "https://example.com/mcp"},
+	})
+	if err := os.WriteFile(filepath.Join(installDir, ".mcp.json"), mcpData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := json.Marshal(map[string]any{
+		"plugins": map[string]any{
+			"test@mkt": []any{map[string]any{"installPath": installDir}},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0644); err != nil {
+		t.Fatal(err)
+	}
+	warning := checkPluginCommand(dir, "test")
+	if warning != "" {
+		t.Errorf("expected no warning for HTTP plugin, got: %s", warning)
+	}
+}
+
 func TestInstallPlugin_EmptyAllowlist(t *testing.T) {
 	// Empty allowlist means nothing can be installed.
 	skills := InitPluginSkills("/usr/bin/claude", "/tmp/isolated", nil)
