@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.14.2] - 2026-04-01
+
+### Fixed
+- **Docker: keep npm/npx for plugin MCP servers** — plugin MCP servers like context7 use `npx` to start. Previously purged after Claude CLI install, breaking all npx-based plugins.
+- **Pre-tool text now gets Telegram HTML formatting** — text streamed before a tool call (e.g., "Let me look up `useEffect`...") now converts markdown to Telegram HTML. Previously sent as raw markdown because the pre-tool flush didn't enable HTML mode.
+
 ## [0.14.1] - 2026-04-01
 
 After installing a plugin, the bot knows what it does and how to use it. No more "I don't know what context7 is" after you just installed it.
