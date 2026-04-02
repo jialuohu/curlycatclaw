@@ -1200,6 +1200,19 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	if a.cfg.Claude.CLIPath != "" {
 		mcpEnv["CURLYCATCLAW_CLI_PATH"] = a.cfg.Claude.CLIPath
 	}
+	// Pass master key via a fixed-path file so the MCP server subprocess
+	// can encrypt/decrypt extension env vars. Using a file avoids exposing
+	// the key in /proc/PID/cmdline (the JSON is a CLI argument).
+	// Uses a deterministic path (not os.CreateTemp) to avoid leaking temp
+	// files on repeated calls, since buildMCPConfig runs every message.
+	if mk := os.Getenv("CURLYCATCLAW_MASTER_KEY"); mk != "" {
+		mkPath := filepath.Join(os.TempDir(), "curlycatclaw-mk")
+		if err := os.WriteFile(mkPath, []byte(mk), 0600); err != nil {
+			slog.Warn("buildMCPConfig: master key file", "err", err)
+		} else {
+			mcpEnv["CURLYCATCLAW_MASTER_KEY_FILE"] = mkPath
+		}
+	}
 
 	servers := map[string]mcpServer{
 		"curlycatclaw-skills": {
@@ -1257,50 +1270,15 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 		}
 	}
 
-	// Include runtime MCP extensions from the extension registry.
-	if a.extRegistry != nil {
-		for _, ext := range a.extRegistry.ByType(extension.TypeMCP) {
-			if _, builtin := servers[ext.Name]; builtin {
-				slog.Warn("buildMCPConfig: extension name collides with existing server, skipping",
-					"name", ext.Name)
-				continue
-			}
-			srv := mcpServer{
-				Command: ext.Command,
-				Args:    ext.Args,
-			}
-			if len(ext.Env) > 0 {
-				srv.Env = filterDangerousEnv(ext.Env)
-			}
-			servers[ext.Name] = srv
-		}
-	}
+	// Runtime MCP extensions are NOT included here. They are proxied
+	// through the curlycatclaw-skills MCP server subprocess instead,
+	// which connects to them as an MCP client and exposes their tools.
+	// This avoids a Claude CLI bug where tools from dynamically-added
+	// MCP servers fail to be discovered by the subprocess.
 
 	wrapper := map[string]any{"mcpServers": servers}
 	data, _ := json.Marshal(wrapper)
 	return string(data)
-}
-
-// dangerousEnvPrefixes lists env var prefixes that should not be passed
-// to MCP server subprocesses to prevent library injection attacks.
-var dangerousEnvPrefixes = []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_"}
-
-// filterDangerousEnv returns a copy of env with injection-prone keys removed.
-func filterDangerousEnv(env map[string]string) map[string]string {
-	filtered := make(map[string]string, len(env))
-	for k, v := range env {
-		dangerous := false
-		for _, prefix := range dangerousEnvPrefixes {
-			if strings.HasPrefix(strings.ToUpper(k), strings.ToUpper(prefix)) {
-				dangerous = true
-				break
-			}
-		}
-		if !dangerous {
-			filtered[k] = v
-		}
-	}
-	return filtered
 }
 
 func (a *Actor) trySend(msg telegram.OutgoingMessage) {
@@ -1375,6 +1353,26 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 				fmt.Fprintf(&sb, "- %s: %s\n", ps.Name, ps.Description)
 			}
 		}
+
+		// List MCP extensions so Claude knows what they do and when to use them.
+		mcpExts := a.extRegistry.ByType(extension.TypeMCP)
+		if len(mcpExts) > 0 {
+			sb.WriteString("\n## Installed MCP extensions\n")
+			sb.WriteString("These are user-installed MCP servers whose tools are available to you.\n")
+			sb.WriteString("PREFER these tools over spawning subagents or using built-in web search when the extension covers the task.\n")
+			sb.WriteString("They are faster, use fewer tokens, and the user installed them for a reason.\n")
+			for _, ext := range mcpExts {
+				desc := ext.Description
+				if desc == "" {
+					desc = "MCP tools available."
+				}
+				fmt.Fprintf(&sb, "- **%s**: %s\n", ext.Name, desc)
+			}
+			sb.WriteString("\nTo configure API keys for extensions, use set_extension_env (name, key, value). Values are encrypted at rest.\n")
+			sb.WriteString("The extension must be registered first (via add_extension). If set_extension_env returns 'not found', tell the user to add the extension first.\n")
+			sb.WriteString("Never echo API key values back to the user after setting them.\n")
+		}
+		sb.WriteString("\nALWAYS call list_extensions before claiming an extension is or isn't installed. Do not guess from conversation context.\n")
 	}
 
 	// Tier 1: User facts.

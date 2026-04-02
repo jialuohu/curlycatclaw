@@ -6,18 +6,39 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 
 	"path/filepath"
 	"time"
 
+	"encoding/hex"
+
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
+	"github.com/jialuohu/curlycatclaw/internal/security"
 	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/skills"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// mcpProxySep is the separator for namespacing proxied MCP extension tools.
+const mcpProxySep = "__"
+
+// dangerousEnvPrefixes lists env var prefixes that should not be passed
+// to MCP server subprocesses to prevent library injection attacks.
+// Duplicated from internal/session (different package).
+var dangerousEnvPrefixes = []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_"}
+
+// baselineEnvAllowlist is the minimum set of environment variables that MCP
+// child processes need to function (find binaries, set locale, etc.).
+// Matches the allowlist in internal/mcp/manager.go.
+var baselineEnvAllowlist = map[string]struct{}{
+	"PATH": {}, "HOME": {}, "USER": {}, "LANG": {}, "LC_ALL": {},
+	"SHELL": {}, "TMPDIR": {}, "TZ": {}, "XDG_RUNTIME_DIR": {},
+}
 
 // runMCPServer starts curlycatclaw as an MCP stdio server, exposing built-in
 // skills as MCP tools. This is spawned by the claude CLI via --mcp-config.
@@ -118,6 +139,36 @@ func runMCPServer() error {
 		// No hot-reload in MCP server subprocess (short-lived).
 	}
 
+	// Credential store for encrypted extension env vars (optional).
+	// Read master key from file (avoids /proc/PID/cmdline exposure),
+	// falling back to env var for direct API mode.
+	var credStore *security.CredentialStore
+	mkHex := os.Getenv("CURLYCATCLAW_MASTER_KEY")
+	if mkHex == "" {
+		if mkFile := os.Getenv("CURLYCATCLAW_MASTER_KEY_FILE"); mkFile != "" {
+			data, err := os.ReadFile(mkFile)
+			if err != nil {
+				slog.Warn("mcp-server: failed to read master key file", "err", err)
+			} else {
+				mkHex = strings.TrimSpace(string(data))
+			}
+		}
+	}
+	if mkHex != "" {
+		masterKey, err := hex.DecodeString(mkHex)
+		if err != nil {
+			slog.Warn("mcp-server: invalid master key (not hex)", "err", err)
+		} else {
+			credPath := filepath.Join(filepath.Dir(dbPath), "credentials.enc")
+			cs, err := security.NewCredentialStore(credPath, masterKey)
+			if err != nil {
+				slog.Warn("mcp-server: credential store init failed", "err", err)
+			} else {
+				credStore = cs
+			}
+		}
+	}
+
 	// Runtime extension registry (exec extensions + management skills).
 	extRegistryPath := filepath.Join(filepath.Dir(dbPath), "extensions.json")
 	extReg, err := extension.Load(extRegistryPath)
@@ -147,7 +198,7 @@ func runMCPServer() error {
 			}
 		}
 		// mcpMgr is nil in MCP server subprocess mode.
-		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc) {
+		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, credStore) {
 			reg.Register(s)
 		}
 	}
@@ -175,10 +226,53 @@ func runMCPServer() error {
 		registerSkillAsTool(server, skill, userID, chatID)
 	}
 
+	// Proxy runtime MCP extension tools. Instead of relying on the CLI
+	// subprocess to connect to MCP extensions directly (which fails due to
+	// a CLI bug), we connect as an MCP client from this subprocess and
+	// register the discovered tools as proxy tools on the server.
+	var proxyToolCount int
+	if extReg != nil {
+		for _, ext := range extReg.ByType(extension.TypeMCP) {
+			// Resolve encrypted:ref: env vars before spawning the extension.
+			resolvedEnv := ext.Env
+			if credStore != nil && len(ext.Env) > 0 {
+				var resolveErr error
+				resolvedEnv, resolveErr = credStore.ResolveEnv(ext.Env)
+				if resolveErr != nil {
+					slog.Warn("mcp-server: failed to resolve extension env vars",
+						"name", ext.Name, "err", resolveErr)
+					continue
+				}
+			}
+			session, tools, err := connectMCPExtension(context.Background(), ext, resolvedEnv)
+			if err != nil {
+				slog.Warn("mcp-server: failed to connect MCP extension",
+					"name", ext.Name, "err", err)
+				continue
+			}
+			if len(tools) == 0 {
+				slog.Warn("mcp-server: MCP extension has no tools, skipping",
+					"name", ext.Name)
+				session.Close()
+				continue
+			}
+			defer session.Close()
+
+			for _, tool := range tools {
+				registerProxyTool(server, ext.Name+mcpProxySep+tool.Name,
+					tool, session, userID, chatID)
+				proxyToolCount++
+			}
+			slog.Info("mcp-server: proxying MCP extension",
+				"name", ext.Name, "tools", len(tools))
+		}
+	}
+
 	slog.Info("mcp-server: starting",
 		"user_id", userID,
 		"chat_id", chatID,
-		"tools", len(reg.All()))
+		"skills", len(reg.All()),
+		"proxied_mcp_tools", proxyToolCount)
 
 	// Run over stdio until the parent CLI process disconnects.
 	return server.Run(context.Background(), &mcp.StdioTransport{})
@@ -195,6 +289,156 @@ func errResult(msg string) *mcp.CallToolResult {
 // skillOutput is the structured output type for MCP tool results.
 type skillOutput struct {
 	Text string `json:"text"`
+}
+
+// connectMCPExtension starts an MCP client connection to a runtime MCP
+// extension and discovers its tools. The caller must defer session.Close().
+//
+// A 30-second timeout covers both the initial handshake and tool discovery.
+// If the extension hangs (e.g. package download), it is skipped instead of
+// blocking the entire curlycatclaw-skills subprocess.
+func connectMCPExtension(ctx context.Context, ext *extension.Extension, resolvedEnv map[string]string) (*mcp.ClientSession, []*mcp.Tool, error) {
+	env := buildMCPExtEnv(resolvedEnv)
+
+	// Command lifetime is independent of the connect timeout — the process
+	// must stay alive for the entire server session. Cleanup is handled by
+	// session.Close() (via defer in the caller).
+	cmd := exec.CommandContext(context.Background(), ext.Command, ext.Args...)
+	cmd.Env = env
+
+	transport := &mcp.CommandTransport{Command: cmd}
+	client := mcp.NewClient(
+		&mcp.Implementation{Name: "curlycatclaw", Version: version},
+		nil,
+	)
+
+	// Timeout covers handshake + tool discovery. If the extension is slow
+	// to start, we skip it rather than blocking all tools.
+	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	session, err := client.Connect(connectCtx, transport, nil)
+	if err != nil {
+		// Kill the subprocess if it was started but handshake failed.
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		return nil, nil, fmt.Errorf("connect: %w", err)
+	}
+
+	var tools []*mcp.Tool
+	for tool, err := range session.Tools(connectCtx, nil) {
+		if err != nil {
+			slog.Warn("mcp-server: error listing tools from extension",
+				"name", ext.Name, "error", err)
+			break
+		}
+		tools = append(tools, tool)
+	}
+
+	return session, tools, nil
+}
+
+// buildMCPExtEnv returns a safe environment for spawning an MCP extension
+// subprocess. Starts from a baseline allowlist of the current process env,
+// then adds the extension's own env vars with dangerous prefixes filtered.
+func buildMCPExtEnv(extEnv map[string]string) []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		if k, _, ok := strings.Cut(entry, "="); ok {
+			if _, pass := baselineEnvAllowlist[k]; pass {
+				env = append(env, entry)
+			}
+		}
+	}
+	for k, v := range extEnv {
+		if isDangerousEnvKey(k) {
+			continue
+		}
+		// Don't let extension env override baseline vars (e.g. PATH, HOME).
+		if _, baseline := baselineEnvAllowlist[k]; baseline {
+			continue
+		}
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+// isDangerousEnvKey returns true if the key matches a dangerous env prefix.
+func isDangerousEnvKey(key string) bool {
+	upper := strings.ToUpper(key)
+	for _, prefix := range dangerousEnvPrefixes {
+		if strings.HasPrefix(upper, strings.ToUpper(prefix)) {
+			return true
+		}
+	}
+	return false
+}
+
+// registerProxyTool registers a proxied MCP extension tool on the server.
+// The tool's original InputSchema is preserved so Claude sees the correct
+// parameter definitions. Calls are forwarded to the extension's MCP session.
+func registerProxyTool(server *mcp.Server, namespacedName string, tool *mcp.Tool,
+	session *mcp.ClientSession, userID, chatID int64) {
+
+	proxyTool := &mcp.Tool{
+		Name:        namespacedName,
+		Description: tool.Description,
+		InputSchema: tool.InputSchema,
+	}
+
+	rawName := tool.Name
+	sess := session
+
+	mcp.AddTool(server, proxyTool, func(
+		ctx context.Context,
+		req *mcp.CallToolRequest,
+		input map[string]any,
+	) (*mcp.CallToolResult, skillOutput, error) {
+		if userID != 0 {
+			input["_user_context"] = map[string]any{
+				"user_id": userID,
+				"chat_id": chatID,
+			}
+		}
+
+		result, err := sess.CallTool(ctx, &mcp.CallToolParams{
+			Name:      rawName,
+			Arguments: input,
+		})
+		if err != nil {
+			return errResult(fmt.Sprintf("proxy call %q: %v", rawName, err)), skillOutput{}, nil
+		}
+
+		text := formatMCPResult(result)
+		if result.IsError {
+			return errResult(text), skillOutput{}, nil
+		}
+		return nil, skillOutput{Text: text}, nil
+	})
+}
+
+// formatMCPResult converts a CallToolResult into a single string.
+// Duplicated from internal/mcp (unexported).
+func formatMCPResult(result *mcp.CallToolResult) string {
+	if result == nil {
+		return ""
+	}
+	var parts []string
+	for _, c := range result.Content {
+		switch v := c.(type) {
+		case *mcp.TextContent:
+			parts = append(parts, v.Text)
+		default:
+			data, err := json.Marshal(v)
+			if err != nil {
+				parts = append(parts, fmt.Sprintf("[unserializable content: %T]", v))
+			} else {
+				parts = append(parts, string(data))
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // registerSkillAsTool wraps a built-in Skill as an MCP tool on the server.

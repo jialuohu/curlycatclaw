@@ -609,34 +609,7 @@ func TestDiscoverPluginNames(t *testing.T) {
 	})
 }
 
-func TestFilterDangerousEnv(t *testing.T) {
-	env := map[string]string{
-		"BRAVE_API_KEY":            "test-key",
-		"LD_PRELOAD":              "/evil.so",
-		"LD_LIBRARY_PATH":         "/evil",
-		"DYLD_INSERT_LIBRARIES":   "/evil.dylib",
-		"DYLD_FRAMEWORK_PATH":     "/evil",
-		"NORMAL_VAR":              "safe",
-	}
-	filtered := filterDangerousEnv(env)
-
-	if _, ok := filtered["BRAVE_API_KEY"]; !ok {
-		t.Error("expected BRAVE_API_KEY to pass through")
-	}
-	if _, ok := filtered["NORMAL_VAR"]; !ok {
-		t.Error("expected NORMAL_VAR to pass through")
-	}
-	for _, blocked := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_FRAMEWORK_PATH"} {
-		if _, ok := filtered[blocked]; ok {
-			t.Errorf("expected %s to be filtered out", blocked)
-		}
-	}
-	if len(filtered) != 2 {
-		t.Errorf("expected 2 entries, got %d: %v", len(filtered), filtered)
-	}
-}
-
-func TestBuildMCPConfig_IncludesExtensions(t *testing.T) {
+func TestBuildMCPConfig_ExcludesMCPExtensions(t *testing.T) {
 	extPath := filepath.Join(t.TempDir(), "extensions.json")
 
 	// Write an extensions.json with one MCP extension.
@@ -647,7 +620,7 @@ func TestBuildMCPConfig_IncludesExtensions(t *testing.T) {
 				"type":     "mcp",
 				"command":  "echo",
 				"args":     []string{"hello"},
-				"env":      map[string]string{"API_KEY": "val", "LD_PRELOAD": "/evil.so"},
+				"env":      map[string]string{"API_KEY": "val"},
 				"added_at": "2026-04-01T00:00:00Z",
 			},
 		},
@@ -673,27 +646,22 @@ func TestBuildMCPConfig_IncludesExtensions(t *testing.T) {
 
 	var parsed struct {
 		MCPServers map[string]struct {
-			Command string            `json:"command"`
-			Args    []string          `json:"args"`
-			Env     map[string]string `json:"env"`
+			Command string `json:"command"`
 		} `json:"mcpServers"`
 	}
 	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	srv, ok := parsed.MCPServers["test-mcp"]
-	if !ok {
-		t.Fatal("expected test-mcp extension in MCP config")
+	// Runtime MCP extensions should NOT be in the config — they are
+	// proxied through curlycatclaw-skills instead.
+	if _, ok := parsed.MCPServers["test-mcp"]; ok {
+		t.Error("runtime MCP extension should not be in --mcp-config (proxied via curlycatclaw-skills)")
 	}
-	if srv.Command != "echo" {
-		t.Errorf("command = %q, want echo", srv.Command)
-	}
-	if srv.Env["API_KEY"] != "val" {
-		t.Error("expected API_KEY to pass through")
-	}
-	if _, ok := srv.Env["LD_PRELOAD"]; ok {
-		t.Error("LD_PRELOAD should be filtered out")
+
+	// curlycatclaw-skills should still be present.
+	if _, ok := parsed.MCPServers["curlycatclaw-skills"]; !ok {
+		t.Error("curlycatclaw-skills should be in MCP config")
 	}
 }
 
