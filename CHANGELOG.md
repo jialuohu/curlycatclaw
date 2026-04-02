@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.17.0] - 2026-04-02
+
+MCP extension proxy and encrypted API key management. Runtime MCP extensions now work reliably in CLI mode, and users can configure API keys via Telegram chat with encryption at rest.
+
+### Added
+- **MCP extension proxy**: runtime MCP extensions are proxied through the curlycatclaw-skills subprocess instead of relying on the Claude CLI's --mcp-config (which has a bug discovering dynamic servers). Tools appear with namespaced names (e.g. `paper-search-mcp__search_papers`).
+- **Encrypted extension env vars**: `set_extension_env` and `unset_extension_env` skills let users configure API keys for MCP extensions via chat. Values are encrypted at rest using AES-256-GCM via the credential store.
+- **Extension registry Update method**: in-place modification of extension metadata with atomic persistence and rollback.
+- **MCP extensions in system prompt**: installed MCP extensions listed with descriptions and "prefer these tools" instruction, so Claude uses scrapling/paper-search over spawning subagents.
+- **Master key temp file**: master key passed to MCP subprocess via temp file instead of CLI argument to avoid /proc/PID/cmdline exposure.
+- **Command auto-splitting**: `add_extension` automatically splits command strings with spaces when no args provided (handles Claude passing "uvx foo" as one string).
+- **Dangerous env key validation**: `set_extension_env` rejects library-injection env keys (LD_PRELOAD, DYLD_*) at set time.
+
+### Changed
+- **docker-compose.yml**: added `env_file` support for loading `CURLYCATCLAW_MASTER_KEY` from `~/.curlycatclaw/env` (gitignored).
+- **buildMCPConfig**: runtime MCP extensions removed from --mcp-config (proxied instead).
+- **System prompt**: added instructions for `list_extensions` verification and `set_extension_env` usage.
+
+### Fixed
+- **Extension env override**: `buildMCPExtEnv` now prevents extension env vars from overriding baseline vars (PATH, HOME).
+- **Zero-tool extension**: proxy skips and closes extensions that discover zero tools instead of keeping the process alive.
+- **30s connect timeout**: prevents a hanging MCP extension from blocking all tools.
+
 ## [0.16.1] - 2026-04-02
 
 Docker and skill infrastructure improvements. Scrapling MCP server and agent skill pre-installed by default for AI-powered web scraping.
