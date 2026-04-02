@@ -37,8 +37,9 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ### Extensibility
 
-- **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio, add/remove at runtime via Telegram
+- **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio, add/remove at runtime via Telegram, proxied through curlycatclaw-skills for reliable tool discovery in CLI mode
 - **Runtime extension registry** — add MCP servers, exec skills, and prompt-based skills through Telegram chat (`add_extension`, `remove_extension`, `list_extensions`), persisted to disk, no config edits or restarts needed
+- **Encrypted API key management** — set API keys for MCP extensions via chat (`set_extension_env`), encrypted at rest with AES-256-GCM, resolved at spawn time
 - **Built-in skills** — web search, notes, reminders (cron), semantic search, user facts, summary management, plugin management, extension management
 - **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security, 10 MiB query result cap, quote-aware SQL parameter binding, atomic hot-reload
 - **External skill collections** — load exec-based skills from directory trees (`skill.toml` descriptors), minimal sandboxed env, fsnotify hot-reload
@@ -294,6 +295,8 @@ query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked resu
 | `remove_extension` | Remove a runtime extension by name |
 | `list_extensions` | List all runtime-added extensions |
 | `load_prompt_skill` | Load a prompt skill's SKILL.md instructions on demand |
+| `set_extension_env` | Set an encrypted env var (API key) for an MCP extension |
+| `unset_extension_env` | Remove an encrypted env var from an MCP extension |
 
 Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Plugin skills require `cli_path` and `isolated_home` in `[claude]` config. Extensions are persisted to `extensions.json` and survive restarts. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
 

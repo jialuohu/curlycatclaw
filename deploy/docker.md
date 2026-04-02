@@ -23,8 +23,8 @@ Docker uses the same `config.toml` as local, with these env vars overriding path
 |---------|-------------|---------|
 | `CURLYCATCLAW_DB_PATH` | `/data/curlycatclaw.db` | SQLite path inside container |
 | `CURLYCATCLAW_QDRANT_ADDR` | `qdrant:6334` | Compose networking |
-| `CURLYCATCLAW_CLI_PATH` | `/usr/local/bin/claude` | Claude CLI installed via npm |
 | `CURLYCATCLAW_ISOLATED_HOME` | `/data/claude-home` | Isolated Claude home for plugin management |
+| `CURLYCATCLAW_MASTER_KEY` | (from `~/.curlycatclaw/env`) | 64 hex chars for encrypted credentials |
 | `HOME` | `/data` | So CLI finds config at /data |
 
 ## MCP Servers & Plugin Runtimes
@@ -53,9 +53,11 @@ cp ~/.curlycatclaw/curlycatclaw.db ./backup.db
 
 ## Encrypted MCP Credentials
 
-Add the master key to the `environment` section in `docker-compose.yml`:
+Generate a master key and store it in `~/.curlycatclaw/env` (loaded via `env_file` in docker-compose, not committed to git):
 
-```yaml
-environment:
-  - CURLYCATCLAW_MASTER_KEY=<64 hex chars for encrypted MCP credentials>
+```bash
+echo "CURLYCATCLAW_MASTER_KEY=$(openssl rand -hex 32)" > ~/.curlycatclaw/env
+chmod 600 ~/.curlycatclaw/env
 ```
+
+Then restart: `docker compose up -d`. Once configured, you can set API keys for MCP extensions via Telegram chat (e.g., "set CORE_API_KEY for paper-search-mcp") and they'll be encrypted at rest.
