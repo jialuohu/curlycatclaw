@@ -37,11 +37,12 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ### Extensibility
 
-- **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio
-- **Built-in skills** — web search, notes, reminders (cron), semantic search, user facts, summary management, plugin management (install/uninstall/enable/disable via Telegram)
+- **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio, add/remove at runtime via Telegram
+- **Runtime extension registry** — add MCP servers, exec skills, and prompt-based skills through Telegram chat (`add_extension`, `remove_extension`, `list_extensions`), persisted to disk, no config edits or restarts needed
+- **Built-in skills** — web search, notes, reminders (cron), semantic search, user facts, summary management, plugin management, extension management
 - **Wasm plugins** — extend with custom skills via WebAssembly, capability-based security, 10 MiB query result cap, quote-aware SQL parameter binding, atomic hot-reload
 - **External skill collections** — load exec-based skills from directory trees (`skill.toml` descriptors), minimal sandboxed env, fsnotify hot-reload
-- **Plugin management** — install/manage Claude Code plugins through Telegram with isolated home directory and config allowlist
+- **Plugin management** — install/manage Claude Code plugins through Telegram, standard plugins pre-installed on first startup (context7, playwright, ui-ux-pro-max, superpowers, claude-md-management, hookify, skill-creator)
 
 ### Operations
 
@@ -108,7 +109,6 @@ oauth_token = "sk-ant-oat01-..."             # long-lived token from `claude set
 model       = "claude-sonnet-4-6-20250514"
 # Plugin management (requires CLI mode)
 # isolated_home   = "/home/you/.curlycatclaw/claude-home"
-# allowed_plugins = ["context7", "playwright"]
 
 [telegram]
 token = "123456:ABC-DEF..."
@@ -281,7 +281,7 @@ query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked resu
 | `list_facts` | List all persistent facts Claude remembers about you |
 | `list_summaries` | View all stored conversation summaries with IDs and previews |
 | `delete_summary` | Remove an incorrect or unwanted conversation summary by ID |
-| `install_plugin` | Install a Claude Code plugin (allowlist-gated, auto-searches for marketplace) |
+| `install_plugin` | Install a Claude Code plugin (auto-searches for marketplace) |
 | `uninstall_plugin` | Uninstall a Claude Code plugin |
 | `list_plugins` | List installed Claude Code plugins |
 | `enable_plugin` | Enable a previously disabled plugin |
@@ -290,8 +290,12 @@ query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked resu
 | `add_marketplace` | Add a third-party plugin marketplace (GitHub repo) |
 | `remove_marketplace` | Remove a marketplace and auto-uninstall its plugins |
 | `list_marketplaces` | List configured plugin marketplaces |
+| `add_extension` | Add a runtime MCP server, exec skill, or prompt skill |
+| `remove_extension` | Remove a runtime extension by name |
+| `list_extensions` | List all runtime-added extensions |
+| `load_prompt_skill` | Load a prompt skill's SKILL.md instructions on demand |
 
-Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Plugin skills require `cli_path` and `isolated_home` in `[claude]` config. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
+Skills are registered alongside MCP tools — Claude sees them all and picks the right one. Plugin skills require `cli_path` and `isolated_home` in `[claude]` config. Extensions are persisted to `extensions.json` and survive restarts. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
 
 ## Testing
 

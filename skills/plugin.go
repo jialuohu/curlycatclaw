@@ -14,26 +14,20 @@ import (
 )
 
 // InitPluginSkills returns skills for managing Claude Code plugins in an
-// isolated home directory. The install skill validates plugin names against
-// the allowedPlugins allowlist.
-func InitPluginSkills(cliPath, isolatedHome string, allowedPlugins []string) []*Skill {
-	allowed := make(map[string]bool, len(allowedPlugins))
-	for _, name := range allowedPlugins {
-		allowed[name] = true
-	}
-
+// isolated home directory.
+func InitPluginSkills(cliPath, isolatedHome string) []*Skill {
 	return []*Skill{
 		{
 			Name:        "install_plugin",
-			Description: "Install a Claude Code plugin. Only plugins in the allowed list can be installed.",
+			Description: "Install a Claude Code plugin.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Plugin name to install"}},"required":["name"]}`),
-			Execute:     makePluginExecute(cliPath, isolatedHome, "install", allowed),
+			Execute:     makePluginExecute(cliPath, isolatedHome, "install"),
 		},
 		{
 			Name:        "uninstall_plugin",
 			Description: "Uninstall a Claude Code plugin.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Plugin name to uninstall"}},"required":["name"]}`),
-			Execute:     makePluginExecute(cliPath, isolatedHome, "uninstall", nil),
+			Execute:     makePluginExecute(cliPath, isolatedHome, "uninstall"),
 		},
 		{
 			Name:        "list_plugins",
@@ -45,13 +39,13 @@ func InitPluginSkills(cliPath, isolatedHome string, allowedPlugins []string) []*
 			Name:        "enable_plugin",
 			Description: "Enable a previously disabled Claude Code plugin.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Plugin name to enable"}},"required":["name"]}`),
-			Execute:     makePluginExecute(cliPath, isolatedHome, "enable", nil),
+			Execute:     makePluginExecute(cliPath, isolatedHome, "enable"),
 		},
 		{
 			Name:        "disable_plugin",
 			Description: "Disable an installed Claude Code plugin without uninstalling it.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Plugin name to disable"}},"required":["name"]}`),
-			Execute:     makePluginExecute(cliPath, isolatedHome, "disable", nil),
+			Execute:     makePluginExecute(cliPath, isolatedHome, "disable"),
 		},
 		{
 			Name:        "add_marketplace",
@@ -85,8 +79,7 @@ type pluginInput struct {
 }
 
 // makePluginExecute creates an Execute func for install/uninstall/enable/disable.
-// If allowlist is non-nil (install), the plugin name is validated against it.
-func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[string]bool) func(ctx context.Context, input json.RawMessage) (string, error) {
+func makePluginExecute(cliPath, isolatedHome, action string) func(ctx context.Context, input json.RawMessage) (string, error) {
 	return func(ctx context.Context, input json.RawMessage) (string, error) {
 		var params pluginInput
 		if err := json.Unmarshal(input, &params); err != nil {
@@ -103,15 +96,6 @@ func makePluginExecute(cliPath, isolatedHome, action string, allowlist map[strin
 			if !isAlpha && !isDigit && !isSafe {
 				return "", fmt.Errorf("invalid plugin name %q: only alphanumeric, hyphens, underscores, and @ allowed", params.Name)
 			}
-		}
-
-		// Validate against allowlist for install.
-		if allowlist != nil && !allowlist[params.Name] {
-			var allowed []string
-			for name := range allowlist {
-				allowed = append(allowed, name)
-			}
-			return "", fmt.Errorf("plugin %q is not in the allowed list. Allowed: %s", params.Name, strings.Join(allowed, ", "))
 		}
 
 		// Bootstrap marketplace on first install attempt (lazy, idempotent).
@@ -220,9 +204,13 @@ func makeMarketplaceRemoveExecute(cliPath, isolatedHome string) func(ctx context
 			return "", fmt.Errorf("marketplace name is required")
 		}
 
-		// Block removal of the default marketplace.
-		if params.Name == "claude-plugins-official" {
-			return "", fmt.Errorf("cannot remove the default marketplace (claude-plugins-official)")
+		// Block removal of built-in marketplaces.
+		builtinMarketplaces := map[string]bool{
+			"claude-plugins-official":  true,
+			"ui-ux-pro-max-skill":     true,
+		}
+		if builtinMarketplaces[params.Name] {
+			return "", fmt.Errorf("cannot remove built-in marketplace %q", params.Name)
 		}
 
 		// Auto-uninstall plugins belonging to this marketplace.
@@ -517,7 +505,61 @@ func writeReloadFlag(isolatedHome string) {
 	os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
 }
 
-var defaultMarketplaces = []string{"anthropics/claude-plugins-official"}
+// standardPlugins are pre-installed when the isolated home is first created.
+// Claude can install additional plugins at runtime via install_plugin.
+var standardPlugins = []string{"context7", "playwright", "ui-ux-pro-max", "superpowers", "claude-md-management", "hookify", "skill-creator"}
+
+// EnsureDefaultPlugins pre-installs standard plugins on first startup.
+// Skips plugins that are already installed. Non-fatal: logs warnings on failure.
+func EnsureDefaultPlugins(cliPath, isolatedHome string) {
+	installed := installedPluginNames(isolatedHome)
+
+	var toInstall []string
+	for _, name := range standardPlugins {
+		if !installed[name] {
+			toInstall = append(toInstall, name)
+		}
+	}
+	if len(toInstall) == 0 {
+		return
+	}
+
+	// Ensure marketplace is available before installing.
+	if err := ensureMarketplace(cliPath, isolatedHome); err != nil {
+		slog.Warn("default plugins: marketplace bootstrap failed, skipping", "err", err)
+		return
+	}
+
+	for _, name := range toInstall {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		cmd := exec.CommandContext(ctx, cliPath, "plugin", "install", name)
+		cmd.Env = buildPluginEnv(isolatedHome)
+		output, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			slog.Warn("default plugin install failed", "plugin", name,
+				"err", err, "output", strings.TrimSpace(string(output)))
+		} else {
+			slog.Info("default plugin installed", "plugin", name)
+		}
+	}
+}
+
+// installedPluginNames returns a set of installed plugin short names.
+func installedPluginNames(isolatedHome string) map[string]bool {
+	keys := installedPluginKeys(isolatedHome)
+	names := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		name := strings.SplitN(key, "@", 2)[0]
+		names[name] = true
+	}
+	return names
+}
+
+var defaultMarketplaces = []string{
+	"anthropics/claude-plugins-official",
+	"nextlevelbuilder/ui-ux-pro-max-skill",
+}
 
 const marketplaceMaxAge = 24 * time.Hour
 

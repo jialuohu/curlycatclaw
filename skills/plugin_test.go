@@ -11,7 +11,7 @@ import (
 )
 
 func TestInitPluginSkills_ReturnsAllSkills(t *testing.T) {
-	skills := InitPluginSkills("/usr/bin/claude", "/tmp/isolated", []string{"context7"})
+	skills := InitPluginSkills("/usr/bin/claude", "/tmp/isolated")
 	if len(skills) != 9 {
 		t.Fatalf("expected 9 plugin skills, got %d", len(skills))
 	}
@@ -28,35 +28,11 @@ func TestInitPluginSkills_ReturnsAllSkills(t *testing.T) {
 	}
 }
 
-func TestInstallPlugin_AllowlistRejects(t *testing.T) {
-	skills := InitPluginSkills("/usr/bin/claude", "/tmp/isolated", []string{"context7", "playwright"})
-
-	var installSkill *Skill
-	for _, s := range skills {
-		if s.Name == "install_plugin" {
-			installSkill = s
-			break
-		}
-	}
-	if installSkill == nil {
-		t.Fatal("install_plugin skill not found")
-	}
-
-	input, _ := json.Marshal(map[string]string{"name": "malicious-plugin"})
-	_, err := installSkill.Execute(context.Background(), input)
-	if err == nil {
-		t.Fatal("expected error for non-allowed plugin")
-	}
-	if !strings.Contains(err.Error(), "not in the allowed list") {
-		t.Errorf("error = %q, want it to mention allowed list", err.Error())
-	}
-}
-
-func TestInstallPlugin_AllowlistAccepts(t *testing.T) {
-	// We can't actually run `claude plugin install` but we can verify it
-	// doesn't reject an allowed plugin name at the validation layer.
-	// The exec will fail because the binary doesn't exist, which is fine.
-	skills := InitPluginSkills("/nonexistent-binary", "/tmp/isolated", []string{"context7"})
+func TestInstallPlugin_NameValidation(t *testing.T) {
+	// Any plugin name is accepted (no allowlist), but the name must pass
+	// character validation. The exec will fail because the binary doesn't
+	// exist, which is fine — we're testing the validation layer.
+	skills := InitPluginSkills("/nonexistent-binary", "/tmp/isolated")
 
 	var installSkill *Skill
 	for _, s := range skills {
@@ -66,19 +42,19 @@ func TestInstallPlugin_AllowlistAccepts(t *testing.T) {
 		}
 	}
 
-	input, _ := json.Marshal(map[string]string{"name": "context7"})
+	input, _ := json.Marshal(map[string]string{"name": "any-plugin-name"})
 	_, err := installSkill.Execute(context.Background(), input)
-	// Should fail with exec error, NOT allowlist error.
+	// Should fail with exec error, NOT validation error.
 	if err == nil {
 		t.Fatal("expected exec error (binary doesn't exist)")
 	}
-	if strings.Contains(err.Error(), "not in the allowed list") {
-		t.Error("context7 should be in the allowed list")
+	if strings.Contains(err.Error(), "invalid plugin name") {
+		t.Error("any-plugin-name should pass character validation")
 	}
 }
 
 func TestInstallPlugin_EmptyName(t *testing.T) {
-	skills := InitPluginSkills("/usr/bin/claude", "/tmp/isolated", []string{"context7"})
+	skills := InitPluginSkills("/usr/bin/claude", "/tmp/isolated")
 
 	var installSkill *Skill
 	for _, s := range skills {
@@ -328,24 +304,23 @@ func TestInstalledPluginKeys(t *testing.T) {
 	}
 }
 
-func TestInstallPlugin_EmptyAllowlist(t *testing.T) {
-	// Empty allowlist means nothing can be installed.
-	skills := InitPluginSkills("/usr/bin/claude", "/tmp/isolated", nil)
-
-	var installSkill *Skill
-	for _, s := range skills {
-		if s.Name == "install_plugin" {
-			installSkill = s
-			break
-		}
+func TestInstalledPluginNames(t *testing.T) {
+	dir := t.TempDir()
+	pluginsDir := filepath.Join(dir, ".claude", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0700); err != nil {
+		t.Fatal(err)
 	}
-
-	input, _ := json.Marshal(map[string]string{"name": "anything"})
-	_, err := installSkill.Execute(context.Background(), input)
-	if err == nil {
-		t.Fatal("expected error with empty allowlist")
+	manifest, _ := json.Marshal(map[string]any{
+		"plugins": map[string]any{
+			"context7@mkt":     []any{map[string]any{}},
+			"playwright@other": []any{map[string]any{}},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "not in the allowed list") {
-		t.Errorf("error = %q, want allowed list mention", err.Error())
+	names := installedPluginNames(dir)
+	if !names["context7"] || !names["playwright"] {
+		t.Errorf("expected context7 and playwright, got: %v", names)
 	}
 }

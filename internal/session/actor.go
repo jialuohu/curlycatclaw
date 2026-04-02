@@ -17,6 +17,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
+	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
@@ -71,6 +72,9 @@ type Actor struct {
 	// configPath is the path to config.toml, passed to MCP server subprocesses.
 	configPath string
 
+	// extRegistry holds runtime-added extensions (MCP servers + exec skills).
+	extRegistry *extension.Registry
+
 	// activeProjects tracks the currently active project per user.
 	activeProjects map[userKey]string
 	projectsMu     sync.RWMutex
@@ -91,6 +95,7 @@ func New(
 	factStore FactProvider,
 	summarizer Summarizer,
 	configPath string,
+	extReg *extension.Registry,
 ) *Actor {
 	ctxb := memory.NewContextBuilder(store)
 	if budget != nil {
@@ -116,6 +121,7 @@ func New(
 		indexSem:       make(chan struct{}, 10),
 		sumSem:         make(chan struct{}, 2),
 		configPath:     configPath,
+		extRegistry:    extReg,
 		activeProjects: make(map[userKey]string),
 	}
 }
@@ -518,7 +524,11 @@ func (ss *streamState) onDelta(delta string) {
 		if ss.flushing {
 			return // another flush is in progress, just accumulate
 		}
+		// Enable HTML for the final edit to this message so it renders
+		// markdown properly instead of showing raw markdown text.
+		ss.htmlMode = true
 		ss.flush()
+		ss.htmlMode = false
 		// Reset for a new message (next flush will create a new one).
 		ss.msgID = 0
 		ss.buf.Reset()
@@ -1247,9 +1257,50 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 		}
 	}
 
+	// Include runtime MCP extensions from the extension registry.
+	if a.extRegistry != nil {
+		for _, ext := range a.extRegistry.ByType(extension.TypeMCP) {
+			if _, builtin := servers[ext.Name]; builtin {
+				slog.Warn("buildMCPConfig: extension name collides with existing server, skipping",
+					"name", ext.Name)
+				continue
+			}
+			srv := mcpServer{
+				Command: ext.Command,
+				Args:    ext.Args,
+			}
+			if len(ext.Env) > 0 {
+				srv.Env = filterDangerousEnv(ext.Env)
+			}
+			servers[ext.Name] = srv
+		}
+	}
+
 	wrapper := map[string]any{"mcpServers": servers}
 	data, _ := json.Marshal(wrapper)
 	return string(data)
+}
+
+// dangerousEnvPrefixes lists env var prefixes that should not be passed
+// to MCP server subprocesses to prevent library injection attacks.
+var dangerousEnvPrefixes = []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_"}
+
+// filterDangerousEnv returns a copy of env with injection-prone keys removed.
+func filterDangerousEnv(env map[string]string) map[string]string {
+	filtered := make(map[string]string, len(env))
+	for k, v := range env {
+		dangerous := false
+		for _, prefix := range dangerousEnvPrefixes {
+			if strings.HasPrefix(strings.ToUpper(k), strings.ToUpper(prefix)) {
+				dangerous = true
+				break
+			}
+		}
+		if !dangerous {
+			filtered[k] = v
+		}
+	}
+	return filtered
 }
 
 func (a *Actor) trySend(msg telegram.OutgoingMessage) {
@@ -1277,6 +1328,25 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("\nIMPORTANT: For reminders and scheduling, ALWAYS use the set_reminder tool (via MCP). Never use built-in tools like CronCreate.\n")
 	sb.WriteString("set_reminder parameters: message (string, required), fire_at (ISO 8601 datetime, required), recurring (cron expression, optional), prompt (optional, if set Claude executes it at fire time).\n")
 	sb.WriteString("Call set_reminder directly without searching for tools first.\n")
+	sb.WriteString("\nIMPORTANT: To add, remove, or list MCP servers and external tools, ALWAYS use the add_extension, remove_extension, and list_extensions tools (via MCP). ")
+	sb.WriteString("NEVER create or edit .mcp.json files manually. The extension system handles persistence and server lifecycle automatically.\n")
+
+	sb.WriteString("\nWhen adding an external tool as an exec extension, the tool MUST speak the curlycatclaw JSON protocol:\n")
+	sb.WriteString("- Input (stdin): {\"input\": <json>, \"context\": {\"user_id\": N, \"chat_id\": N}}\n")
+	sb.WriteString("- Output (stdout): {\"result\": \"string\", \"error\": \"\"}\n")
+	sb.WriteString("If the tool does NOT speak this protocol (e.g., a CLI tool that takes args and prints text), ")
+	sb.WriteString("write a wrapper script to ~/.curlycatclaw/extension-wrappers/<name>.sh first, make it executable, then register the wrapper via add_extension.\n")
+
+	// List available prompt skills.
+	if a.extRegistry != nil {
+		promptSkills := a.extRegistry.ByType(extension.TypePrompt)
+		if len(promptSkills) > 0 {
+			sb.WriteString("\nAvailable prompt skills (use load_prompt_skill to read instructions):\n")
+			for _, ps := range promptSkills {
+				fmt.Fprintf(&sb, "- %s: %s\n", ps.Name, ps.Description)
+			}
+		}
+	}
 
 	// Tier 1: User facts.
 	if a.cfg.Memory.Enabled && a.facts != nil {

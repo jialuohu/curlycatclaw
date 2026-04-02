@@ -47,8 +47,7 @@ type ClaudeConfig struct {
 	APIKey         string   `toml:"api_key"`         // direct API mode
 	OAuthToken     string   `toml:"oauth_token"`     // long-lived token from `claude setup-token` (CLI mode)
 	Model          string   `toml:"model"`
-	IsolatedHome   string   `toml:"isolated_home"`   // path to isolated Claude home dir for project work
-	AllowedPlugins []string `toml:"allowed_plugins"` // plugin names user can install via chat
+	IsolatedHome string `toml:"isolated_home"` // path to isolated Claude home dir for project work
 }
 
 // UseCLI returns true if CLI subprocess mode is configured.

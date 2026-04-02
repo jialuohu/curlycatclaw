@@ -215,6 +215,40 @@ func (m *Manager) CallTool(ctx context.Context, serverTool string, arguments map
 	return formatted, nil
 }
 
+// AddServer dynamically starts a single MCP server and adds it to the
+// manager. This enables runtime addition of MCP servers without restart.
+// Pass nil envResolver when env values are already resolved (e.g. runtime
+// extensions with plaintext env vars).
+func (m *Manager) AddServer(ctx context.Context, cfg config.MCPServerConfig, envResolver func(string) (string, error)) error {
+	m.mu.RLock()
+	_, exists := m.servers[cfg.Name]
+	m.mu.RUnlock()
+	if exists {
+		return fmt.Errorf("mcp: server %q already exists", cfg.Name)
+	}
+	if err := m.startServer(ctx, cfg, envResolver); err != nil {
+		return err
+	}
+	slog.Info("mcp: server added dynamically", "server", cfg.Name)
+	return nil
+}
+
+// RemoveServer stops and removes a single MCP server by name.
+func (m *Manager) RemoveServer(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc, exists := m.servers[name]
+	if !exists {
+		return fmt.Errorf("mcp: unknown server %q", name)
+	}
+	if err := sc.session.Close(); err != nil {
+		slog.Warn("mcp: error closing server during removal", "server", name, "error", err)
+	}
+	delete(m.servers, name)
+	slog.Info("mcp: server removed", "server", name)
+	return nil
+}
+
 // Shutdown gracefully closes all MCP server connections.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
