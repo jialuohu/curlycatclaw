@@ -3,6 +3,7 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/jialuohu/curlycatclaw/config"
+	"github.com/jialuohu/curlycatclaw/internal/security"
 	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/skills"
 )
@@ -33,13 +35,18 @@ type MCPAdder interface {
 // mcpMgr may be nil (e.g. when running as an MCP server subprocess).
 // reloadFunc is called after MCP extension mutations to trigger CLI
 // subprocess respawn; it may be nil if no reload is needed.
-func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func()) []*skills.Skill {
-	return []*skills.Skill{
+func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), credStore *security.CredentialStore) []*skills.Skill {
+	ss := []*skills.Skill{
 		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc),
 		removeExtensionSkill(reg, mcpMgr, skillReg, reloadFunc),
 		listExtensionsSkill(reg),
 		loadPromptSkill(reg),
 	}
+	if credStore != nil {
+		ss = append(ss, setExtensionEnvSkill(reg, credStore, reloadFunc))
+		ss = append(ss, unsetExtensionEnvSkill(reg, credStore, reloadFunc))
+	}
+	return ss
 }
 
 func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func()) *skills.Skill {
@@ -77,11 +84,21 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				return "", fmt.Errorf("input_schema is not valid JSON")
 			}
 
+			// If command contains spaces and no args were provided,
+			// split it (Claude often passes "uvx foo" as one string).
+			cmd := params.Command
+			args := params.Args
+			if len(args) == 0 && strings.Contains(cmd, " ") {
+				parts := strings.Fields(cmd)
+				cmd = parts[0]
+				args = parts[1:]
+			}
+
 			ext := Extension{
 				Name:        params.Name,
 				Type:        params.Type,
-				Command:     params.Command,
-				Args:        params.Args,
+				Command:     cmd,
+				Args:        args,
 				Env:         params.Env,
 				Description: params.Description,
 				InputSchema: params.InputSchema,
@@ -255,6 +272,139 @@ func addPromptExtension(reg *Registry, ext Extension) (string, error) {
 	}
 	slog.Info("extension: prompt skill added", "name", ext.Name, "path", ext.Command)
 	return fmt.Sprintf("Prompt skill %q added. Claude will see it in the available skills list and can load it with load_prompt_skill.", ext.Name), nil
+}
+
+// isDangerousEnvKey returns true if the key matches a prefix that could
+// enable library injection (LD_PRELOAD, LD_LIBRARY_PATH, DYLD_*).
+func isDangerousEnvKey(key string) bool {
+	upper := strings.ToUpper(key)
+	for _, prefix := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_"} {
+		if strings.HasPrefix(upper, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// credKeyName builds the credential store key for an extension env var.
+func credKeyName(extName, envKey string) string {
+	return "ext_" + extName + "_" + envKey
+}
+
+func setExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, reloadFunc func()) *skills.Skill {
+	return &skills.Skill{
+		Name:        "set_extension_env",
+		Description: "Set an environment variable (e.g. API key) for an MCP extension. The value is encrypted at rest. The extension will be reloaded to pick up the change.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name":  {"type": "string", "description": "Extension name"},
+				"key":   {"type": "string", "description": "Environment variable name (e.g. CORE_API_KEY)"},
+				"value": {"type": "string", "description": "Environment variable value"}
+			},
+			"required": ["name", "key", "value"]
+		}`),
+		Execute: func(_ context.Context, input json.RawMessage) (string, error) {
+			var params struct {
+				Name  string `json:"name"`
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			}
+			if err := json.Unmarshal(input, &params); err != nil {
+				return "", fmt.Errorf("invalid input: %w", err)
+			}
+			if params.Key == "" {
+				return "", fmt.Errorf("key is required")
+			}
+			// Reject env keys that would be filtered at spawn time anyway.
+			if isDangerousEnvKey(params.Key) {
+				return "", fmt.Errorf("env key %q is blocked (dangerous prefix)", params.Key)
+			}
+
+			ext := reg.Get(params.Name)
+			if ext == nil {
+				return "", fmt.Errorf("extension %q not found", params.Name)
+			}
+
+			// Encrypt and store the value.
+			credKey := credKeyName(params.Name, params.Key)
+			if err := credStore.Set(credKey, params.Value); err != nil {
+				return "", fmt.Errorf("failed to store credential: %w", err)
+			}
+
+			// Update the extension's env to reference the encrypted value.
+			ref := "encrypted:ref:" + credKey
+			if err := reg.Update(params.Name, func(e *Extension) {
+				if e.Env == nil {
+					e.Env = make(map[string]string)
+				}
+				e.Env[params.Key] = ref
+			}); err != nil {
+				// Rollback: remove the credential we just stored.
+				_ = credStore.Delete(credKey)
+				return "", fmt.Errorf("failed to update extension: %w", err)
+			}
+
+			if reloadFunc != nil {
+				reloadFunc()
+			}
+
+			slog.Info("extension: env var set (encrypted)", "extension", params.Name, "key", params.Key)
+			return fmt.Sprintf("Set %s for %s (encrypted). The extension will reload on the next message.", params.Key, params.Name), nil
+		},
+	}
+}
+
+func unsetExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, reloadFunc func()) *skills.Skill {
+	return &skills.Skill{
+		Name:        "unset_extension_env",
+		Description: "Remove an environment variable from an MCP extension and delete its encrypted credential.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Extension name"},
+				"key":  {"type": "string", "description": "Environment variable name to remove"}
+			},
+			"required": ["name", "key"]
+		}`),
+		Execute: func(_ context.Context, input json.RawMessage) (string, error) {
+			var params struct {
+				Name string `json:"name"`
+				Key  string `json:"key"`
+			}
+			if err := json.Unmarshal(input, &params); err != nil {
+				return "", fmt.Errorf("invalid input: %w", err)
+			}
+
+			ext := reg.Get(params.Name)
+			if ext == nil {
+				return "", fmt.Errorf("extension %q not found", params.Name)
+			}
+
+			// Update registry first, then delete credential. This order
+			// ensures a registry write failure doesn't leave a dangling
+			// encrypted:ref: pointing at a deleted credential.
+			if err := reg.Update(params.Name, func(e *Extension) {
+				delete(e.Env, params.Key)
+			}); err != nil {
+				return "", fmt.Errorf("failed to update extension: %w", err)
+			}
+
+			// Delete the encrypted credential (ignore not-found).
+			credKey := credKeyName(params.Name, params.Key)
+			if err := credStore.Delete(credKey); err != nil && !errors.Is(err, security.ErrNotFound) {
+				slog.Warn("extension: orphaned credential after env unset",
+					"extension", params.Name, "key", params.Key, "err", err)
+			}
+
+			if reloadFunc != nil {
+				reloadFunc()
+			}
+
+			slog.Info("extension: env var removed", "extension", params.Name, "key", params.Key)
+			return fmt.Sprintf("Removed %s from %s.", params.Key, params.Name), nil
+		},
+	}
 }
 
 func loadPromptSkill(reg *Registry) *skills.Skill {

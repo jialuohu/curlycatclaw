@@ -250,6 +250,64 @@ func TestNameLengthLimit(t *testing.T) {
 	}
 }
 
+func TestUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := reg.Add(Extension{
+		Name:    "test-mcp",
+		Type:    TypeMCP,
+		Command: "echo",
+		Env:     map[string]string{"KEY": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update env var.
+	if err := reg.Update("test-mcp", func(ext *Extension) {
+		ext.Env["KEY"] = "new"
+		ext.Env["EXTRA"] = "added"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := reg.Get("test-mcp")
+	if got.Env["KEY"] != "new" {
+		t.Errorf("env KEY = %q, want new", got.Env["KEY"])
+	}
+	if got.Env["EXTRA"] != "added" {
+		t.Error("expected EXTRA env var to be added")
+	}
+
+	// Verify persistence.
+	reg2, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2 := reg2.Get("test-mcp")
+	if got2.Env["KEY"] != "new" {
+		t.Error("update not persisted")
+	}
+}
+
+func TestUpdateNotFound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = reg.Update("nonexistent", func(ext *Extension) {
+		ext.Env["KEY"] = "val"
+	})
+	if err == nil {
+		t.Fatal("expected not-found error")
+	}
+}
+
 func TestPromptTypeValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "extensions.json")
 	reg, err := Load(path)

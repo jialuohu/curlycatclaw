@@ -132,6 +132,39 @@ func (r *Registry) Remove(name string) error {
 	return nil
 }
 
+// Update modifies an existing extension in place via a mutate callback and
+// persists the result atomically. Returns an error if the extension is not
+// found or if persistence fails (in which case the change is rolled back).
+func (r *Registry) Update(name string, mutate func(*Extension)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	ext, exists := r.extensions[name]
+	if !exists {
+		return fmt.Errorf("extension: %q not found", name)
+	}
+
+	// Deep snapshot for rollback (maps and slices are reference types).
+	snapshot := *ext
+	if ext.Env != nil {
+		snapshot.Env = make(map[string]string, len(ext.Env))
+		for k, v := range ext.Env {
+			snapshot.Env[k] = v
+		}
+	}
+	if ext.Args != nil {
+		snapshot.Args = make([]string, len(ext.Args))
+		copy(snapshot.Args, ext.Args)
+	}
+	mutate(ext)
+
+	if err := r.persistLocked(); err != nil {
+		*ext = snapshot // rollback
+		return err
+	}
+	return nil
+}
+
 // Get returns the extension with the given name, or nil if not found.
 func (r *Registry) Get(name string) *Extension {
 	r.mu.RLock()

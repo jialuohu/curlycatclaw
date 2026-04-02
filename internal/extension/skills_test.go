@@ -46,7 +46,7 @@ func setupTest(t *testing.T) (*Registry, *mockMCPAdder, *skills.Registry, []*ski
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
 	_ = reloadCalled
-	ss := InitExtensionSkills(reg, mcpMgr, skillReg, reloadFunc)
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, reloadFunc, nil)
 	return reg, mcpMgr, skillReg, ss
 }
 
@@ -90,7 +90,7 @@ func TestAddMCPExtensionStartFailure(t *testing.T) {
 	}
 	mcpMgr := &mockMCPAdder{addErr: errors.New("connection refused")}
 	skillReg := skills.NewRegistry()
-	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil)
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"broken","type":"mcp","command":"echo"}`
@@ -110,7 +110,7 @@ func TestAddMCPExtensionNilManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	skillReg := skills.NewRegistry()
-	ss := InitExtensionSkills(reg, nil, skillReg, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"remote","type":"mcp","command":"npx","args":["-y","mcp-server"]}`
