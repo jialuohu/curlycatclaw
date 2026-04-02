@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.18.0] - 2026-04-02
+
+MCP extension hot-reload. Installing or removing MCP extensions no longer restarts the CLI subprocess, preserving conversation context. Tools appear instantly via MCP protocol notifications.
+
+### Added
+- **MCP extension hot-reload**: when adding/removing MCP extensions in CLI mode, proxy tools are registered/unregistered dynamically on the running MCP server using `Server.AddTool()`/`Server.RemoveTools()`. The mcp-go library auto-sends `notifications/tools/list_changed` to the Claude CLI, which discovers new tools without subprocess restart. Falls back to the existing reload-flag mechanism on failure.
+- **Connect-new-first env updates**: `set_extension_env` and `unset_extension_env` connect the new session before closing the old one, ensuring zero tool downtime during reconnection.
+- **Stale tool cleanup**: when an extension's tool set changes across reconnections (e.g., version upgrade removes a tool), orphaned proxy tools are automatically unregistered.
+- **MCPHotReloader interface**: `internal/extension/skills.go` defines a new interface for hot-reload operations, keeping the extension skill layer decoupled from MCP transport details.
+
+### Changed
+- MCP server creation moved earlier in `runMCPServer()` to enable the hot-reloader to reference it during skill initialization.
+- Startup MCP extension loading unified through the hot-reloader (same code path as runtime add_extension).
+
 ## [0.17.0] - 2026-04-02
 
 MCP extension proxy and encrypted API key management. Runtime MCP extensions now work reliably in CLI mode, and users can configure API keys via Telegram chat with encryption at rest.
