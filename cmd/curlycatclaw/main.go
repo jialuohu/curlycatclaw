@@ -221,6 +221,10 @@ func run(configPath string) error {
 		slog.Warn("extension registry load failed, starting empty", "path", extRegistryPath, "err", err)
 		extReg = extension.Empty(extRegistryPath)
 	}
+
+	// Pre-seed default extensions (e.g. Scrapling MCP + agent skill) on first startup.
+	wrappersDir := filepath.Join(dataDir, "extension-wrappers")
+	extension.EnsureDefaults(extReg, wrappersDir)
 	for _, ext := range extReg.ByType(extension.TypeMCP) {
 		mcpCfg := config.MCPServerConfig{
 			Name:    ext.Name,

@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y --no-install-recommends nodejs gh \
     && npm install -g @anthropic-ai/claude-code bun \
+    && ln -sf /usr/bin/claude /usr/local/bin/claude \
     && PIPX_HOME=/usr/local/pipx PIPX_BIN_DIR=/usr/local/bin pipx install uv \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -d /data curlycatclaw
