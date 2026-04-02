@@ -1382,8 +1382,8 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("Call set_reminder directly without searching for tools first.\n")
 	sb.WriteString("\nIMPORTANT: To add, remove, or list MCP servers and external tools, ALWAYS use the add_extension, remove_extension, and list_extensions tools (via MCP). ")
 	sb.WriteString("NEVER create or edit .mcp.json files manually. The extension system handles persistence and server lifecycle automatically.\n")
-	sb.WriteString("\nWhen asked about installed plugins, extensions, or tools, ALWAYS call list_plugins AND list_extensions to get the full list. ")
-	sb.WriteString("Do NOT answer from memory or tool context alone — many plugins (skills, LSP servers) have no visible MCP tools but are still installed.\n")
+	sb.WriteString("\nIMPORTANT: When the user asks what plugins, extensions, or tools are installed, you MUST call list_plugins and list_extensions BEFORE answering. ")
+	sb.WriteString("NEVER answer from memory, conversation history, or tool context. The list can change at any time. Always fetch live data. This is not optional.\n")
 
 	sb.WriteString("\nWhen adding an external tool as an exec extension, the tool MUST speak the curlycatclaw JSON protocol:\n")
 	sb.WriteString("- Input (stdin): {\"input\": <json>, \"context\": {\"user_id\": N, \"chat_id\": N}}\n")
