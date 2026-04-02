@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"os"
+	"path/filepath"
+
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/skills"
@@ -35,19 +38,20 @@ func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regist
 		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc),
 		removeExtensionSkill(reg, mcpMgr, skillReg, reloadFunc),
 		listExtensionsSkill(reg),
+		loadPromptSkill(reg),
 	}
 }
 
 func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func()) *skills.Skill {
 	return &skills.Skill{
 		Name:        "add_extension",
-		Description: "Add a runtime extension (MCP server or exec skill). MCP servers provide tools via the MCP protocol. Exec skills run a command as a subprocess with JSON input/output.",
+		Description: "Add a runtime extension (MCP server, exec skill, or prompt skill). MCP servers provide tools via the MCP protocol. Exec skills run a command as a subprocess with JSON input/output. Prompt skills are markdown instruction files (SKILL.md) that modify behavior.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"name":         {"type": "string", "description": "Unique name for the extension (alphanumeric, hyphens, underscores)"},
-				"type":         {"type": "string", "enum": ["mcp", "exec"], "description": "Extension type: mcp (MCP server) or exec (standalone executable skill)"},
-				"command":      {"type": "string", "description": "Command to run (e.g. npx, /path/to/binary)"},
+				"type":         {"type": "string", "enum": ["mcp", "exec", "prompt"], "description": "Extension type: mcp (MCP server), exec (standalone executable skill), or prompt (markdown instructions)"},
+				"command":      {"type": "string", "description": "For mcp/exec: command to run. For prompt: directory path containing SKILL.md"},
 				"args":         {"type": "array", "items": {"type": "string"}, "description": "Command arguments"},
 				"env":          {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables for the extension"},
 				"description":  {"type": "string", "description": "What this tool does (required for exec type)"},
@@ -89,6 +93,8 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				return addMCPExtension(ctx, reg, mcpMgr, reloadFunc, ext)
 			case TypeExec:
 				return addExecExtension(reg, skillReg, ext)
+			case TypePrompt:
+				return addPromptExtension(reg, ext)
 			default:
 				return "", fmt.Errorf("unsupported extension type: %q", params.Type)
 			}
@@ -235,6 +241,50 @@ func listExtensionsSkill(reg *Registry) *skills.Skill {
 				fmt.Fprintf(&sb, "  Added: %s\n", ext.AddedAt.Format(time.RFC3339))
 			}
 			return sb.String(), nil
+		},
+	}
+}
+
+func addPromptExtension(reg *Registry, ext Extension) (string, error) {
+	if err := reg.Add(ext); err != nil {
+		return "", fmt.Errorf("failed to persist extension: %w", err)
+	}
+	return fmt.Sprintf("Prompt skill %q added. Claude will see it in the available skills list and can load it with load_prompt_skill.", ext.Name), nil
+}
+
+func loadPromptSkill(reg *Registry) *skills.Skill {
+	return &skills.Skill{
+		Name:        "load_prompt_skill",
+		Description: "Load a prompt-based skill's SKILL.md instructions. Call this when you need to follow a prompt skill's workflow.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Name of the prompt skill to load"}
+			},
+			"required": ["name"]
+		}`),
+		Execute: func(_ context.Context, input json.RawMessage) (string, error) {
+			var params struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(input, &params); err != nil {
+				return "", fmt.Errorf("invalid input: %w", err)
+			}
+
+			ext := reg.Get(params.Name)
+			if ext == nil {
+				return "", fmt.Errorf("prompt skill %q not found", params.Name)
+			}
+			if ext.Type != TypePrompt {
+				return "", fmt.Errorf("extension %q is type %q, not a prompt skill", params.Name, ext.Type)
+			}
+
+			skillPath := filepath.Join(ext.Command, "SKILL.md")
+			data, err := os.ReadFile(skillPath)
+			if err != nil {
+				return "", fmt.Errorf("failed to read SKILL.md: %w", err)
+			}
+			return string(data), nil
 		},
 	}
 }

@@ -250,6 +250,40 @@ func TestNameLengthLimit(t *testing.T) {
 	}
 }
 
+func TestPromptTypeValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Prompt without description should fail.
+	err = reg.Add(Extension{Name: "test", Type: TypePrompt, Command: "/tmp"})
+	if err == nil {
+		t.Fatal("expected error for prompt without description")
+	}
+
+	// Prompt with description but non-existent directory should fail.
+	err = reg.Add(Extension{Name: "test", Type: TypePrompt, Command: "/nonexistent", Description: "test"})
+	if err == nil {
+		t.Fatal("expected error for prompt with missing SKILL.md")
+	}
+
+	// Prompt with valid SKILL.md should succeed.
+	skillDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Test Skill"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	err = reg.Add(Extension{Name: "test-prompt", Type: TypePrompt, Command: skillDir, Description: "A test prompt skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Get("test-prompt")
+	if got == nil || got.Type != TypePrompt {
+		t.Fatal("expected prompt extension to be stored")
+	}
+}
+
 func TestLoadCorruptFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "extensions.json")
 	if err := os.WriteFile(path, []byte("not json"), 0644); err != nil {

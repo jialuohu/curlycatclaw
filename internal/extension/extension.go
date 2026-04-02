@@ -19,11 +19,12 @@ import (
 type Type string
 
 const (
-	TypeMCP  Type = "mcp"
-	TypeExec Type = "exec"
+	TypeMCP    Type = "mcp"
+	TypeExec   Type = "exec"
+	TypePrompt Type = "prompt"
 )
 
-// Extension represents a runtime-added MCP server or exec-based skill.
+// Extension represents a runtime-added MCP server, exec-based skill, or prompt skill.
 type Extension struct {
 	Name        string            `json:"name"`
 	Type        Type              `json:"type"`
@@ -191,14 +192,24 @@ func validate(ext Extension) error {
 	if !namePattern.MatchString(ext.Name) {
 		return fmt.Errorf("extension: name %q must be alphanumeric with hyphens/underscores", ext.Name)
 	}
-	if ext.Type != TypeMCP && ext.Type != TypeExec {
-		return fmt.Errorf("extension: type must be %q or %q, got %q", TypeMCP, TypeExec, ext.Type)
+	if ext.Type != TypeMCP && ext.Type != TypeExec && ext.Type != TypePrompt {
+		return fmt.Errorf("extension: type must be %q, %q, or %q, got %q", TypeMCP, TypeExec, TypePrompt, ext.Type)
 	}
 	if ext.Command == "" {
 		return errors.New("extension: command is required")
 	}
 	if ext.Type == TypeExec && ext.Description == "" {
 		return errors.New("extension: description is required for exec extensions")
+	}
+	if ext.Type == TypePrompt {
+		if ext.Description == "" {
+			return errors.New("extension: description is required for prompt skills")
+		}
+		// Command is the directory path; it must contain SKILL.md.
+		skillPath := filepath.Join(ext.Command, "SKILL.md")
+		if _, err := os.Stat(skillPath); err != nil {
+			return fmt.Errorf("extension: prompt skill directory must contain SKILL.md: %w", err)
+		}
 	}
 	return nil
 }

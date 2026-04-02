@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -232,6 +234,101 @@ func TestListExtensions(t *testing.T) {
 	}
 	if !strings.Contains(result, "mcp1") || !strings.Contains(result, "exec1") {
 		t.Fatalf("expected both extensions listed, got: %s", result)
+	}
+}
+
+func TestAddPromptExtension(t *testing.T) {
+	reg, _, _, ss := setupTest(t)
+	addSkill := findSkill(ss, "add_extension")
+
+	// Create a skill directory with SKILL.md.
+	skillDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Review Checklist\nDo this, then that."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := fmt.Sprintf(`{"name":"my-review","type":"prompt","command":%q,"description":"Code review skill"}`, skillDir)
+	result, err := addSkill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "Prompt skill") {
+		t.Fatalf("expected prompt skill message, got: %s", result)
+	}
+	if reg.Get("my-review") == nil {
+		t.Fatal("expected prompt extension to be persisted")
+	}
+}
+
+func TestLoadPromptSkill(t *testing.T) {
+	_, _, _, ss := setupTest(t)
+
+	// Create and register a prompt skill.
+	skillDir := t.TempDir()
+	content := "# My Skill\n\nFollow these instructions."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	addSkill := findSkill(ss, "add_extension")
+	input := fmt.Sprintf(`{"name":"test-skill","type":"prompt","command":%q,"description":"Test"}`, skillDir)
+	if _, err := addSkill.Execute(context.Background(), json.RawMessage(input)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load the prompt skill.
+	loadSkill := findSkill(ss, "load_prompt_skill")
+	if loadSkill == nil {
+		t.Fatal("load_prompt_skill not found")
+	}
+	result, err := loadSkill.Execute(context.Background(), json.RawMessage(`{"name":"test-skill"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != content {
+		t.Fatalf("expected SKILL.md content, got: %s", result)
+	}
+
+	// Loading a non-existent skill should fail.
+	_, err = loadSkill.Execute(context.Background(), json.RawMessage(`{"name":"nonexistent"}`))
+	if err == nil {
+		t.Fatal("expected error for nonexistent prompt skill")
+	}
+
+	// Loading an MCP extension should fail (wrong type).
+	if _, err := addSkill.Execute(context.Background(), json.RawMessage(`{"name":"mcp-thing","type":"mcp","command":"echo"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = loadSkill.Execute(context.Background(), json.RawMessage(`{"name":"mcp-thing"}`))
+	if err == nil {
+		t.Fatal("expected error for non-prompt extension")
+	}
+}
+
+func TestRemovePromptExtension(t *testing.T) {
+	reg, _, _, ss := setupTest(t)
+
+	skillDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	addSkill := findSkill(ss, "add_extension")
+	input := fmt.Sprintf(`{"name":"rm-prompt","type":"prompt","command":%q,"description":"test"}`, skillDir)
+	if _, err := addSkill.Execute(context.Background(), json.RawMessage(input)); err != nil {
+		t.Fatal(err)
+	}
+
+	removeSkill := findSkill(ss, "remove_extension")
+	result, err := removeSkill.Execute(context.Background(), json.RawMessage(`{"name":"rm-prompt"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "removed") {
+		t.Fatalf("expected removal message, got: %s", result)
+	}
+	if reg.Get("rm-prompt") != nil {
+		t.Fatal("expected prompt extension to be removed")
 	}
 }
 
