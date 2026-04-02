@@ -1337,6 +1337,18 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("If the tool does NOT speak this protocol (e.g., a CLI tool that takes args and prints text), ")
 	sb.WriteString("write a wrapper script to ~/.curlycatclaw/extension-wrappers/<name>.sh first, make it executable, then register the wrapper via add_extension.\n")
 
+	sb.WriteString("\nWhen the user asks to install a skill from a URL or name:\n")
+	sb.WriteString("For GitHub repos (URLs containing github.com):\n")
+	sb.WriteString("1. git clone <url> ~/.curlycatclaw/extension-wrappers/<name>/\n")
+	sb.WriteString("2. Detect skill type: SKILL.md → type=prompt, .mcp.json → type=mcp (read command/args), skill.toml → type=exec, otherwise read README and decide\n")
+	sb.WriteString("3. Register via add_extension with the correct type\n")
+	sb.WriteString("For ClawHub skills (clawhub.ai URLs, or when user wants to search for skills):\n")
+	sb.WriteString("1. Search: npx clawhub@latest search \"<query>\"\n")
+	sb.WriteString("2. Install: npx clawhub@latest install <slug> --dir ~/.curlycatclaw/extension-wrappers\n")
+	sb.WriteString("3. Read the installed SKILL.md frontmatter (name/description fields in YAML header)\n")
+	sb.WriteString("4. Register: add_extension(type=prompt, name=<slug>, command=<installed dir path>, description=<from frontmatter>)\n")
+	sb.WriteString("For other URLs: fetch with curl, inspect the content, and decide the best approach.\n")
+
 	// List available prompt skills.
 	if a.extRegistry != nil {
 		promptSkills := a.extRegistry.ByType(extension.TypePrompt)
