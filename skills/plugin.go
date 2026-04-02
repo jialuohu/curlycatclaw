@@ -507,7 +507,12 @@ func writeReloadFlag(isolatedHome string) {
 
 // standardPlugins are pre-installed when the isolated home is first created.
 // Claude can install additional plugins at runtime via install_plugin.
-var standardPlugins = []string{"context7", "playwright", "ui-ux-pro-max", "superpowers", "claude-md-management", "hookify", "skill-creator"}
+var standardPlugins = []string{
+	"context7", "playwright", "ui-ux-pro-max", "superpowers",
+	"claude-md-management", "hookify", "skill-creator",
+	"frontend-design", "code-review", "code-simplifier",
+	"security-guidance", "ralph-loop", "serena",
+}
 
 // EnsureDefaultPlugins pre-installs standard plugins on first startup.
 // Skips plugins that are already installed. Non-fatal: logs warnings on failure.

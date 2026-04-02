@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.16.1] - 2026-04-02
+
+Docker and skill infrastructure improvements. Scrapling MCP server and agent skill pre-installed by default for AI-powered web scraping.
+
+### Added
+- **Scrapling MCP server**: pre-installed as default extension, 9 scraping tools available immediately for AI-powered web scraping with server-side extraction (fewer tokens, faster).
+- **Scrapling agent skill**: prompt skill with full framework reference, examples, and MCP server docs, auto-downloaded from GitHub on first startup.
+- **Default extension pre-seeding**: `EnsureDefaults()` in `internal/extension/defaults.go` handles first-run setup for built-in extensions (download skill files, register MCP servers).
+- **GitHub CLI in Docker**: `gh` now available inside the container for authenticated GitHub API access.
+- **Remote skill import hints**: system prompt teaches Claude to install skills from GitHub URLs (sparse checkout for subdirectories) and ClawHub (`npx clawhub@latest`).
+- **Extension skill logging**: all add/remove/load operations now logged at INFO level with name, type, and path.
+
+### Changed
+- **Docker Node.js upgraded**: v18 → v22 (NodeSource) so ClawHub CLI and modern npm packages work.
+- **Standard plugins updated**: added frontend-design, code-review, code-simplifier, security-guidance, ralph-loop, serena. Removed LSP plugins and playground.
+- **docker-compose.yml**: removed redundant `CURLYCATCLAW_CLI_PATH` env override (config file now has correct path).
+
+### Fixed
+- **Claude CLI path in Docker**: NodeSource installs npm globals to `/usr/bin/`, added symlink to `/usr/local/bin/claude` so existing configs work.
+
 ## [0.16.0] - 2026-04-01
 
 Runtime extension registry and plugin system overhaul. Add and remove MCP servers and exec-based skills through Telegram chat, no config edits or restarts needed. Plugins are now unrestricted and pre-installed automatically.
