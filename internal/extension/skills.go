@@ -29,27 +29,44 @@ type MCPAdder interface {
 	RemoveServer(name string) error
 }
 
+// MCPHotReloader handles dynamic MCP extension tool registration without
+// subprocess restart. When non-nil and mcpMgr is nil (MCP subprocess mode),
+// MCP extensions are hot-reloaded instead of requiring a restart.
+type MCPHotReloader interface {
+	// ConnectAndRegister starts an MCP extension, discovers its tools,
+	// and registers them as proxy tools on the running MCP server.
+	// Returns tool descriptions and a closer for the displaced old session
+	// (nil if no previous session existed). The caller should close the
+	// old session after confirming the new one is working.
+	ConnectAndRegister(ctx context.Context, ext *Extension) (toolDescs []string, oldSessionCloser func(), err error)
+	// DisconnectAndUnregister removes proxy tools and closes the MCP
+	// client session for the named extension. No-op if not tracked.
+	DisconnectAndUnregister(name string) error
+}
+
 // InitExtensionSkills creates the built-in skills for runtime extension
 // management: add_extension, remove_extension, list_extensions.
 //
 // mcpMgr may be nil (e.g. when running as an MCP server subprocess).
 // reloadFunc is called after MCP extension mutations to trigger CLI
 // subprocess respawn; it may be nil if no reload is needed.
-func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), credStore *security.CredentialStore) []*skills.Skill {
+// hotReloader, when non-nil, enables MCP extension hot-reload without
+// subprocess restart (MCP server subprocess mode only).
+func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, credStore *security.CredentialStore) []*skills.Skill {
 	ss := []*skills.Skill{
-		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc),
-		removeExtensionSkill(reg, mcpMgr, skillReg, reloadFunc),
+		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader),
+		removeExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader),
 		listExtensionsSkill(reg),
 		loadPromptSkill(reg),
 	}
 	if credStore != nil {
-		ss = append(ss, setExtensionEnvSkill(reg, credStore, reloadFunc))
-		ss = append(ss, unsetExtensionEnvSkill(reg, credStore, reloadFunc))
+		ss = append(ss, setExtensionEnvSkill(reg, credStore, reloadFunc, hotReloader))
+		ss = append(ss, unsetExtensionEnvSkill(reg, credStore, reloadFunc, hotReloader))
 	}
 	return ss
 }
 
-func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func()) *skills.Skill {
+func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader) *skills.Skill {
 	return &skills.Skill{
 		Name:        "add_extension",
 		Description: "Add a runtime extension (MCP server, exec skill, or prompt skill). MCP servers provide tools via the MCP protocol. Exec skills run a command as a subprocess with JSON input/output. Prompt skills are markdown instruction files (SKILL.md) that modify behavior.",
@@ -107,7 +124,7 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 
 			switch params.Type {
 			case TypeMCP:
-				return addMCPExtension(ctx, reg, mcpMgr, reloadFunc, ext)
+				return addMCPExtension(ctx, reg, mcpMgr, reloadFunc, hotReloader, ext)
 			case TypeExec:
 				return addExecExtension(reg, skillReg, ext)
 			case TypePrompt:
@@ -119,7 +136,7 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 	}
 }
 
-func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reloadFunc func(), ext Extension) (string, error) {
+func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reloadFunc func(), hotReloader MCPHotReloader, ext Extension) (string, error) {
 	if mcpMgr != nil {
 		cfg := config.MCPServerConfig{
 			Name:    ext.Name,
@@ -142,13 +159,35 @@ func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reload
 		return "", fmt.Errorf("failed to persist extension: %w", err)
 	}
 
-	if reloadFunc != nil {
-		reloadFunc()
-	}
-
+	// Direct API mode: tools are available immediately via mcpMgr.
 	if mcpMgr != nil {
+		if reloadFunc != nil {
+			reloadFunc()
+		}
 		slog.Info("extension: MCP server added", "name", ext.Name, "command", ext.Command)
 		return fmt.Sprintf("Extension %q added (MCP server). Tools are available immediately.", ext.Name), nil
+	}
+
+	// CLI subprocess mode: try hot-reload first, fall back to subprocess restart.
+	if hotReloader != nil {
+		toolDescs, oldCloser, err := hotReloader.ConnectAndRegister(ctx, &ext)
+		if err == nil {
+			if oldCloser != nil {
+				oldCloser()
+			}
+			slog.Info("extension: MCP server hot-reloaded", "name", ext.Name, "tools", len(toolDescs))
+			msg := fmt.Sprintf("Extension %q added (MCP server). Tools are available immediately", ext.Name)
+			if len(toolDescs) > 0 {
+				msg += ": " + strings.Join(toolDescs, ", ")
+			}
+			return msg + ".", nil
+		}
+		slog.Warn("extension: hot-reload failed, falling back to subprocess restart",
+			"name", ext.Name, "err", err)
+	}
+
+	if reloadFunc != nil {
+		reloadFunc()
 	}
 	slog.Info("extension: MCP server added (CLI mode, pending reload)", "name", ext.Name, "command", ext.Command)
 	return fmt.Sprintf("Extension %q added (MCP server). Tools will be available on the next message.", ext.Name), nil
@@ -184,7 +223,7 @@ func addExecExtension(reg *Registry, skillReg *skills.Registry, ext Extension) (
 	return fmt.Sprintf("Extension %q added (exec skill, registered as %q). Available immediately.", ext.Name, registryName), nil
 }
 
-func removeExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func()) *skills.Skill {
+func removeExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader) *skills.Skill {
 	return &skills.Skill{
 		Name:        "remove_extension",
 		Description: "Remove a runtime extension by name.",
@@ -221,8 +260,18 @@ func removeExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regis
 						slog.Warn("extension: MCP server removal failed (persisted removal succeeded)",
 							"name", params.Name, "err", err)
 					}
-				}
-				if reloadFunc != nil {
+					if reloadFunc != nil {
+						reloadFunc()
+					}
+				} else if hotReloader != nil {
+					if err := hotReloader.DisconnectAndUnregister(params.Name); err != nil {
+						slog.Warn("extension: hot-unload failed, falling back to subprocess restart",
+							"name", params.Name, "err", err)
+						if reloadFunc != nil {
+							reloadFunc()
+						}
+					}
+				} else if reloadFunc != nil {
 					reloadFunc()
 				}
 
@@ -291,7 +340,7 @@ func credKeyName(extName, envKey string) string {
 	return "ext_" + extName + "_" + envKey
 }
 
-func setExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, reloadFunc func()) *skills.Skill {
+func setExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, reloadFunc func(), hotReloader MCPHotReloader) *skills.Skill {
 	return &skills.Skill{
 		Name:        "set_extension_env",
 		Description: "Set an environment variable (e.g. API key) for an MCP extension. The value is encrypted at rest. The extension will be reloaded to pick up the change.",
@@ -304,7 +353,7 @@ func setExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, re
 			},
 			"required": ["name", "key", "value"]
 		}`),
-		Execute: func(_ context.Context, input json.RawMessage) (string, error) {
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				Name  string `json:"name"`
 				Key   string `json:"key"`
@@ -345,17 +394,15 @@ func setExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, re
 				return "", fmt.Errorf("failed to update extension: %w", err)
 			}
 
-			if reloadFunc != nil {
-				reloadFunc()
-			}
+			msg := hotReloadEnvChange(ctx, reg, params.Name, ext.Type, hotReloader, reloadFunc)
 
 			slog.Info("extension: env var set (encrypted)", "extension", params.Name, "key", params.Key)
-			return fmt.Sprintf("Set %s for %s (encrypted). The extension will reload on the next message.", params.Key, params.Name), nil
+			return fmt.Sprintf("Set %s for %s (encrypted). %s", params.Key, params.Name, msg), nil
 		},
 	}
 }
 
-func unsetExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, reloadFunc func()) *skills.Skill {
+func unsetExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, reloadFunc func(), hotReloader MCPHotReloader) *skills.Skill {
 	return &skills.Skill{
 		Name:        "unset_extension_env",
 		Description: "Remove an environment variable from an MCP extension and delete its encrypted credential.",
@@ -367,7 +414,7 @@ func unsetExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, 
 			},
 			"required": ["name", "key"]
 		}`),
-		Execute: func(_ context.Context, input json.RawMessage) (string, error) {
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				Name string `json:"name"`
 				Key  string `json:"key"`
@@ -397,14 +444,44 @@ func unsetExtensionEnvSkill(reg *Registry, credStore *security.CredentialStore, 
 					"extension", params.Name, "key", params.Key, "err", err)
 			}
 
-			if reloadFunc != nil {
-				reloadFunc()
-			}
+			msg := hotReloadEnvChange(ctx, reg, params.Name, ext.Type, hotReloader, reloadFunc)
 
 			slog.Info("extension: env var removed", "extension", params.Name, "key", params.Key)
-			return fmt.Sprintf("Removed %s from %s.", params.Key, params.Name), nil
+			return fmt.Sprintf("Removed %s from %s. %s", params.Key, params.Name, msg), nil
 		},
 	}
+}
+
+// hotReloadEnvChange handles reconnection after an MCP extension's env changes.
+// Uses connect-new-first: connects with new env, then closes old session.
+// Returns a user-facing status message.
+func hotReloadEnvChange(ctx context.Context, reg *Registry, name string, extType Type, hotReloader MCPHotReloader, reloadFunc func()) string {
+	if extType != TypeMCP {
+		return "" // exec extensions pick up env per-invocation, no reload needed
+	}
+
+	if hotReloader != nil {
+		// Connect-new-first: start new session with updated env before closing old.
+		updated := reg.Get(name)
+		if updated != nil {
+			_, oldCloser, err := hotReloader.ConnectAndRegister(ctx, updated)
+			if err == nil {
+				// New session is live and tools are registered (AddTool overwrites by name).
+				// Close the displaced OLD session (returned by ConnectAndRegister).
+				if oldCloser != nil {
+					oldCloser()
+				}
+				return "Extension reloaded immediately."
+			}
+			slog.Warn("extension: hot-reload env change failed, falling back to restart",
+				"name", name, "err", err)
+		}
+	}
+
+	if reloadFunc != nil {
+		reloadFunc()
+	}
+	return "The extension will reload on the next message."
 }
 
 func loadPromptSkill(reg *Registry) *skills.Skill {
