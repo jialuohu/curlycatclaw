@@ -524,7 +524,11 @@ func (ss *streamState) onDelta(delta string) {
 		if ss.flushing {
 			return // another flush is in progress, just accumulate
 		}
+		// Enable HTML for the final edit to this message so it renders
+		// markdown properly instead of showing raw markdown text.
+		ss.htmlMode = true
 		ss.flush()
+		ss.htmlMode = false
 		// Reset for a new message (next flush will create a new one).
 		ss.msgID = 0
 		ss.buf.Reset()
@@ -1326,6 +1330,23 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("Call set_reminder directly without searching for tools first.\n")
 	sb.WriteString("\nIMPORTANT: To add, remove, or list MCP servers and external tools, ALWAYS use the add_extension, remove_extension, and list_extensions tools (via MCP). ")
 	sb.WriteString("NEVER create or edit .mcp.json files manually. The extension system handles persistence and server lifecycle automatically.\n")
+
+	sb.WriteString("\nWhen adding an external tool as an exec extension, the tool MUST speak the curlycatclaw JSON protocol:\n")
+	sb.WriteString("- Input (stdin): {\"input\": <json>, \"context\": {\"user_id\": N, \"chat_id\": N}}\n")
+	sb.WriteString("- Output (stdout): {\"result\": \"string\", \"error\": \"\"}\n")
+	sb.WriteString("If the tool does NOT speak this protocol (e.g., a CLI tool that takes args and prints text), ")
+	sb.WriteString("write a wrapper script to ~/.curlycatclaw/extension-wrappers/<name>.sh first, make it executable, then register the wrapper via add_extension.\n")
+
+	// List available prompt skills.
+	if a.extRegistry != nil {
+		promptSkills := a.extRegistry.ByType(extension.TypePrompt)
+		if len(promptSkills) > 0 {
+			sb.WriteString("\nAvailable prompt skills (use load_prompt_skill to read instructions):\n")
+			for _, ps := range promptSkills {
+				fmt.Fprintf(&sb, "- %s: %s\n", ps.Name, ps.Description)
+			}
+		}
+	}
 
 	// Tier 1: User facts.
 	if a.cfg.Memory.Enabled && a.facts != nil {
