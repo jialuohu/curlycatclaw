@@ -890,6 +890,18 @@ func (a *Actor) handleWithCLI(
 		userJSON = claude.BuildUserMessage(userMsg)
 	}
 
+	// When an active conversation exists, append recent history to the system
+	// prompt. This is only used when GetOrCreate spawns a fresh subprocess
+	// (reused processes ignore SpawnParams). Placing history in the system
+	// prompt rather than the user message ensures Claude treats it as
+	// authoritative context, not user-provided quoted text.
+	if convID != "" {
+		preamble := a.buildHistoryPreamble(convID)
+		if preamble != "" {
+			systemPrompt += "\n\n" + preamble
+		}
+	}
+
 	spawnParams := claude.SpawnParams{
 		SystemPrompt: systemPrompt,
 		MCPConfig:    mcpConfig,
@@ -904,33 +916,9 @@ func (a *Actor) handleWithCLI(
 		spawnParams.HomeDir = a.cfg.Claude.IsolatedHome
 	}
 
-	proc, isNew, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, spawnParams)
+	proc, _, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, spawnParams)
 	if err != nil {
 		return fmt.Errorf("cli get/create: %w", err)
-	}
-
-	// When the subprocess was freshly spawned (e.g. after plugin reload) and
-	// an active conversation exists, inject recent conversation history so
-	// Claude has context from previous turns. Without this, the new subprocess
-	// starts with zero conversation memory.
-	if isNew && convID != "" {
-		preamble := a.buildHistoryPreamble(convID)
-		if preamble != "" {
-			userMsg = preamble + "\n" + userMsg
-			// Rebuild the JSON message with the preamble included.
-			if len(photos) > 0 {
-				var images []claude.ImageBlock
-				for _, photo := range photos {
-					images = append(images, claude.ImageBlock{
-						MediaType: photo.MimeType,
-						Data:      base64.StdEncoding.EncodeToString(photo.Data),
-					})
-				}
-				userJSON = claude.BuildImageMessage(userMsg, images)
-			} else {
-				userJSON = claude.BuildUserMessage(userMsg)
-			}
-		}
 	}
 
 	events, err := proc.Send(ctx, userJSON, func(delta string) {
@@ -1248,8 +1236,7 @@ func (a *Actor) buildHistoryPreamble(convID string) string {
 		}
 		fmt.Fprintf(&sb, "%s: %s\n", role, content)
 	}
-	sb.WriteString("</conversation_history>\n")
-	sb.WriteString("The user's current message follows. Respond naturally, referencing the conversation history above as your own memory.\n")
+	sb.WriteString("</conversation_history>")
 
 	slog.Info("cli: injected conversation history into fresh subprocess",
 		"conv_id", convID, "messages", len(msgs))
