@@ -904,9 +904,33 @@ func (a *Actor) handleWithCLI(
 		spawnParams.HomeDir = a.cfg.Claude.IsolatedHome
 	}
 
-	proc, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, spawnParams)
+	proc, isNew, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, spawnParams)
 	if err != nil {
 		return fmt.Errorf("cli get/create: %w", err)
+	}
+
+	// When the subprocess was freshly spawned (e.g. after plugin reload) and
+	// an active conversation exists, inject recent conversation history so
+	// Claude has context from previous turns. Without this, the new subprocess
+	// starts with zero conversation memory.
+	if isNew && convID != "" {
+		preamble := a.buildHistoryPreamble(convID)
+		if preamble != "" {
+			userMsg = preamble + "\n" + userMsg
+			// Rebuild the JSON message with the preamble included.
+			if len(photos) > 0 {
+				var images []claude.ImageBlock
+				for _, photo := range photos {
+					images = append(images, claude.ImageBlock{
+						MediaType: photo.MimeType,
+						Data:      base64.StdEncoding.EncodeToString(photo.Data),
+					})
+				}
+				userJSON = claude.BuildImageMessage(userMsg, images)
+			} else {
+				userJSON = claude.BuildUserMessage(userMsg)
+			}
+		}
 	}
 
 	events, err := proc.Send(ctx, userJSON, func(delta string) {
@@ -1167,6 +1191,65 @@ func (a *Actor) getActiveProject(userID, chatID int64) *config.ProjectConfig {
 		}
 	}
 	return nil
+}
+
+// historyPreambleMaxTurns is the number of recent conversation turns to
+// include when injecting history into a freshly spawned subprocess.
+// Kept small since this is prepended to a single user message.
+const historyPreambleMaxTurns = 10
+
+// historyPreambleMaxRunesPerMsg caps individual message content in the
+// preamble to prevent it from getting too large.
+const historyPreambleMaxRunesPerMsg = 2000
+
+// buildHistoryPreamble loads recent conversation turns from SQLite and
+// formats them as a text transcript for injection into a freshly spawned
+// CLI subprocess. Returns empty string if no history is available.
+func (a *Actor) buildHistoryPreamble(convID string) string {
+	msgs, err := a.store.GetConversationMessages(convID)
+	if err != nil || len(msgs) == 0 {
+		return ""
+	}
+
+	// Take the last N messages (not turns, for simplicity). This covers
+	// the recent conversation flow without being too expensive.
+	maxMsgs := historyPreambleMaxTurns * 2 // ~2 messages per turn (user + assistant)
+	if len(msgs) > maxMsgs {
+		msgs = msgs[len(msgs)-maxMsgs:]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("[Conversation history resumed after subprocess restart]\n")
+	for _, msg := range msgs {
+		if msg.Role == "tool_result" {
+			continue // skip tool results to keep preamble compact
+		}
+		var content string
+		if err := json.Unmarshal(msg.Content, &content); err != nil {
+			// Content might be a complex JSON block (image, tool_use).
+			// Use a brief placeholder.
+			content = "[non-text content]"
+		}
+		if content == "" {
+			continue
+		}
+		// Truncate long messages.
+		runes := []rune(content)
+		if len(runes) > historyPreambleMaxRunesPerMsg {
+			content = string(runes[:historyPreambleMaxRunesPerMsg]) + "..."
+		}
+
+		role := "User"
+		if msg.Role == "assistant" {
+			role = "Assistant"
+		}
+		fmt.Fprintf(&sb, "%s: %s\n", role, content)
+	}
+	sb.WriteString("[End of history. The user's current message follows.]\n")
+
+	slog.Info("cli: injected conversation history into fresh subprocess",
+		"conv_id", convID, "messages", len(msgs))
+	return sb.String()
 }
 
 // buildMCPConfig generates the --mcp-config JSON string for the CLI subprocess.

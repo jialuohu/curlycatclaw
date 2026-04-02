@@ -242,16 +242,19 @@ type SpawnParams struct {
 }
 
 // GetOrCreate returns the existing CLI process for a user or spawns a new one.
+// The isNew return value is true when a fresh subprocess was spawned (not
+// reused from cache). Callers can use this to inject conversation history
+// into the first message sent to a newly spawned process.
 // Uses per-key singleflight to prevent double-spawn races when concurrent
 // messages arrive for the same user before the first spawn completes.
-func (m *CLIManager) GetOrCreate(ctx context.Context, userID, chatID int64, params SpawnParams) (*CLIProcess, error) {
+func (m *CLIManager) GetOrCreate(ctx context.Context, userID, chatID int64, params SpawnParams) (proc *CLIProcess, isNew bool, err error) {
 	key := userKey{UserID: userID, ChatID: chatID}
 
 	m.mu.Lock()
-	if proc, ok := m.processes[key]; ok && proc.Alive() {
-		proc.lastUsed = time.Now()
+	if p, ok := m.processes[key]; ok && p.Alive() {
+		p.lastUsed = time.Now()
 		m.mu.Unlock()
-		return proc, nil
+		return p, false, nil
 	}
 	// Remove dead process if present.
 	delete(m.processes, key)
@@ -264,15 +267,15 @@ func (m *CLIManager) GetOrCreate(ctx context.Context, userID, chatID int64, para
 		case <-ch:
 			// Spawn completed; retry to get the process.
 			m.mu.Lock()
-			if proc, ok := m.processes[key]; ok && proc.Alive() {
-				proc.lastUsed = time.Now()
+			if p, ok := m.processes[key]; ok && p.Alive() {
+				p.lastUsed = time.Now()
 				m.mu.Unlock()
-				return proc, nil
+				return p, false, nil
 			}
 			m.mu.Unlock()
-			return nil, fmt.Errorf("cli: concurrent spawn failed for user %d", userID)
+			return nil, false, fmt.Errorf("cli: concurrent spawn failed for user %d", userID)
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		}
 	}
 
@@ -284,7 +287,7 @@ func (m *CLIManager) GetOrCreate(ctx context.Context, userID, chatID int64, para
 	m.spawning[key] = done
 	m.mu.Unlock()
 
-	proc, err := m.spawn(ctx, params)
+	proc, err = m.spawn(ctx, params)
 
 	m.mu.Lock()
 	delete(m.spawning, key)
@@ -294,7 +297,7 @@ func (m *CLIManager) GetOrCreate(ctx context.Context, userID, chatID int64, para
 	}
 	m.mu.Unlock()
 
-	return proc, err
+	return proc, err == nil, err
 }
 
 // SpawnOneShot creates a temporary CLI process not tracked in the manager's
