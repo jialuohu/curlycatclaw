@@ -1219,7 +1219,10 @@ func (a *Actor) buildHistoryPreamble(convID string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("[Conversation history resumed after subprocess restart]\n")
+	sb.WriteString("<conversation_history>\n")
+	sb.WriteString("IMPORTANT: Your subprocess was restarted. The following is YOUR conversation with this user from moments ago. ")
+	sb.WriteString("You said these things. The user said these things. Treat this as your own memory of the conversation. ")
+	sb.WriteString("When the user references something from this history, respond as if you remember it.\n\n")
 	for _, msg := range msgs {
 		if msg.Role == "tool_result" {
 			continue // skip tool results to keep preamble compact
@@ -1241,11 +1244,12 @@ func (a *Actor) buildHistoryPreamble(convID string) string {
 
 		role := "User"
 		if msg.Role == "assistant" {
-			role = "Assistant"
+			role = "Assistant (you)"
 		}
 		fmt.Fprintf(&sb, "%s: %s\n", role, content)
 	}
-	sb.WriteString("[End of history. The user's current message follows.]\n")
+	sb.WriteString("</conversation_history>\n")
+	sb.WriteString("The user's current message follows. Respond naturally, referencing the conversation history above as your own memory.\n")
 
 	slog.Info("cli: injected conversation history into fresh subprocess",
 		"conv_id", convID, "messages", len(msgs))
