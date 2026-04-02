@@ -9,10 +9,12 @@ MCP extension hot-reload. Installing or removing MCP extensions no longer restar
 - **Connect-new-first env updates**: `set_extension_env` and `unset_extension_env` connect the new session before closing the old one, ensuring zero tool downtime during reconnection.
 - **Stale tool cleanup**: when an extension's tool set changes across reconnections (e.g., version upgrade removes a tool), orphaned proxy tools are automatically unregistered.
 - **MCPHotReloader interface**: `internal/extension/skills.go` defines a new interface for hot-reload operations, keeping the extension skill layer decoupled from MCP transport details.
+- **Conversation history injection**: when a CLI subprocess restarts (plugin install, idle timeout, crash), recent conversation turns from SQLite are prepended to the first user message so Claude remembers what you were talking about. Capped at 10 turns / 2000 runes per message.
 
 ### Changed
 - MCP server creation moved earlier in `runMCPServer()` to enable the hot-reloader to reference it during skill initialization.
 - Startup MCP extension loading unified through the hot-reloader (same code path as runtime add_extension).
+- `CLIManager.GetOrCreate()` now returns `isNew bool` so callers can detect fresh subprocess spawns and inject conversation history.
 
 ## [0.17.0] - 2026-04-02
 
