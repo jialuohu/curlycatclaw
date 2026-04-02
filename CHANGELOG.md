@@ -11,6 +11,8 @@ Runtime extension registry and plugin system overhaul. Add and remove MCP server
 - **Two built-in marketplaces**: `anthropics/claude-plugins-official` and `nextlevelbuilder/ui-ux-pro-max-skill` are bootstrapped automatically and cannot be removed.
 - **Env var filtering**: MCP extension environment variables are filtered to block `LD_PRELOAD`/`DYLD_*` injection vectors.
 - **Extension system prompt**: Claude is directed to use `add_extension`/`remove_extension` instead of manually editing `.mcp.json` files.
+- **Prompt-based skills**: new `type=prompt` extension for markdown instruction files (SKILL.md). `load_prompt_skill` skill reads instructions on demand. System prompt lists available prompt skills for discovery.
+- **Smart CLI tool import**: system prompt teaches Claude the exec JSON protocol and wrapper generation workflow. Non-conforming CLI tools get auto-wrapped.
 
 ### Changed
 - **Plugin allowlist removed**: any plugin can now be installed via chat. The `allowed_plugins` config field is gone, replaced by hardcoded standard plugins that auto-install on first startup.
@@ -19,6 +21,7 @@ Runtime extension registry and plugin system overhaul. Add and remove MCP server
 - **Extension file permissions**: `extensions.json` written with 0600 (not 0644) since it may contain API keys.
 - **Extension removal ordering**: persistence is updated before runtime state, preventing inconsistency if disk write fails.
 - **Extension name validation**: 128-character limit and `json.Valid()` check on input schemas.
+- **Streaming message split rendering**: long messages that overflow Telegram's 4096-char limit now get proper HTML conversion before being sealed, instead of showing raw markdown.
 
 ## [0.15.0] - 2026-04-01
 
