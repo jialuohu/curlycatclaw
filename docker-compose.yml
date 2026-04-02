@@ -7,7 +7,6 @@ services:
     environment:
       - CURLYCATCLAW_DB_PATH=/data/curlycatclaw.db
       - CURLYCATCLAW_QDRANT_ADDR=qdrant:6334
-      - CURLYCATCLAW_CLI_PATH=/usr/local/bin/claude
       - CURLYCATCLAW_ISOLATED_HOME=/data/claude-home
       - HOME=/data
     depends_on:
