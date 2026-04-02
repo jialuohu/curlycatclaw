@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"path/filepath"
 	"time"
@@ -170,6 +171,8 @@ func runMCPServer() error {
 	}
 
 	// Runtime extension registry (exec extensions + management skills).
+	var server *mcp.Server
+	var hotReloader *mcpHotReloader
 	extRegistryPath := filepath.Join(filepath.Dir(dbPath), "extensions.json")
 	extReg, err := extension.Load(extRegistryPath)
 	if err != nil {
@@ -197,8 +200,19 @@ func runMCPServer() error {
 				os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
 			}
 		}
+
+		// Create MCP server early so the hot-reloader can reference it.
+		// Skills are registered on the server after all skill init is done.
+		server = mcp.NewServer(
+			&mcp.Implementation{Name: "curlycatclaw-skills", Version: version},
+			nil,
+		)
+
+		// Create hot-reloader for dynamic MCP extension tool management.
+		hotReloader = newMCPHotReloader(server, userID, chatID, credStore)
+
 		// mcpMgr is nil in MCP server subprocess mode.
-		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, credStore) {
+		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore) {
 			reg.Register(s)
 		}
 	}
@@ -216,55 +230,33 @@ func runMCPServer() error {
 		}
 	}
 
-	// Create MCP server and register all skills as tools.
-	server := mcp.NewServer(
-		&mcp.Implementation{Name: "curlycatclaw-skills", Version: version},
-		nil,
-	)
+	// Create MCP server if not already created (no extension registry case).
+	if server == nil {
+		server = mcp.NewServer(
+			&mcp.Implementation{Name: "curlycatclaw-skills", Version: version},
+			nil,
+		)
+	}
 
 	for _, skill := range reg.All() {
 		registerSkillAsTool(server, skill, userID, chatID)
 	}
 
-	// Proxy runtime MCP extension tools. Instead of relying on the CLI
-	// subprocess to connect to MCP extensions directly (which fails due to
-	// a CLI bug), we connect as an MCP client from this subprocess and
-	// register the discovered tools as proxy tools on the server.
+	// Load existing MCP extensions via the hot-reloader (same path used
+	// at runtime when add_extension is called). This unifies startup and
+	// runtime extension loading.
 	var proxyToolCount int
-	if extReg != nil {
+	if hotReloader != nil && extReg != nil {
+		defer hotReloader.CloseAll()
 		for _, ext := range extReg.ByType(extension.TypeMCP) {
-			// Resolve encrypted:ref: env vars before spawning the extension.
-			resolvedEnv := ext.Env
-			if credStore != nil && len(ext.Env) > 0 {
-				var resolveErr error
-				resolvedEnv, resolveErr = credStore.ResolveEnv(ext.Env)
-				if resolveErr != nil {
-					slog.Warn("mcp-server: failed to resolve extension env vars",
-						"name", ext.Name, "err", resolveErr)
-					continue
-				}
-			}
-			session, tools, err := connectMCPExtension(context.Background(), ext, resolvedEnv)
-			if err != nil {
+			if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
 				slog.Warn("mcp-server: failed to connect MCP extension",
 					"name", ext.Name, "err", err)
 				continue
 			}
-			if len(tools) == 0 {
-				slog.Warn("mcp-server: MCP extension has no tools, skipping",
-					"name", ext.Name)
-				session.Close()
-				continue
-			}
-			defer session.Close()
-
-			for _, tool := range tools {
-				registerProxyTool(server, ext.Name+mcpProxySep+tool.Name,
-					tool, session, userID, chatID)
-				proxyToolCount++
-			}
+			proxyToolCount += len(hotReloader.toolsFor(ext.Name))
 			slog.Info("mcp-server: proxying MCP extension",
-				"name", ext.Name, "tools", len(tools))
+				"name", ext.Name, "tools", len(hotReloader.toolsFor(ext.Name)))
 		}
 	}
 
@@ -289,6 +281,137 @@ func errResult(msg string) *mcp.CallToolResult {
 // skillOutput is the structured output type for MCP tool results.
 type skillOutput struct {
 	Text string `json:"text"`
+}
+
+// mcpHotReloader implements extension.MCPHotReloader for dynamic MCP
+// extension tool registration without subprocess restart.
+type mcpHotReloader struct {
+	server    *mcp.Server
+	userID    int64
+	chatID    int64
+	credStore *security.CredentialStore
+
+	mu       sync.Mutex
+	sessions map[string]*mcp.ClientSession
+	tools    map[string][]string // ext name → namespaced tool names
+}
+
+func newMCPHotReloader(server *mcp.Server, userID, chatID int64, credStore *security.CredentialStore) *mcpHotReloader {
+	return &mcpHotReloader{
+		server:    server,
+		userID:    userID,
+		chatID:    chatID,
+		credStore: credStore,
+		sessions:  make(map[string]*mcp.ClientSession),
+		tools:     make(map[string][]string),
+	}
+}
+
+func (r *mcpHotReloader) ConnectAndRegister(ctx context.Context, ext *extension.Extension) ([]string, func(), error) {
+	resolvedEnv := ext.Env
+	if r.credStore != nil && len(ext.Env) > 0 {
+		var err error
+		resolvedEnv, err = r.credStore.ResolveEnv(ext.Env)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve env: %w", err)
+		}
+	}
+
+	session, tools, err := connectMCPExtension(ctx, ext, resolvedEnv)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(tools) == 0 {
+		session.Close()
+		return nil, nil, fmt.Errorf("MCP extension %q has no tools", ext.Name)
+	}
+
+	var toolNames []string
+	var toolDescs []string
+	for _, tool := range tools {
+		namespacedName := ext.Name + mcpProxySep + tool.Name
+		registerProxyTool(r.server, namespacedName, tool, session, r.userID, r.chatID)
+		toolNames = append(toolNames, namespacedName)
+		desc := tool.Name
+		if tool.Description != "" {
+			desc += " — " + tool.Description
+		}
+		toolDescs = append(toolDescs, desc)
+	}
+
+	// Swap session and tools, capturing the old session for the caller to close.
+	// Remove any stale tools that existed in the old set but not the new one
+	// (the extension's tool set may change across env updates or upgrades).
+	r.mu.Lock()
+	oldSession := r.sessions[ext.Name]
+	oldToolNames := r.tools[ext.Name]
+	r.sessions[ext.Name] = session
+	r.tools[ext.Name] = toolNames
+	r.mu.Unlock()
+
+	// Diff old vs new tool names; remove any that disappeared.
+	if len(oldToolNames) > 0 {
+		newSet := make(map[string]struct{}, len(toolNames))
+		for _, n := range toolNames {
+			newSet[n] = struct{}{}
+		}
+		var stale []string
+		for _, n := range oldToolNames {
+			if _, ok := newSet[n]; !ok {
+				stale = append(stale, n)
+			}
+		}
+		if len(stale) > 0 {
+			r.server.RemoveTools(stale...)
+			slog.Info("mcp-server: removed stale proxy tools", "name", ext.Name, "removed", stale)
+		}
+	}
+
+	var oldCloser func()
+	if oldSession != nil {
+		oldCloser = func() { oldSession.Close() }
+	}
+
+	slog.Info("mcp-server: hot-reloaded MCP extension", "name", ext.Name, "tools", len(tools))
+	return toolDescs, oldCloser, nil
+}
+
+func (r *mcpHotReloader) DisconnectAndUnregister(name string) error {
+	r.mu.Lock()
+	session := r.sessions[name]
+	toolNames := r.tools[name]
+	delete(r.sessions, name)
+	delete(r.tools, name)
+	r.mu.Unlock()
+
+	if len(toolNames) > 0 {
+		r.server.RemoveTools(toolNames...)
+	}
+	if session != nil {
+		session.Close()
+	}
+
+	slog.Info("mcp-server: hot-unloaded MCP extension", "name", name)
+	return nil
+}
+
+// CloseAll closes all tracked MCP extension sessions. Called on shutdown.
+func (r *mcpHotReloader) CloseAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, session := range r.sessions {
+		session.Close()
+		delete(r.sessions, name)
+		delete(r.tools, name)
+	}
+}
+
+// toolsFor returns a copy of the tracked tool names for an extension (for logging).
+func (r *mcpHotReloader) toolsFor(name string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.tools[name]...)
 }
 
 // connectMCPExtension starts an MCP client connection to a runtime MCP

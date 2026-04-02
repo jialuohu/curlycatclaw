@@ -6,6 +6,6 @@
 
 **Why:** `buildMCPConfig` reads `installed_plugins.json` + N `.mcp.json` files from disk on every incoming message. For existing alive subprocesses, the result is discarded by `GetOrCreate`. Currently < 1ms overhead with typical plugin counts, but wasteful.
 
-**Context:** `handleWithCLI` (actor.go:846) always calls `buildMCPConfig`, but `GetOrCreate` (subprocess.go:234) only uses `params` when spawning. Could either: (a) move the call inside `GetOrCreate` when spawn is needed, or (b) cache the result and invalidate on reload signal.
+**Context:** `handleWithCLI` (actor.go) always calls `buildMCPConfig`, but `GetOrCreate` (subprocess.go) only uses `params` when spawning. Now that `GetOrCreate` returns `isNew`, option (a) is easier: only build MCP config when `isNew` is true, or move the call inside `GetOrCreate` when spawn is needed. Option (b) cache + invalidate on reload signal is also viable.
 
-**Depends on:** Plugin MCP discovery fix (this PR).
+**Depends on:** MCP extension proxy (v0.17.0, done). Now unblocked.

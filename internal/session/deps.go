@@ -65,7 +65,7 @@ type TelegramTransport interface {
 
 // CLIClient abstracts the CLI subprocess manager for testing.
 type CLIClient interface {
-	GetOrCreate(ctx context.Context, userID, chatID int64, params claude.SpawnParams) (*claude.CLIProcess, error)
+	GetOrCreate(ctx context.Context, userID, chatID int64, params claude.SpawnParams) (proc *claude.CLIProcess, isNew bool, err error)
 	Remove(userID, chatID int64)
 	Cleanup(maxIdle time.Duration)
 	Shutdown(timeout time.Duration)

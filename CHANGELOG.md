@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.18.0] - 2026-04-02
+
+MCP extension hot-reload. Installing or removing MCP extensions no longer restarts the CLI subprocess, preserving conversation context. Tools appear instantly via MCP protocol notifications.
+
+### Added
+- **MCP extension hot-reload**: install or remove MCP extensions without losing your conversation. Tools appear instantly, no subprocess restart needed. Falls back to restart on failure.
+- **Zero-downtime env updates**: changing an extension's API key reconnects seamlessly (new session connects before old one closes, so tools never disappear).
+- **Stale tool cleanup**: if an extension's tool set changes across reconnections (e.g., version upgrade removes a tool), orphaned tools are automatically unregistered.
+- **Conversation history injection**: when the CLI subprocess does restart (plugin install, idle timeout, crash), Claude now remembers your recent conversation from SQLite. No more "I don't have context from a previous chat."
+
+### For contributors
+- MCP server creation moved earlier in `runMCPServer()` for hot-reloader initialization ordering.
+- Startup MCP extension loading unified through the hot-reloader (same code path as runtime `add_extension`).
+- `CLIManager.GetOrCreate()` now returns `isNew bool` for fresh spawn detection.
+
 ## [0.17.0] - 2026-04-02
 
 MCP extension proxy and encrypted API key management. Runtime MCP extensions now work reliably in CLI mode, and users can configure API keys via Telegram chat with encryption at rest.

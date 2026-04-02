@@ -890,6 +890,18 @@ func (a *Actor) handleWithCLI(
 		userJSON = claude.BuildUserMessage(userMsg)
 	}
 
+	// When an active conversation exists, append recent history to the system
+	// prompt. This is only used when GetOrCreate spawns a fresh subprocess
+	// (reused processes ignore SpawnParams). Placing history in the system
+	// prompt rather than the user message ensures Claude treats it as
+	// authoritative context, not user-provided quoted text.
+	if convID != "" {
+		preamble := a.buildHistoryPreamble(convID)
+		if preamble != "" {
+			systemPrompt += "\n\n" + preamble
+		}
+	}
+
 	spawnParams := claude.SpawnParams{
 		SystemPrompt: systemPrompt,
 		MCPConfig:    mcpConfig,
@@ -904,7 +916,7 @@ func (a *Actor) handleWithCLI(
 		spawnParams.HomeDir = a.cfg.Claude.IsolatedHome
 	}
 
-	proc, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, spawnParams)
+	proc, _, err := a.cliMgr.GetOrCreate(ctx, userID, chatID, spawnParams)
 	if err != nil {
 		return fmt.Errorf("cli get/create: %w", err)
 	}
@@ -1169,6 +1181,68 @@ func (a *Actor) getActiveProject(userID, chatID int64) *config.ProjectConfig {
 	return nil
 }
 
+// historyPreambleMaxTurns is the number of recent conversation turns to
+// include when injecting history into a freshly spawned subprocess.
+// Kept small since this is prepended to a single user message.
+const historyPreambleMaxTurns = 10
+
+// historyPreambleMaxRunesPerMsg caps individual message content in the
+// preamble to prevent it from getting too large.
+const historyPreambleMaxRunesPerMsg = 2000
+
+// buildHistoryPreamble loads recent conversation turns from SQLite and
+// formats them as a text transcript for injection into a freshly spawned
+// CLI subprocess. Returns empty string if no history is available.
+func (a *Actor) buildHistoryPreamble(convID string) string {
+	msgs, err := a.store.GetConversationMessages(convID)
+	if err != nil || len(msgs) == 0 {
+		return ""
+	}
+
+	// Take the last N messages (not turns, for simplicity). This covers
+	// the recent conversation flow without being too expensive.
+	maxMsgs := historyPreambleMaxTurns * 2 // ~2 messages per turn (user + assistant)
+	if len(msgs) > maxMsgs {
+		msgs = msgs[len(msgs)-maxMsgs:]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<conversation_history>\n")
+	sb.WriteString("IMPORTANT: Your subprocess was restarted. The following is YOUR conversation with this user from moments ago. ")
+	sb.WriteString("You said these things. The user said these things. Treat this as your own memory of the conversation. ")
+	sb.WriteString("When the user references something from this history, respond as if you remember it.\n\n")
+	for _, msg := range msgs {
+		if msg.Role == "tool_result" {
+			continue // skip tool results to keep preamble compact
+		}
+		var content string
+		if err := json.Unmarshal(msg.Content, &content); err != nil {
+			// Content might be a complex JSON block (image, tool_use).
+			// Use a brief placeholder.
+			content = "[non-text content]"
+		}
+		if content == "" {
+			continue
+		}
+		// Truncate long messages.
+		runes := []rune(content)
+		if len(runes) > historyPreambleMaxRunesPerMsg {
+			content = string(runes[:historyPreambleMaxRunesPerMsg]) + "..."
+		}
+
+		role := "User"
+		if msg.Role == "assistant" {
+			role = "Assistant (you)"
+		}
+		fmt.Fprintf(&sb, "%s: %s\n", role, content)
+	}
+	sb.WriteString("</conversation_history>")
+
+	slog.Info("cli: injected conversation history into fresh subprocess",
+		"conv_id", convID, "messages", len(msgs))
+	return sb.String()
+}
+
 // buildMCPConfig generates the --mcp-config JSON string for the CLI subprocess.
 // It includes the curlycatclaw skills MCP server with user-scoped env vars,
 // plus any external MCP servers from the config.
@@ -1308,6 +1382,8 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("Call set_reminder directly without searching for tools first.\n")
 	sb.WriteString("\nIMPORTANT: To add, remove, or list MCP servers and external tools, ALWAYS use the add_extension, remove_extension, and list_extensions tools (via MCP). ")
 	sb.WriteString("NEVER create or edit .mcp.json files manually. The extension system handles persistence and server lifecycle automatically.\n")
+	sb.WriteString("\nIMPORTANT: When the user asks what plugins, extensions, or tools are installed, you MUST call list_plugins and list_extensions BEFORE answering. ")
+	sb.WriteString("NEVER answer from memory, conversation history, or tool context. The list can change at any time. Always fetch live data. This is not optional.\n")
 
 	sb.WriteString("\nWhen adding an external tool as an exec extension, the tool MUST speak the curlycatclaw JSON protocol:\n")
 	sb.WriteString("- Input (stdin): {\"input\": <json>, \"context\": {\"user_id\": N, \"chat_id\": N}}\n")
