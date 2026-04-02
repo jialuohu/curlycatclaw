@@ -49,8 +49,9 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - **Health endpoint** — `GET /health` on localhost for Docker/monitoring liveness checks
 - **Supervision** — automatic restart with exponential backoff, graceful 30s drain on shutdown
+- **Cron tasks** — scheduled prompts run through Claude with full tool access, ephemeral context, 5-minute timeout
 - **Configurable logging** — level, format (text/json), file output with lumberjack rotation
-- **Docker ready** — docker-compose with Qdrant included, one command to run
+- **Docker ready** — docker-compose with Qdrant and optional env file for master key, one command to run
 
 ### Security
 
@@ -153,7 +154,7 @@ For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex cha
 │       │               │    OR CLI subprocess (Max)    │
 │       │               │               │               │
 │       │               ├──► Tools      │               │
-│       │               │    Skills / MCP / Wasm        │
+│       │               │    Skills / MCP / Wasm / Ext  │
 │       │               │               │               │
 │       │               └──► Memory ◄───┘               │
 │       │                    SQLite / Budget / Vector   │
@@ -222,7 +223,7 @@ Conversation Archival (>4h idle, both API and CLI modes):
 
 ### Tool Execution
 
-Three tool sources unified under one routing layer:
+Four tool sources unified under one routing layer:
 
 ```
 Claude tool_use ──► skills.Registry.Get(name)
@@ -232,21 +233,24 @@ Claude tool_use ──► skills.Registry.Get(name)
 ┌──────────────────┬───────────────────┬──────────────────────┐
 │  Built-in Skills │  MCP Servers      │  Wasm Plugins        │
 ├──────────────────┼───────────────────┼──────────────────────┤
-│  web_search      │  Namespaced:      │  Capability-gated:   │
+│  web_search      │  Config servers:  │  Capability-gated:   │
 │  save_note       │  server__tool     │  ├ http (SSRF block) │
 │  set_reminder    │                   │  ├ db_read (enforced │
-│  remember_fact   │  Env filtered     │  │  :user_id scoping,│
-│  semantic_search │  via allowlist    │  │  UNION blocked)   │
+│  remember_fact   │  Runtime exts:    │  │  :user_id scoping,│
+│  semantic_search │  ext__tool (proxy)│  │  UNION blocked)   │
 │  list_summaries  │                   │                      │
-│  delete_summary  │                   │                      │
-│                  │                   │  └ send_message      │
-│  Deps: FactStore │  _user_context    │                      │
-│  DB, VectorStore │  injected per call│ Hot-reload (fsnotify)│
+│  delete_summary  │  Hot-reload: tools│  └ send_message      │
+│  set_extension_* │  added/removed at │                      │
+│                  │  runtime via MCP  │ Hot-reload (fsnotify)│
+│  Deps: FactStore │  notifications    │                      │
+│  DB, VectorStore │                   │                      │
 └──────────────────┴───────────────────┴──────────────────────┘
                         │
                         ▼
                Tool result → Claude (next loop round)
 ```
+
+In CLI subprocess mode, runtime MCP extensions are proxied through the curlycatclaw-skills MCP server. When you add/remove extensions, tools are registered dynamically via `Server.AddTool()`/`Server.RemoveTools()` without restarting the subprocess. This preserves your conversation context. For plugin installs (which do require a restart), recent conversation history is injected into the new subprocess's system prompt from SQLite.
 
 ### Vector Search
 
@@ -303,7 +307,13 @@ Skills are registered alongside MCP tools — Claude sees them all and picks the
 ## Testing
 
 ```bash
-go test ./... -count=1 -race
+go test ./... -count=1
+```
+
+Before pushing, also run lint:
+
+```bash
+golangci-lint run
 ```
 
 ## License

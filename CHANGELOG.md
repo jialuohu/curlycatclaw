@@ -5,16 +5,15 @@
 MCP extension hot-reload. Installing or removing MCP extensions no longer restarts the CLI subprocess, preserving conversation context. Tools appear instantly via MCP protocol notifications.
 
 ### Added
-- **MCP extension hot-reload**: when adding/removing MCP extensions in CLI mode, proxy tools are registered/unregistered dynamically on the running MCP server using `Server.AddTool()`/`Server.RemoveTools()`. The mcp-go library auto-sends `notifications/tools/list_changed` to the Claude CLI, which discovers new tools without subprocess restart. Falls back to the existing reload-flag mechanism on failure.
-- **Connect-new-first env updates**: `set_extension_env` and `unset_extension_env` connect the new session before closing the old one, ensuring zero tool downtime during reconnection.
-- **Stale tool cleanup**: when an extension's tool set changes across reconnections (e.g., version upgrade removes a tool), orphaned proxy tools are automatically unregistered.
-- **MCPHotReloader interface**: `internal/extension/skills.go` defines a new interface for hot-reload operations, keeping the extension skill layer decoupled from MCP transport details.
-- **Conversation history injection**: when a CLI subprocess restarts (plugin install, idle timeout, crash), recent conversation turns from SQLite are prepended to the first user message so Claude remembers what you were talking about. Capped at 10 turns / 2000 runes per message.
+- **MCP extension hot-reload**: install or remove MCP extensions without losing your conversation. Tools appear instantly, no subprocess restart needed. Falls back to restart on failure.
+- **Zero-downtime env updates**: changing an extension's API key reconnects seamlessly (new session connects before old one closes, so tools never disappear).
+- **Stale tool cleanup**: if an extension's tool set changes across reconnections (e.g., version upgrade removes a tool), orphaned tools are automatically unregistered.
+- **Conversation history injection**: when the CLI subprocess does restart (plugin install, idle timeout, crash), Claude now remembers your recent conversation from SQLite. No more "I don't have context from a previous chat."
 
-### Changed
-- MCP server creation moved earlier in `runMCPServer()` to enable the hot-reloader to reference it during skill initialization.
-- Startup MCP extension loading unified through the hot-reloader (same code path as runtime add_extension).
-- `CLIManager.GetOrCreate()` now returns `isNew bool` so callers can detect fresh subprocess spawns and inject conversation history.
+### For contributors
+- MCP server creation moved earlier in `runMCPServer()` for hot-reloader initialization ordering.
+- Startup MCP extension loading unified through the hot-reloader (same code path as runtime `add_extension`).
+- `CLIManager.GetOrCreate()` now returns `isNew bool` for fresh spawn detection.
 
 ## [0.17.0] - 2026-04-02
 
