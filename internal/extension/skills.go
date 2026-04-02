@@ -130,8 +130,10 @@ func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reload
 	}
 
 	if mcpMgr != nil {
+		slog.Info("extension: MCP server added", "name", ext.Name, "command", ext.Command)
 		return fmt.Sprintf("Extension %q added (MCP server). Tools are available immediately.", ext.Name), nil
 	}
+	slog.Info("extension: MCP server added (CLI mode, pending reload)", "name", ext.Name, "command", ext.Command)
 	return fmt.Sprintf("Extension %q added (MCP server). Tools will be available on the next message.", ext.Name), nil
 }
 
@@ -161,6 +163,7 @@ func addExecExtension(reg *Registry, skillReg *skills.Registry, ext Extension) (
 		return "", fmt.Errorf("failed to persist extension: %w", err)
 	}
 
+	slog.Info("extension: exec skill added", "name", ext.Name, "registry_name", registryName, "command", ext.Command)
 	return fmt.Sprintf("Extension %q added (exec skill, registered as %q). Available immediately.", ext.Name, registryName), nil
 }
 
@@ -210,6 +213,7 @@ func removeExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regis
 				skillReg.Unregister(ExecSkillPrefix + params.Name)
 			}
 
+			slog.Info("extension: removed", "name", params.Name, "type", ext.Type)
 			return fmt.Sprintf("Extension %q removed.", params.Name), nil
 		},
 	}
@@ -249,6 +253,7 @@ func addPromptExtension(reg *Registry, ext Extension) (string, error) {
 	if err := reg.Add(ext); err != nil {
 		return "", fmt.Errorf("failed to persist extension: %w", err)
 	}
+	slog.Info("extension: prompt skill added", "name", ext.Name, "path", ext.Command)
 	return fmt.Sprintf("Prompt skill %q added. Claude will see it in the available skills list and can load it with load_prompt_skill.", ext.Name), nil
 }
 
@@ -284,6 +289,7 @@ func loadPromptSkill(reg *Registry) *skills.Skill {
 			if err != nil {
 				return "", fmt.Errorf("failed to read SKILL.md: %w", err)
 			}
+			slog.Info("extension: prompt skill loaded", "name", params.Name, "size_bytes", len(data))
 			return string(data), nil
 		},
 	}
