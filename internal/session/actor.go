@@ -1353,6 +1353,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("   - For Python: run `uvx --install <package-name>` or `uv pip install <package-name>` first\n")
 	sb.WriteString("   - For npm: run `npx -y <package-name> --help` first to trigger download\n")
 	sb.WriteString("   - Then verify the server starts: `timeout 15 uvx <package-name>` (should not error)\n")
+	sb.WriteString("   - If uvx says 'no executables provided', the PyPI package is broken. Use git source instead: uvx --from 'git+<repo-url>' <entry-point-name>\n")
 	sb.WriteString("   - Only register via add_extension AFTER the command works\n")
 	sb.WriteString("   - .mcp.json → type=mcp (read command/args directly)\n")
 	sb.WriteString("   - skill.toml → type=exec\n")
