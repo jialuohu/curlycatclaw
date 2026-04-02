@@ -4,6 +4,9 @@ services:
     restart: unless-stopped
     volumes:
       - ~/.curlycatclaw:/data
+    env_file:
+      - path: ~/.curlycatclaw/env
+        required: false
     environment:
       - CURLYCATCLAW_DB_PATH=/data/curlycatclaw.db
       - CURLYCATCLAW_QDRANT_ADDR=qdrant:6334
