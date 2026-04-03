@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.20.2] - 2026-04-03
+
+Security hardening: CLI subprocess environment filtering.
+
+### Fixed
+- **Environment leak in CLI subprocess**: `spawn()` passed the full daemon environment (`os.Environ()`) to the Claude CLI subprocess, exposing `CURLYCATCLAW_MASTER_KEY`, Telegram tokens, and API keys to the child process and any MCP servers it connects to. Now uses an allowlist matching the pattern used by all other child processes (MCP servers, exec skills, extension proxy). Found by `/cso` security audit.
+
+### Added
+- Test verifying secret exclusion from CLI subprocess environment (`TestFilteredSpawnEnv_ExcludesSecrets`)
+
 ## [0.20.1] - 2026-04-03
 
 Codebase hygiene pass. Removes dead code, fixes a file descriptor leak, strengthens a path traversal guard, and cleans up inconsistent error handling.

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -389,9 +390,11 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 		cmd.Dir = params.WorkDir
 	}
 
-	// Build environment: start with current env, apply HomeDir override,
-	// then inject OAuth token.
-	env := os.Environ()
+	// Build environment: allowlist-filtered to prevent leaking secrets
+	// (CURLYCATCLAW_MASTER_KEY, Telegram token, etc.) to the CLI subprocess
+	// and any MCP servers it spawns. Matches the filteredEnv pattern used
+	// by internal/mcp/manager.go for MCP child processes.
+	env := filteredSpawnEnv()
 	if params.HomeDir != "" {
 		env = replaceEnv(env, "HOME", params.HomeDir)
 	}
@@ -728,6 +731,34 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 	n, err := lw.w.Write(p)
 	lw.n += n
 	return len(p), err // report full write to avoid broken pipe
+}
+
+// spawnEnvAllowlist is the set of environment variables passed to CLI
+// subprocesses. Prevents secrets like CURLYCATCLAW_MASTER_KEY, Telegram
+// tokens, and API keys from leaking to the CLI and any MCP servers it spawns.
+var spawnEnvAllowlist = map[string]struct{}{
+	// Baseline (matches internal/mcp/manager.go defaultEnvAllowlist).
+	"PATH": {}, "HOME": {}, "USER": {}, "LANG": {}, "LC_ALL": {},
+	"SHELL": {}, "TMPDIR": {}, "TZ": {}, "XDG_RUNTIME_DIR": {},
+	// Node.js runtime (Claude CLI is a Node.js app).
+	"NODE_PATH": {}, "NODE_OPTIONS": {}, "NODE_EXTRA_CA_CERTS": {},
+	// Terminal (needed for Claude CLI output formatting).
+	"TERM": {}, "COLORTERM": {},
+}
+
+// filteredSpawnEnv returns a copy of the current process environment filtered
+// through spawnEnvAllowlist. CLAUDE_CODE_OAUTH_TOKEN is injected separately
+// by spawn() after this call.
+func filteredSpawnEnv() []string {
+	var out []string
+	for _, entry := range os.Environ() {
+		if k, _, ok := strings.Cut(entry, "="); ok {
+			if _, pass := spawnEnvAllowlist[k]; pass {
+				out = append(out, entry)
+			}
+		}
+	}
+	return out
 }
 
 // replaceEnv replaces or appends a KEY=VALUE pair in an environment slice.
