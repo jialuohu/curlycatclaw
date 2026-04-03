@@ -59,9 +59,10 @@ type turn struct {
 // sliding-window slice trimmed to fit within the turn and character budgets.
 // Messages are returned in chronological order.
 func (cb *ContextBuilder) BuildContext(convID string) ([]Message, error) {
-	// Load a generous number of messages — well beyond what the window
-	// can hold — so we have enough to fill the budget.
-	msgs, err := cb.store.GetMessages(convID, cb.maxTurns*20)
+	// Load enough messages to fill the turn budget. A turn typically has
+	// 2-4 messages (user + assistant + tool_result cycles), so *4 gives
+	// headroom for multi-step tool chains without over-fetching.
+	msgs, err := cb.store.GetMessages(convID, cb.maxTurns*4)
 	if err != nil {
 		return nil, fmt.Errorf("context: load messages: %w", err)
 	}
@@ -101,7 +102,7 @@ func (cb *ContextBuilder) BuildContextWithBudget(ctx context.Context, convID, cu
 		return cb.BuildContext(convID)
 	}
 
-	msgs, err := cb.store.GetMessages(convID, cb.maxTurns*20)
+	msgs, err := cb.store.GetMessages(convID, cb.maxTurns*4)
 	if err != nil {
 		return nil, fmt.Errorf("context: load messages: %w", err)
 	}

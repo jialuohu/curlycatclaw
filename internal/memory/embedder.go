@@ -40,8 +40,9 @@ func (FNVEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 		return vec, nil
 	}
 
+	h := fnv.New32a()
 	for _, w := range words {
-		h := fnv.New32a()
+		h.Reset()
 		h.Write([]byte(w))
 		bucket := h.Sum32() % fnvDim
 		vec[bucket] += 1.0

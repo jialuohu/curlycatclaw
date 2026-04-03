@@ -1279,13 +1279,15 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	// the key in /proc/PID/cmdline (the JSON is a CLI argument).
 	// Uses a deterministic path (not os.CreateTemp) to avoid leaking temp
 	// files on repeated calls, since buildMCPConfig runs every message.
+	// Only write if the file doesn't already exist (key is immutable).
 	if mk := os.Getenv("CURLYCATCLAW_MASTER_KEY"); mk != "" {
 		mkPath := filepath.Join(os.TempDir(), "curlycatclaw-mk")
-		if err := os.WriteFile(mkPath, []byte(mk), 0600); err != nil {
-			slog.Warn("buildMCPConfig: master key file", "err", err)
-		} else {
-			mcpEnv["CURLYCATCLAW_MASTER_KEY_FILE"] = mkPath
+		if _, statErr := os.Stat(mkPath); statErr != nil {
+			if err := os.WriteFile(mkPath, []byte(mk), 0600); err != nil {
+				slog.Warn("buildMCPConfig: master key file", "err", err)
+			}
 		}
+		mcpEnv["CURLYCATCLAW_MASTER_KEY_FILE"] = mkPath
 	}
 
 	servers := map[string]mcpServer{
