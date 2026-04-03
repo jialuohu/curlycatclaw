@@ -6,6 +6,8 @@ COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION}" \
     -o /curlycatclaw ./cmd/curlycatclaw
+RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION}" \
+    -o /curlycatclaw-gws-mcp ./cmd/curlycatclaw-gws-mcp
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,9 +21,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npm install -g @anthropic-ai/claude-code bun \
     && ln -sf /usr/bin/claude /usr/local/bin/claude \
     && PIPX_HOME=/usr/local/pipx PIPX_BIN_DIR=/usr/local/bin pipx install uv \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && GWS_ARCH=$(dpkg --print-architecture | sed 's/amd64/x86_64/;s/arm64/aarch64/') \
+    && curl -fsSL "https://github.com/googleworkspace/cli/releases/latest/download/google-workspace-cli-${GWS_ARCH}-unknown-linux-musl.tar.gz" \
+       | tar -xz --strip-components=0 -C /usr/local/bin ./gws
 RUN useradd -m -d /data curlycatclaw
 COPY --from=builder /curlycatclaw /usr/local/bin/curlycatclaw
+COPY --from=builder /curlycatclaw-gws-mcp /usr/local/bin/curlycatclaw-gws-mcp
 USER curlycatclaw
 VOLUME /data
 ENTRYPOINT ["curlycatclaw"]

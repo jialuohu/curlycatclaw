@@ -5,14 +5,14 @@ timezone = "America/Los_Angeles"
 #
 # Option 1: CLI subprocess mode (Claude subscription, recommended).
 # Run `claude setup-token` to get a long-lived OAuth token.
-# cli_path    = "/home/you/.local/bin/claude"
+# cli_path    = "/usr/local/bin/claude"
 # oauth_token = "sk-ant-oat01-..."
 #
 # Option 2: Direct API with API key (separate billing).
 # api_key  = "sk-ant-..."
 #
 model = "claude-sonnet-4-6-20250514"
-# isolated_home = "/home/you/.curlycatclaw/claude-home"
+# isolated_home = "/data/claude-home"
 
 [telegram]
 token = "123456:ABC-DEF..."
@@ -21,7 +21,7 @@ allowed_user_ids = []
 # show_tool_calls = true
 
 [storage]
-db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
+db_path = "/data/curlycatclaw.db"
 
 # --- Optional features below. Everything works without these. ---
 
@@ -40,7 +40,7 @@ db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
 # voyage_model   = "voyage-3-lite"
 # voyage_dim     = 512
 #
-# Docker env overrides: CURLYCATCLAW_EMBEDDER, CURLYCATCLAW_OLLAMA_URL
+# Env overrides: CURLYCATCLAW_EMBEDDER, CURLYCATCLAW_OLLAMA_URL
 
 # Hierarchical memory (user facts + conversation summaries).
 # Requires [vector] to be enabled for summary search.
@@ -60,6 +60,19 @@ db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
 # [mcp.servers.env]
 # BRAVE_API_KEY = "your-brave-api-key"
 
+# Google Workspace via gws CLI (https://github.com/googleworkspace/cli).
+# Auth: on a machine with a browser, run:
+#   gws auth login -s drive,gmail,calendar,sheets,docs,tasks
+#   gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json
+# [[mcp.servers]]
+# name    = "gws"
+# command = "curlycatclaw-gws-mcp"
+# [mcp.servers.env]
+# GWS_PATH = "gws"
+# GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = "/data/gws-credentials.json"  # Docker path (mounted from ~/.curlycatclaw)
+# GWS_SKILLS_DIR = ""           # optional: pre-generated skills dir (skip gws generate-skills)
+# GWS_FILTER = "gmail_*,calendar_*,drive_*,sheets_*,docs_*,slides_*,tasks_*"  # optional: glob filter
+
 # Prompt budget manager (Haiku-powered context classification).
 # [budget]
 # enabled = true
@@ -76,7 +89,7 @@ port    = 8080
 # Projects for CLI work (/project command).
 # [[projects]]
 # name = "myapp"
-# path = "/home/you/projects/myapp"
+# path = "/data/projects/myapp"
 
 # Logging.
 # [logging]
@@ -86,12 +99,12 @@ port    = 8080
 
 # External skill collections.
 # [[skill_collections]]
-# path = "/home/you/.curlycatclaw/skills/my-tools"
+# path = "/data/skills/my-tools"
 
 # Wasm plugins.
 # [wasm]
 # enabled    = true
-# skills_dir = "/home/you/.curlycatclaw/skills"
+# skills_dir = "/data/skills"
 
 # Filesystem sandbox (Linux only, kernel 5.13+).
 # [sandbox]

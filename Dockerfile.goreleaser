@@ -1,5 +1,12 @@
+FROM alpine:3.21 AS gws-dl
+RUN apk add --no-cache curl && \
+    curl -fsSL "https://github.com/googleworkspace/cli/releases/latest/download/google-workspace-cli-x86_64-unknown-linux-musl.tar.gz" \
+    | tar -xz -C /tmp ./gws
+
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY curlycatclaw /usr/bin/curlycatclaw
+COPY curlycatclaw-gws-mcp /usr/bin/curlycatclaw-gws-mcp
+COPY --from=gws-dl /tmp/gws /usr/bin/gws
 COPY config.toml.example /etc/curlycatclaw/config.toml.example
 ENTRYPOINT ["/usr/bin/curlycatclaw"]
 CMD ["--config", "/etc/curlycatclaw/config.toml"]
