@@ -8,7 +8,7 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-const migrationBatchSize = 128
+const migrationBatchSize = 32
 
 // MigrationManager runs background embedding migration from an old embedder
 // to a new one, using versioned Qdrant collections and an atomic alias swap.

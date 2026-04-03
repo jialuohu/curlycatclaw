@@ -17,6 +17,25 @@ func skipIfNoQdrant(t *testing.T) {
 	conn.Close()
 }
 
+// resetTestCollections drops and recreates collections so tests don't conflict
+// with production aliases or collections of different dimensions.
+func resetTestCollections(t *testing.T, vs *VectorStore, ctx context.Context) {
+	t.Helper()
+	for _, name := range CollectionNames() {
+		vs.DeleteCollection(ctx, name) //nolint:errcheck
+	}
+	// Also clean up any aliases that might point to versioned collections.
+	aliases, _ := vs.ListAliasTargets(ctx)
+	for alias := range aliases {
+		vs.client.DeleteAlias(ctx, alias) //nolint:errcheck
+	}
+	for _, name := range CollectionNames() {
+		if err := vs.ensureCollection(ctx, name); err != nil {
+			t.Fatalf("reset: create %s: %v", name, err)
+		}
+	}
+}
+
 // --- Unit tests for FNVEmbedder (no Qdrant needed) ---
 
 func TestFNVEmbedder_Dimensions(t *testing.T) {
@@ -136,10 +155,12 @@ func TestVectorStore_IndexAndSearch(t *testing.T) {
 	skipIfNoQdrant(t)
 	ctx := context.Background()
 
-	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
+	vs, err := NewVectorStoreRaw(ctx, "localhost:6334")
 	if err != nil {
-		t.Fatalf("NewVectorStore failed: %v", err)
+		t.Fatalf("NewVectorStoreRaw failed: %v", err)
 	}
+	vs.embedder = FNVEmbedder{}
+	resetTestCollections(t, vs, ctx)
 	defer vs.Close()
 
 	userID := int64(9999)
@@ -182,10 +203,12 @@ func TestVectorStore_SearchNoMatches(t *testing.T) {
 	skipIfNoQdrant(t)
 	ctx := context.Background()
 
-	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
+	vs, err := NewVectorStoreRaw(ctx, "localhost:6334")
 	if err != nil {
-		t.Fatalf("NewVectorStore failed: %v", err)
+		t.Fatalf("NewVectorStoreRaw failed: %v", err)
 	}
+	vs.embedder = FNVEmbedder{}
+	resetTestCollections(t, vs, ctx)
 	defer vs.Close()
 
 	// Search for a user with no indexed documents.
@@ -202,10 +225,12 @@ func TestVectorStore_UserScoping(t *testing.T) {
 	skipIfNoQdrant(t)
 	ctx := context.Background()
 
-	vs, err := NewVectorStore(ctx, "localhost:6334", FNVEmbedder{})
+	vs, err := NewVectorStoreRaw(ctx, "localhost:6334")
 	if err != nil {
-		t.Fatalf("NewVectorStore failed: %v", err)
+		t.Fatalf("NewVectorStoreRaw failed: %v", err)
 	}
+	vs.embedder = FNVEmbedder{}
+	resetTestCollections(t, vs, ctx)
 	defer vs.Close()
 
 	userA := int64(88881)
