@@ -212,7 +212,11 @@ func runMCPServer() error {
 		hotReloader = newMCPHotReloader(server, userID, chatID, credStore)
 
 		// mcpMgr is nil in MCP server subprocess mode.
-		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore) {
+		var cfgServers []extension.ConfigMCPServer
+		for _, srv := range cfg.MCP.Servers {
+			cfgServers = append(cfgServers, extension.ConfigMCPServer{Name: srv.Name, Command: srv.Command})
+		}
+		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore, cfgServers) {
 			reg.Register(s)
 		}
 	}
@@ -260,11 +264,36 @@ func runMCPServer() error {
 		}
 	}
 
+	// Proxy config-based MCP servers ([[mcp.servers]] in config.toml).
+	// Same pattern as runtime extensions: connect as MCP client, discover
+	// tools, register with namespaced names (server__tool).
+	var configProxyCount int
+	for _, srv := range cfg.MCP.Servers {
+		ext := &extension.Extension{
+			Name:    srv.Name,
+			Type:    extension.TypeMCP,
+			Command: srv.Command,
+			Args:    srv.Args,
+			Env:     srv.Env,
+		}
+		if hotReloader != nil {
+			if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
+				slog.Warn("mcp-server: failed to proxy config MCP server",
+					"name", srv.Name, "err", err)
+				continue
+			}
+			configProxyCount += len(hotReloader.toolsFor(srv.Name))
+			slog.Info("mcp-server: proxying config MCP server",
+				"name", srv.Name, "tools", len(hotReloader.toolsFor(srv.Name)))
+		}
+	}
+
 	slog.Info("mcp-server: starting",
 		"user_id", userID,
 		"chat_id", chatID,
 		"skills", len(reg.All()),
-		"proxied_mcp_tools", proxyToolCount)
+		"proxied_mcp_tools", proxyToolCount,
+		"proxied_config_tools", configProxyCount)
 
 	// Run over stdio until the parent CLI process disconnects.
 	return server.Run(context.Background(), &mcp.StdioTransport{})

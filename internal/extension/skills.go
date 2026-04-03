@@ -52,11 +52,11 @@ type MCPHotReloader interface {
 // subprocess respawn; it may be nil if no reload is needed.
 // hotReloader, when non-nil, enables MCP extension hot-reload without
 // subprocess restart (MCP server subprocess mode only).
-func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, credStore *security.CredentialStore) []*skills.Skill {
+func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, credStore *security.CredentialStore, configServers []ConfigMCPServer) []*skills.Skill {
 	ss := []*skills.Skill{
 		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader),
 		removeExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader),
-		listExtensionsSkill(reg),
+		listExtensionsSkill(reg, configServers),
 		loadPromptSkill(reg),
 	}
 	if credStore != nil {
@@ -247,6 +247,10 @@ func removeExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regis
 				return "", fmt.Errorf("extension %q not found", params.Name)
 			}
 
+			if IsDefault(params.Name) {
+				return "", fmt.Errorf("extension %q is a pre-installed default and cannot be removed", params.Name)
+			}
+
 			// Remove from persistence first (rolls back on disk-write failure),
 			// then mutate runtime state.
 			if err := reg.Remove(params.Name); err != nil {
@@ -285,31 +289,52 @@ func removeExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regis
 	}
 }
 
-func listExtensionsSkill(reg *Registry) *skills.Skill {
+// ConfigMCPServer is the minimal info needed to display config-based MCP servers
+// in list_extensions. Avoids importing the config package.
+type ConfigMCPServer struct {
+	Name    string
+	Command string
+}
+
+func listExtensionsSkill(reg *Registry, configServers []ConfigMCPServer) *skills.Skill {
 	return &skills.Skill{
 		Name:        "list_extensions",
-		Description: "List all runtime-added extensions.",
+		Description: "List all extensions and MCP tool servers.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 		Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
 			all := reg.All()
-			if len(all) == 0 {
-				return "No runtime extensions registered.", nil
+			total := len(all) + len(configServers)
+			if total == 0 {
+				return "No extensions or MCP servers registered.", nil
 			}
 
 			var sb strings.Builder
-			fmt.Fprintf(&sb, "%d extension(s):\n\n", len(all))
-			for _, ext := range all {
-				fmt.Fprintf(&sb, "- **%s** (type: %s)\n", ext.Name, ext.Type)
-				fmt.Fprintf(&sb, "  Command: `%s", ext.Command)
-				if len(ext.Args) > 0 {
-					fmt.Fprintf(&sb, " %s", strings.Join(ext.Args, " "))
+
+			if len(configServers) > 0 {
+				sb.WriteString("**Config MCP servers** (from config.toml):\n\n")
+				for _, srv := range configServers {
+					fmt.Fprintf(&sb, "- **%s** (type: mcp, config)\n", srv.Name)
+					fmt.Fprintf(&sb, "  Command: `%s`\n", srv.Command)
 				}
-				sb.WriteString("`\n")
-				if ext.Description != "" {
-					fmt.Fprintf(&sb, "  Description: %s\n", ext.Description)
-				}
-				fmt.Fprintf(&sb, "  Added: %s\n", ext.AddedAt.Format(time.RFC3339))
+				sb.WriteString("\n")
 			}
+
+			if len(all) > 0 {
+				sb.WriteString("**Runtime extensions** (added via chat):\n\n")
+				for _, ext := range all {
+					fmt.Fprintf(&sb, "- **%s** (type: %s)\n", ext.Name, ext.Type)
+					fmt.Fprintf(&sb, "  Command: `%s", ext.Command)
+					if len(ext.Args) > 0 {
+						fmt.Fprintf(&sb, " %s", strings.Join(ext.Args, " "))
+					}
+					sb.WriteString("`\n")
+					if ext.Description != "" {
+						fmt.Fprintf(&sb, "  Description: %s\n", ext.Description)
+					}
+					fmt.Fprintf(&sb, "  Added: %s\n", ext.AddedAt.Format(time.RFC3339))
+				}
+			}
+
 			return sb.String(), nil
 		},
 	}

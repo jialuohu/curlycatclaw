@@ -24,8 +24,25 @@ builds:
       - -X main.version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  - id: curlycatclaw-gws-mcp
+    main: ./cmd/curlycatclaw-gws-mcp
+    binary: curlycatclaw-gws-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
   - id: default
+    builds: [curlycatclaw, curlycatclaw-gws-mcp]
     formats:
       - tar.gz
     files:
@@ -47,7 +64,7 @@ changelog:
 
 dockers:
   - id: curlycatclaw
-    ids: [curlycatclaw]
+    ids: [curlycatclaw, curlycatclaw-gws-mcp]
     dockerfile: Dockerfile.goreleaser
     goos: linux
     goarch: amd64

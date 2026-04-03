@@ -257,7 +257,7 @@ func run(configPath string) error {
 			os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
 		}
 	}
-	for _, s := range extension.InitExtensionSkills(extReg, mcpMgr, skillReg, extReloadFunc, nil, credStore) {
+	for _, s := range extension.InitExtensionSkills(extReg, mcpMgr, skillReg, extReloadFunc, nil, credStore, nil) {
 		skillReg.Register(s)
 	}
 	slog.Info("extension registry loaded", "path", extRegistryPath, "count", len(extReg.All()))

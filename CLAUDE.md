@@ -108,6 +108,7 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 | `internal/memory/migration.go` | Background embedding migration manager (backfill, catch-up, alias swap) |
 | `cmd/curlycatclaw/migrate.go` | CLI embedder migration tool (manual fallback, versioned collections + aliases) |
 | `internal/security/sandbox_linux.go` | Landlock filesystem sandbox (Linux) |
+| `cmd/curlycatclaw-gws-mcp/` | Standalone MCP server for Google Workspace via gws CLI |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
 | `docker-compose.yml` | curlycatclaw + Qdrant + Ollama orchestration |
 | `.goreleaser.yml` | Release automation (binaries, checksums, Docker images) |

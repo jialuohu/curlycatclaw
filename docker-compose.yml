@@ -8,10 +8,6 @@ services:
       - path: ~/.curlycatclaw/env
         required: false
     environment:
-      - CURLYCATCLAW_DB_PATH=/data/curlycatclaw.db
-      - CURLYCATCLAW_QDRANT_ADDR=qdrant:6334
-      - CURLYCATCLAW_ISOLATED_HOME=/data/claude-home
-      - CURLYCATCLAW_OLLAMA_URL=http://ollama:11434
       - HOME=/data
     depends_on:
       qdrant:

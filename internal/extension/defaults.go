@@ -48,6 +48,16 @@ var defaultExtensions = []defaultExtension{
 			"references/migrating_from_beautifulsoup.md": "https://raw.githubusercontent.com/D4Vinci/Scrapling/main/agent-skill/Scrapling-Skill/references/migrating_from_beautifulsoup.md",
 		},
 	},
+	{
+		Extension: Extension{
+			Name:        "humanizer",
+			Type:        TypePrompt,
+			Description: "Remove signs of AI-generated writing from text. Detects and fixes 29 patterns from Wikipedia's AI writing guide. Supports voice calibration from writing samples.",
+		},
+		SkillFiles: map[string]string{
+			"SKILL.md": "https://raw.githubusercontent.com/blader/humanizer/main/SKILL.md",
+		},
+	},
 }
 
 // EnsureDefaults pre-seeds default extensions on first startup.
@@ -146,7 +156,16 @@ func DefaultMCPExtensions() []Extension {
 	return out
 }
 
-// MarshalSkillFiles is exported for testing.
+// IsDefault returns true if the named extension is a pre-installed default.
+func IsDefault(name string) bool {
+	for _, def := range defaultExtensions {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func init() {
 	// Validate defaultExtensions at init time.
 	for _, def := range defaultExtensions {

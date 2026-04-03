@@ -1373,7 +1373,24 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("- Use bullet points and numbered lists instead of markdown tables.\n")
 	sb.WriteString("- Tables render poorly in Telegram. Always convert tabular data to a list format.\n")
 	sb.WriteString("- Use bold (**text**) for emphasis and `code` for technical terms.\n\n")
-	sb.WriteString("When the user asks about your skills, capabilities, or what you can do, include installed plugins in your answer. Plugins extend your abilities with additional tools.\n\n")
+	sb.WriteString("When the user asks about your skills, capabilities, or what you can do, include installed plugins and MCP tools in your answer.\n\n")
+
+	// List config-based MCP server tools so Claude knows what's available.
+	if a.mcp != nil {
+		tools := a.mcp.Tools()
+		if len(tools) > 0 {
+			serverTools := make(map[string][]string)
+			for _, t := range tools {
+				serverTools[t.ServerName] = append(serverTools[t.ServerName], t.RawName)
+			}
+			sb.WriteString("You have access to these MCP tool servers:\n")
+			for server, names := range serverTools {
+				fmt.Fprintf(&sb, "- **%s**: %s\n", server, strings.Join(names, ", "))
+			}
+			sb.WriteString("Use these tools proactively when the user's request matches their capabilities. Do NOT say you lack access to a service if you have tools for it.\n\n")
+		}
+	}
+
 	fmt.Fprintf(&sb, "The user's timezone is %s. Current local time: %s.\n", a.cfg.Timezone, now.Format("2006-01-02 15:04 MST"))
 	sb.WriteString("Always use this timezone for scheduling, time references, and \"today/tomorrow/yesterday.\"\n")
 	sb.WriteString("When the user says \"3pm\" they mean 3pm in their timezone, not UTC.\n")
@@ -1382,8 +1399,10 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("Call set_reminder directly without searching for tools first.\n")
 	sb.WriteString("\nIMPORTANT: To add, remove, or list MCP servers and external tools, ALWAYS use the add_extension, remove_extension, and list_extensions tools (via MCP). ")
 	sb.WriteString("NEVER create or edit .mcp.json files manually. The extension system handles persistence and server lifecycle automatically.\n")
-	sb.WriteString("\nIMPORTANT: When the user asks what plugins, extensions, or tools are installed, you MUST call list_plugins and list_extensions BEFORE answering. ")
-	sb.WriteString("NEVER answer from memory, conversation history, or tool context. The list can change at any time. Always fetch live data. This is not optional.\n")
+	sb.WriteString("\nIMPORTANT: When the user asks what skills, plugins, extensions, tools, or capabilities are available (regardless of which word they use), you MUST call BOTH list_plugins AND list_extensions and present a SINGLE unified list. ")
+	sb.WriteString("Also include these built-in skills: web_search, save_note, search_notes, set_reminder, list_reminders, cancel_reminder, semantic_search, remember_fact, forget_fact, list_facts, list_summaries, delete_summary, load_prompt_skill.\n")
+	sb.WriteString("NEVER answer from memory, conversation history, or previous tool results. EVERY TIME the user asks, you MUST make fresh tool calls, even if you just fetched the same data moments ago. Extensions can change between messages.\n")
+	sb.WriteString("\nWhen using prompt skills (like humanizer, scrapling), call load_prompt_skill directly by name. Do NOT use ToolSearch to find it.\n")
 
 	sb.WriteString("\nWhen adding an external tool as an exec extension, the tool MUST speak the curlycatclaw JSON protocol:\n")
 	sb.WriteString("- Input (stdin): {\"input\": <json>, \"context\": {\"user_id\": N, \"chat_id\": N}}\n")
