@@ -33,7 +33,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Conversation memory** — SQLite (WAL mode), sliding window context (25 turns, ~150K tokens), conversation history injected on subprocess restart so Claude doesn't forget mid-conversation
 - **Hierarchical memory** — three tiers: user facts in system prompt, conversation summaries via Qdrant relevance search, current sliding window
 - **Smart context** — Haiku-powered prompt budget manager classifies turn relevance
-- **Vector search** — semantic retrieval via Qdrant with pluggable embeddings (FNV offline, Ollama local, Voyage AI), `migrate-embedder` CLI for switching providers
+- **Vector search** — semantic retrieval via Qdrant with pluggable embeddings (Ollama local default with bge-m3, FNV offline fallback, Voyage AI paid), background migration when switching providers (zero-downtime, crash-resumable)
 
 ### Extensibility
 
@@ -51,7 +51,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Supervision** — automatic restart with exponential backoff, graceful 30s drain on shutdown
 - **Cron tasks** — scheduled prompts run through Claude with full tool access, ephemeral context, 5-minute timeout
 - **Configurable logging** — level, format (text/json), file output with lumberjack rotation
-- **Docker ready** — docker-compose with Qdrant and optional env file for master key, one command to run
+- **Docker ready** — docker-compose with Qdrant + Ollama and optional env file for master key, one command to run
 
 ### Security
 
@@ -80,7 +80,7 @@ Then type `/setup`. The skill detects your system, installs dependencies, collec
 mkdir -p ~/.curlycatclaw && curl -sL https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/deploy/docker-compose.yml -o docker-compose.yml && curl -sL https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/config.toml.example -o ~/.curlycatclaw/config.toml && docker compose up -d
 ```
 
-Edit `~/.curlycatclaw/config.toml` with your API keys and Telegram token before running. Includes Qdrant for vector search. See [deploy/docker.md](deploy/docker.md) for details.
+Edit `~/.curlycatclaw/config.toml` with your API keys and Telegram token before running. Includes Qdrant for vector search and Ollama for embeddings. First run: `docker compose exec ollama ollama pull bge-m3`. See [deploy/docker.md](deploy/docker.md) for details.
 
 ### Option 3: Build from source
 
