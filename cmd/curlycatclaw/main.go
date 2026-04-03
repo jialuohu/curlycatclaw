@@ -287,7 +287,63 @@ func run(configPath string) error {
 				"Memory retrieval quality will be limited. Consider 'ollama' or 'voyage' for better results.")
 		}
 
-		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr, embedder)
+		// Check migration state and determine which embedder to use for serving.
+		servingEmbedder := embedder
+		var migrationMgr *memory.MigrationManager
+		embState, err := store.GetEmbedderState()
+		if err != nil {
+			slog.Warn("failed to read embedder state", "err", err)
+		}
+
+		if embState == nil {
+			// First boot: initialize state with current embedder.
+			if err := store.InitEmbedderState(embedder.Name()); err != nil {
+				slog.Warn("failed to init embedder state", "err", err)
+			}
+			// Persist config for future migration detection (A6).
+			store.UpdateEmbedderConfig(embedder.Name(), cfg.Vector.Embedder, embedderModel(cfg.Vector), int(embedder.Dimension())) //nolint:errcheck
+		} else if embState.MigrationStatus == "" && embState.ActiveEmbedder == embedder.Name() {
+			// No change, no migration. Update stored config at steady state (A6).
+			store.UpdateEmbedderConfig(embedder.Name(), cfg.Vector.Embedder, embedderModel(cfg.Vector), int(embedder.Dimension())) //nolint:errcheck
+		} else if embState.MigrationStatus == "" && embState.ActiveEmbedder != embedder.Name() {
+			// Embedder changed — start background migration.
+			slog.Info("embedder config changed, starting background migration",
+				"old", embState.ActiveEmbedder, "new", embedder.Name())
+			oldEmb := reconstructEmbedder(embState, cfg.Vector)
+			if oldEmb != nil {
+				servingEmbedder = oldEmb
+				newVersion := embState.ActiveVersion + 1
+				if err := store.StartMigration(embedder.Name(), newVersion,
+					embState.OldEmbedderType, embState.OldEmbedderModel, embState.OldEmbedderDim); err != nil {
+					slog.Error("failed to start migration", "err", err)
+				} else {
+					st, _ := store.GetEmbedderState()
+					migrationMgr = memory.NewMigrationManager(store, nil, oldEmb, embedder, st, cfg.Vector.Embedder, embedderModel(cfg.Vector), int(embedder.Dimension())) // vs set below
+				}
+			} else {
+				slog.Warn("cannot reconstruct old embedder, using new embedder directly")
+			}
+		} else if embState.MigrationStatus == "running" || embState.MigrationStatus == "completing" {
+			// Crash recovery — resume migration.
+			slog.Info("resuming migration from crash", "status", embState.MigrationStatus)
+			oldEmb := reconstructEmbedder(embState, cfg.Vector)
+			if oldEmb != nil {
+				servingEmbedder = oldEmb
+				migrationMgr = memory.NewMigrationManager(store, nil, oldEmb, embedder, embState, cfg.Vector.Embedder, embedderModel(cfg.Vector), int(embedder.Dimension())) // vs set below
+			} else {
+				slog.Warn("cannot reconstruct old embedder for crash recovery, using new embedder")
+			}
+		} else if embState.MigrationStatus == "failed" {
+			// Failed migration — serve with old embedder, warn user.
+			slog.Warn("previous migration failed, using old embedder. Run --migrate-embedder to retry.",
+				"old", embState.ActiveEmbedder, "new", embedder.Name())
+			oldEmb := reconstructEmbedder(embState, cfg.Vector)
+			if oldEmb != nil {
+				servingEmbedder = oldEmb
+			}
+		}
+
+		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr, servingEmbedder)
 		if err != nil {
 			slog.Warn("vector store init failed, disabling", "err", err)
 		} else {
@@ -295,6 +351,13 @@ func run(configPath string) error {
 			defer vectorStore.Close()
 			skillReg.Register(skills.NewSemanticSearchSkill(vectorStore))
 			slog.Info("vector store enabled", "addr", cfg.Vector.QdrantAddr)
+
+			// Start background migration if needed.
+			if migrationMgr != nil {
+				migrationMgr.SetVectorStore(vectorStore)
+				migrationMgr.Start(ctx)
+				defer migrationMgr.Stop()
+			}
 		}
 	}
 
@@ -490,6 +553,46 @@ func run(configPath string) error {
 
 	slog.Info("curlycatclaw stopped")
 	return nil
+}
+
+// embedderModel extracts the model name from a VectorConfig for the configured embedder type.
+func embedderModel(cfg config.VectorConfig) string {
+	switch cfg.Embedder {
+	case "ollama":
+		m := cfg.OllamaModel
+		if m == "" {
+			m = "bge-m3"
+		}
+		return m
+	case "voyage":
+		m := cfg.VoyageModel
+		if m == "" {
+			m = "voyage-3-lite"
+		}
+		return m
+	default:
+		return ""
+	}
+}
+
+// reconstructEmbedder recreates the old embedder from stored state and current config.
+// Returns nil if reconstruction is not possible.
+func reconstructEmbedder(state *memory.EmbedderState, cfg config.VectorConfig) memory.Embedder {
+	switch state.OldEmbedderType {
+	case "ollama":
+		return memory.NewOllamaEmbedder(cfg.OllamaURL, state.OldEmbedderModel, uint64(state.OldEmbedderDim))
+	case "voyage":
+		if cfg.VoyageKey == "" {
+			slog.Warn("cannot reconstruct voyage embedder: no API key in current config")
+			return nil
+		}
+		return memory.NewVoyageEmbedder(cfg.VoyageKey, state.OldEmbedderModel, uint64(state.OldEmbedderDim))
+	case "fnv", "":
+		return memory.FNVEmbedder{}
+	default:
+		slog.Warn("unknown old embedder type", "type", state.OldEmbedderType)
+		return nil
+	}
 }
 
 func newEmbedder(cfg config.VectorConfig) memory.Embedder {

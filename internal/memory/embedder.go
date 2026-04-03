@@ -96,16 +96,16 @@ func NewOllamaEmbedder(baseURL, model string, dim uint64) *OllamaEmbedder {
 		baseURL = "http://localhost:11434"
 	}
 	if model == "" {
-		model = "nomic-embed-text"
+		model = "bge-m3"
 	}
 	if dim == 0 {
-		dim = 768
+		dim = 1024
 	}
 	return &OllamaEmbedder{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   model,
 		dim:     dim,
-		client:  &http.Client{Timeout: 30 * time.Second},
+		client:  &http.Client{Timeout: 120 * time.Second},
 	}
 }
 

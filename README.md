@@ -33,7 +33,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Conversation memory** — SQLite (WAL mode), sliding window context (25 turns, ~150K tokens), conversation history injected on subprocess restart so Claude doesn't forget mid-conversation
 - **Hierarchical memory** — three tiers: user facts in system prompt, conversation summaries via Qdrant relevance search, current sliding window
 - **Smart context** — Haiku-powered prompt budget manager classifies turn relevance
-- **Vector search** — semantic retrieval via Qdrant with pluggable embeddings (FNV offline, Ollama local, Voyage AI), `migrate-embedder` CLI for switching providers
+- **Vector search** — semantic retrieval via Qdrant with pluggable embeddings (Ollama local default with bge-m3, FNV offline fallback, Voyage AI paid), background migration when switching providers (zero-downtime, crash-resumable)
 
 ### Extensibility
 
@@ -51,7 +51,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 - **Supervision** — automatic restart with exponential backoff, graceful 30s drain on shutdown
 - **Cron tasks** — scheduled prompts run through Claude with full tool access, ephemeral context, 5-minute timeout
 - **Configurable logging** — level, format (text/json), file output with lumberjack rotation
-- **Docker ready** — docker-compose with Qdrant and optional env file for master key, one command to run
+- **Docker ready** — docker-compose with Qdrant + Ollama and optional env file for master key, one command to run
 
 ### Security
 
@@ -80,7 +80,7 @@ Then type `/setup`. The skill detects your system, installs dependencies, collec
 mkdir -p ~/.curlycatclaw && curl -sL https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/deploy/docker-compose.yml -o docker-compose.yml && curl -sL https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/config.toml.example -o ~/.curlycatclaw/config.toml && docker compose up -d
 ```
 
-Edit `~/.curlycatclaw/config.toml` with your API keys and Telegram token before running. Includes Qdrant for vector search. See [deploy/docker.md](deploy/docker.md) for details.
+Edit `~/.curlycatclaw/config.toml` with your API keys and Telegram token before running. Includes Qdrant for vector search and Ollama for embeddings. First run: `docker compose exec ollama ollama pull bge-m3`. See [deploy/docker.md](deploy/docker.md) for details.
 
 ### Option 3: Build from source
 
@@ -98,7 +98,7 @@ Then message your Telegram bot. Done.
 
 ## Configuration
 
-All config lives in `~/.curlycatclaw/config.toml`. Copy from the example:
+All config lives in `~/.curlycatclaw/config.toml`. Copy from the example and fill in your credentials. See [`config.toml.example`](config.toml.example) for the full reference with all options.
 
 ```toml
 timezone = "America/Los_Angeles"
@@ -106,11 +106,9 @@ timezone = "America/Los_Angeles"
 [claude]
 # Choose ONE auth method:
 cli_path    = "/home/you/.local/bin/claude"  # Claude subscription (via CLI subprocess)
-oauth_token = "sk-ant-oat01-..."             # long-lived token from `claude setup-token`
-# api_key  = "sk-ant-..."                    # API key (direct API, separate billing)
+oauth_token = "sk-ant-oat01-..."             # from `claude setup-token`
+# api_key  = "sk-ant-..."                    # Direct API (separate billing)
 model       = "claude-sonnet-4-6-20250514"
-# Plugin management (requires CLI mode)
-# isolated_home   = "/home/you/.curlycatclaw/claude-home"
 
 [telegram]
 token = "123456:ABC-DEF..."
@@ -119,21 +117,27 @@ allowed_user_ids = [123456789]  # your Telegram user ID
 [storage]
 db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
 
-# Optional: MCP servers for extra tools
-[[mcp.servers]]
-name    = "search"
-command = "npx"
-args    = ["-y", "@anthropic/mcp-server-brave-search"]
-[mcp.servers.env]
-BRAVE_API_KEY = "encrypted:ref:brave_api_key"
+# Vector search with semantic embeddings (default: Ollama with bge-m3)
+# Requires Qdrant running. Docker Compose starts both Qdrant and Ollama.
+# First run: ollama pull bge-m3
+[vector]
+enabled     = true
+qdrant_addr = "localhost:6334"
+# embedder = "ollama"           # default (free, local)
+# embedder = "voyage"           # paid, best quality
+# embedder = "fnv"              # offline fallback (no semantic understanding)
 
-# Health check (enabled by default)
+# Hierarchical memory (user facts + conversation summaries)
+# [memory]
+# enabled = true
+
+# Health check (enabled by default, used by Docker)
 [health]
 enabled = true
 port    = 8080
 ```
 
-For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
+For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes). MCP servers, Wasm plugins, cron tasks, and other advanced options are documented in `config.toml.example`.
 
 ## Architecture
 

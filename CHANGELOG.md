@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.19.0] - 2026-04-02
+
+Background embedding migration. Switch embedding models without downtime. Change your config, restart, and the system migrates vectors in the background while search keeps working. Ollama with bge-m3 is now the default embedder.
+
+### Added
+- **Background embedding migration**: when the embedder config changes, vectors are re-embedded in the background while search continues serving from old vectors. Atomic alias swap when done. Crash-resumable with keyset pagination.
+- **Dual-write during migration**: new messages are indexed with both old and new embedders, so nothing is lost during the migration window.
+- **Catch-up phase**: after backfill completes, a convergence scan catches any rows created during migration before the alias swap.
+- **Ollama as default embedder**: default changed from FNV (offline hash) to Ollama with bge-m3 (1024d). Real semantic search out of the box.
+- **Ollama Docker service**: `docker-compose.yml` now includes Ollama with health check and persistent model storage. First run: `docker compose exec ollama ollama pull bge-m3`.
+- **Environment variable overrides**: `CURLYCATCLAW_EMBEDDER` and `CURLYCATCLAW_OLLAMA_URL` for Docker deployments.
+- **Embedder state tracking**: SQLite `embedder_state` table tracks active embedder, migration progress, and crash recovery state.
+
+### Changed
+- **Qdrant collections are now versioned**: `curlycatclaw_messages_v1`, etc. Fixed names become aliases. Enables atomic zero-downtime migration swaps.
+- **`--migrate-embedder` CLI updated**: works with versioned collections and aliases. Serves as manual fallback for failed background migrations.
+- **Ollama default model**: `nomic-embed-text` (768d) replaced by `bge-m3` (1024d).
+- **Config validation**: Ollama embedder config no longer requires explicit `ollama_url` (defaults to `http://localhost:11434`).
+
 ## [0.18.0] - 2026-04-02
 
 MCP extension hot-reload. Installing or removing MCP extensions no longer restarts the CLI subprocess, preserving conversation context. Tools appear instantly via MCP protocol notifications.

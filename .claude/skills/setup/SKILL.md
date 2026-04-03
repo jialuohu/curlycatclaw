@@ -2,9 +2,9 @@
 name: setup
 description: |
   Set up curlycatclaw from scratch. Installs the binary, starts Qdrant,
-  configures credentials, and verifies everything works. Run this after
-  cloning the repo. Triggers on "setup", "install", "configure", or
-  first-time setup requests.
+  configures credentials, pulls the Ollama embedding model, and verifies
+  everything works. Run this after cloning the repo. Triggers on "setup",
+  "install", "configure", or first-time setup requests.
 allowed-tools:
   - Bash
   - Read
@@ -36,8 +36,9 @@ Before asking for anything, explain what curlycatclaw is:
 > connects to Telegram as a chat interface, uses Claude as the LLM, and stores
 > conversations + memories in SQLite with Qdrant for semantic search.
 >
-> This setup will install curlycatclaw, start a Qdrant vector database, configure
-> your credentials, and verify everything works.
+> This setup will install curlycatclaw, start Qdrant (vector database) and Ollama
+> (local embedding model for semantic search), configure your credentials, and
+> verify everything works.
 >
 > **Prerequisites:** Docker (recommended) or Go 1.25+.
 >
@@ -105,9 +106,13 @@ curlycatclaw --version
 If install fails, diagnose: permission denied (need sudo), download URL 404 (check
 release tag format). Fix and retry.
 
-## 3. Docker + Qdrant
+## 3. Docker + Qdrant + Ollama
 
-**If `INSTALL_METHOD=docker`:** Qdrant is bundled in docker-compose. Skip to Step 4.
+**If `INSTALL_METHOD=docker`:** Qdrant and Ollama are bundled in docker-compose. Skip to Step 4.
+After the service starts (Step 6), pull the embedding model:
+```bash
+docker compose exec ollama ollama pull bge-m3
+```
 
 **If `QDRANT_RUNNING=true`:** "Qdrant is already running. Skipping." Go to Step 4.
 
@@ -241,8 +246,9 @@ the config file, then proceed.
 **If `INSTALL_METHOD=docker`:**
 
 The same `~/.curlycatclaw/config.toml` is used. Docker overrides paths via environment
-variables (`CURLYCATCLAW_DB_PATH`, `CURLYCATCLAW_QDRANT_ADDR`, `CURLYCATCLAW_CLI_PATH`)
-defined in `docker-compose.yml`. This handles everything including Qdrant:
+variables (`CURLYCATCLAW_DB_PATH`, `CURLYCATCLAW_QDRANT_ADDR`, `CURLYCATCLAW_OLLAMA_URL`,
+`CURLYCATCLAW_CLI_PATH`) defined in `docker-compose.yml`. This handles everything
+including Qdrant and Ollama:
 
 ```bash
 docker compose up -d --build

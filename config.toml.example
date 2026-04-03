@@ -45,23 +45,32 @@ BRAVE_API_KEY = "encrypted:ref:brave_api_key"
 
 # Vector search via Qdrant (requires Qdrant server running)
 # Bare metal: docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-# Docker Compose: Qdrant starts automatically; use qdrant_addr = "qdrant:6334"
+# Docker Compose: Qdrant and Ollama start automatically.
 # [vector]
 # enabled     = true
 # qdrant_addr = "localhost:6334"
 #
-# Embedding provider: "fnv" (default, offline), "ollama" (free, local), "voyage" (paid, best)
-# embedder = "fnv"
+# Embedding provider: "ollama" (default, free local), "voyage" (paid, best), "fnv" (offline fallback)
+# embedder = "ollama"
 #
-# Ollama settings (when embedder = "ollama")
+# Ollama settings (when embedder = "ollama", the default)
 # ollama_url   = "http://localhost:11434"
-# ollama_model = "nomic-embed-text"
-# ollama_dim   = 768
+# ollama_model = "bge-m3"
+# ollama_dim   = 1024
+# First run: pull the model with `ollama pull bge-m3`
+# Docker Compose: `docker compose exec ollama ollama pull bge-m3`
 #
 # Voyage AI settings (when embedder = "voyage")
 # voyage_api_key = "pa-..."
 # voyage_model   = "voyage-3-lite"
 # voyage_dim     = 512
+#
+# FNV (offline fallback, no external service needed)
+# embedder = "fnv"
+#
+# Environment variable overrides (useful for Docker):
+# CURLYCATCLAW_EMBEDDER   - override embedder type
+# CURLYCATCLAW_OLLAMA_URL - override Ollama URL
 
 # Hierarchical memory (persistent user facts + conversation summaries)
 # [memory]

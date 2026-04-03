@@ -443,6 +443,24 @@ func (s *Store) ConversationMeta(convID string) (userID, chatID int64, chatType 
 	return
 }
 
+// EmbedderState tracks the active embedder and any in-progress migration.
+// Singleton row (id=1) in the embedder_state table.
+type EmbedderState struct {
+	ActiveEmbedder    string
+	ActiveVersion     int
+	MigratingEmbedder string // empty if not migrating
+	MigratingVersion  int
+	MigrationStatus   string // "", "running", "completing", "failed"
+	LastMsgID         int64
+	LastNoteID        int64
+	LastSummaryID     int64
+	OldEmbedderType   string
+	OldEmbedderModel  string
+	OldEmbedderDim    int
+	StartedAt         *time.Time
+	UpdatedAt         time.Time
+}
+
 // MigrationText holds text content and its metadata for re-embedding.
 type MigrationText struct {
 	ID        string
@@ -576,6 +594,291 @@ func (s *Store) AllSummaryTexts() ([]MigrationText, error) {
 	return results, nil
 }
 
+// GetEmbedderState returns the current embedder state, or nil if not yet initialized.
+func (s *Store) GetEmbedderState() (*EmbedderState, error) {
+	row := s.db.QueryRow(`
+		SELECT active_embedder, active_version,
+		       COALESCE(migrating_embedder, ''), COALESCE(migrating_version, 0),
+		       COALESCE(migration_status, ''),
+		       last_msg_id, last_note_id, last_summary_id,
+		       COALESCE(old_embedder_type, ''), COALESCE(old_embedder_model, ''), COALESCE(old_embedder_dim, 0),
+		       started_at, updated_at
+		FROM embedder_state WHERE id = 1`)
+
+	var st EmbedderState
+	var startedAt sql.NullString
+	var updatedAt string
+	err := row.Scan(
+		&st.ActiveEmbedder, &st.ActiveVersion,
+		&st.MigratingEmbedder, &st.MigratingVersion,
+		&st.MigrationStatus,
+		&st.LastMsgID, &st.LastNoteID, &st.LastSummaryID,
+		&st.OldEmbedderType, &st.OldEmbedderModel, &st.OldEmbedderDim,
+		&startedAt, &updatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("memory: get embedder state: %w", err)
+	}
+
+	if startedAt.Valid {
+		t, err := parseTimeStr(startedAt.String)
+		if err == nil {
+			st.StartedAt = &t
+		}
+	}
+	if t, err := parseTimeStr(updatedAt); err == nil {
+		st.UpdatedAt = t
+	}
+	return &st, nil
+}
+
+// InitEmbedderState inserts the initial embedder state row (version 0).
+// Does nothing if a row already exists.
+func (s *Store) InitEmbedderState(embedderName string) error {
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO embedder_state (id, active_embedder, active_version, updated_at)
+		VALUES (1, ?, 0, datetime('now'))`,
+		embedderName,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: init embedder state: %w", err)
+	}
+	return nil
+}
+
+// UpdateEmbedderConfig persists the current embedder identity at steady state (A6).
+// Called on every normal startup so old config is always available for migration.
+func (s *Store) UpdateEmbedderConfig(embedderName, embedderType, model string, dim int) error {
+	_, err := s.db.Exec(`
+		UPDATE embedder_state SET
+			active_embedder = ?,
+			old_embedder_type = ?,
+			old_embedder_model = ?,
+			old_embedder_dim = ?,
+			updated_at = datetime('now')
+		WHERE id = 1 AND (migration_status IS NULL OR migration_status = '')`,
+		embedderName, embedderType, model, dim,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: update embedder config: %w", err)
+	}
+	return nil
+}
+
+// StartMigration transitions the embedder state to "running".
+func (s *Store) StartMigration(newEmbedder string, newVersion int, oldType, oldModel string, oldDim int) error {
+	_, err := s.db.Exec(`
+		UPDATE embedder_state SET
+			migrating_embedder = ?,
+			migrating_version = ?,
+			migration_status = 'running',
+			last_msg_id = 0, last_note_id = 0, last_summary_id = 0,
+			old_embedder_type = ?,
+			old_embedder_model = ?,
+			old_embedder_dim = ?,
+			started_at = datetime('now'),
+			updated_at = datetime('now')
+		WHERE id = 1`,
+		newEmbedder, newVersion, oldType, oldModel, oldDim,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: start migration: %w", err)
+	}
+	return nil
+}
+
+// UpdateMigrationCursor saves the last-seen row IDs for resumable migration.
+func (s *Store) UpdateMigrationCursor(lastMsgID, lastNoteID, lastSummaryID int64) error {
+	_, err := s.db.Exec(`
+		UPDATE embedder_state SET
+			last_msg_id = ?, last_note_id = ?, last_summary_id = ?,
+			updated_at = datetime('now')
+		WHERE id = 1`,
+		lastMsgID, lastNoteID, lastSummaryID,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: update migration cursor: %w", err)
+	}
+	return nil
+}
+
+// SetMigrationStatus updates only the status field (e.g., "completing", "failed").
+func (s *Store) SetMigrationStatus(status string) error {
+	_, err := s.db.Exec(`
+		UPDATE embedder_state SET migration_status = ?, updated_at = datetime('now')
+		WHERE id = 1`, status,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: set migration status: %w", err)
+	}
+	return nil
+}
+
+// CompleteMigration clears migration fields and updates the active embedder/version.
+// Preserves the new embedder's type/model/dim so the next migration can reconstruct it.
+func (s *Store) CompleteMigration(newEmbedder string, newVersion int, newType, newModel string, newDim int) error {
+	_, err := s.db.Exec(`
+		UPDATE embedder_state SET
+			active_embedder = ?, active_version = ?,
+			migrating_embedder = NULL, migrating_version = NULL,
+			migration_status = NULL,
+			last_msg_id = 0, last_note_id = 0, last_summary_id = 0,
+			old_embedder_type = ?, old_embedder_model = ?, old_embedder_dim = ?,
+			started_at = NULL,
+			updated_at = datetime('now')
+		WHERE id = 1`,
+		newEmbedder, newVersion, newType, newModel, newDim,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: complete migration: %w", err)
+	}
+	return nil
+}
+
+// MessageTextsAfter returns the next batch of messages with m.id > afterID.
+// Returns the texts and the max message row ID seen (for cursor).
+func (s *Store) MessageTextsAfter(afterID int64, limit int) ([]MigrationText, int64, error) {
+	rows, err := s.db.Query(
+		`SELECT m.id, m.role, m.content, c.user_id, c.chat_id, m.created_at
+		 FROM messages m
+		 JOIN conversations c ON m.conversation_id = c.id
+		 WHERE m.id > ?
+		 ORDER BY m.id ASC
+		 LIMIT ?`, afterID, limit,
+	)
+	if err != nil {
+		return nil, afterID, fmt.Errorf("memory: message texts after: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MigrationText
+	maxID := afterID
+	for rows.Next() {
+		var id int64
+		var role, content string
+		var userID, chatID int64
+		var createdAt string
+		if err := rows.Scan(&id, &role, &content, &userID, &chatID, &createdAt); err != nil {
+			return nil, maxID, fmt.Errorf("memory: scan message text: %w", err)
+		}
+		if id > maxID {
+			maxID = id
+		}
+
+		msg := Message{Role: role, Content: json.RawMessage(content)}
+		text := extractText(msg)
+		if text == "" {
+			continue
+		}
+
+		results = append(results, MigrationText{
+			ID:        fmt.Sprintf("msg-%d", id),
+			Text:      text,
+			UserID:    userID,
+			ChatID:    chatID,
+			Source:    "message",
+			CreatedAt: createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, maxID, fmt.Errorf("memory: iterate message texts: %w", err)
+	}
+	return results, maxID, nil
+}
+
+// NoteTextsAfter returns the next batch of notes with id > afterID.
+// Returns nil (no error) if the notes table does not exist.
+func (s *Store) NoteTextsAfter(afterID int64, limit int) ([]MigrationText, int64, error) {
+	var tableName string
+	err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='notes'`).Scan(&tableName)
+	if err != nil {
+		return nil, 0, nil // table doesn't exist
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, user_id, chat_id, title, content, created_at FROM notes
+		 WHERE id > ?
+		 ORDER BY id ASC
+		 LIMIT ?`, afterID, limit,
+	)
+	if err != nil {
+		return nil, afterID, fmt.Errorf("memory: note texts after: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MigrationText
+	maxID := afterID
+	for rows.Next() {
+		var id, userID, chatID int64
+		var title, content, createdAt string
+		if err := rows.Scan(&id, &userID, &chatID, &title, &content, &createdAt); err != nil {
+			return nil, maxID, fmt.Errorf("memory: scan note text: %w", err)
+		}
+		if id > maxID {
+			maxID = id
+		}
+
+		results = append(results, MigrationText{
+			ID:        fmt.Sprintf("note-%d", id),
+			Text:      title + "\n" + content,
+			UserID:    userID,
+			ChatID:    chatID,
+			Source:    "note",
+			CreatedAt: createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, maxID, fmt.Errorf("memory: iterate note texts: %w", err)
+	}
+	return results, maxID, nil
+}
+
+// SummaryTextsAfter returns the next batch of summaries with id > afterID.
+func (s *Store) SummaryTextsAfter(afterID int64, limit int) ([]MigrationText, int64, error) {
+	rows, err := s.db.Query(
+		`SELECT id, conversation_id, user_id, chat_id, summary, COALESCE(chat_type, '')
+		 FROM conversation_summaries
+		 WHERE id > ?
+		 ORDER BY id ASC
+		 LIMIT ?`, afterID, limit,
+	)
+	if err != nil {
+		return nil, afterID, fmt.Errorf("memory: summary texts after: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MigrationText
+	maxID := afterID
+	for rows.Next() {
+		var id int64
+		var convID string
+		var userID, chatID int64
+		var summary, chatType string
+		if err := rows.Scan(&id, &convID, &userID, &chatID, &summary, &chatType); err != nil {
+			return nil, maxID, fmt.Errorf("memory: scan summary text: %w", err)
+		}
+		if id > maxID {
+			maxID = id
+		}
+
+		results = append(results, MigrationText{
+			ID:       convID,
+			Text:     summary,
+			UserID:   userID,
+			ChatID:   chatID,
+			Source:   "summary",
+			ChatType: chatType,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, maxID, fmt.Errorf("memory: iterate summary texts: %w", err)
+	}
+	return results, maxID, nil
+}
+
 // migrate creates the schema tables if they do not exist.
 func (s *Store) migrate() error {
 	const schema = `
@@ -658,6 +961,28 @@ func (s *Store) migrate() error {
 	s.db.Exec(addSummarizationStatus)                                              //nolint:errcheck // column may already exist
 	s.db.Exec(`ALTER TABLE conversations ADD COLUMN chat_type TEXT DEFAULT ''`)     //nolint:errcheck // column may already exist
 	s.db.Exec(`ALTER TABLE conversation_summaries ADD COLUMN chat_type TEXT DEFAULT ''`) //nolint:errcheck // column may already exist
+
+	const embedderStateSchema = `
+	CREATE TABLE IF NOT EXISTS embedder_state (
+		id                 INTEGER PRIMARY KEY CHECK (id = 1),
+		active_embedder    TEXT NOT NULL,
+		active_version     INTEGER NOT NULL DEFAULT 0,
+		migrating_embedder TEXT,
+		migrating_version  INTEGER,
+		migration_status   TEXT,
+		last_msg_id        INTEGER DEFAULT 0,
+		last_note_id       INTEGER DEFAULT 0,
+		last_summary_id    INTEGER DEFAULT 0,
+		old_embedder_type  TEXT,
+		old_embedder_model TEXT,
+		old_embedder_dim   INTEGER,
+		started_at         DATETIME,
+		updated_at         DATETIME NOT NULL
+	);`
+	if _, err := s.db.Exec(embedderStateSchema); err != nil {
+		return fmt.Errorf("memory: create embedder_state: %w", err)
+	}
+
 	return nil
 }
 
