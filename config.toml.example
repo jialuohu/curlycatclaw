@@ -3,7 +3,7 @@ timezone = "America/Los_Angeles"
 [claude]
 # Choose ONE authentication method:
 #
-# Option 1: CLI subprocess mode (Claude subscription).
+# Option 1: CLI subprocess mode (Claude subscription, recommended).
 # Run `claude setup-token` to get a long-lived OAuth token.
 # cli_path    = "/home/you/.local/bin/claude"
 # oauth_token = "sk-ant-oat01-..."
@@ -12,117 +12,89 @@ timezone = "America/Los_Angeles"
 # api_key  = "sk-ant-..."
 #
 model = "claude-sonnet-4-6-20250514"
-# Isolated home directory for CLI project work (keeps plugins/config separate).
 # isolated_home = "/home/you/.curlycatclaw/claude-home"
 
 [telegram]
 token = "123456:ABC-DEF..."
-# Restrict to specific Telegram user IDs. Required unless allow_all = true.
 allowed_user_ids = []
-# Set to true to allow any Telegram user to interact with this bot.
 # allow_all = true
-# Show tool calls to the user in Telegram (default: true).
 # show_tool_calls = true
 
 [storage]
-# WARNING: ~ does not expand in TOML values; use an absolute path.
-# db_path = "~/.curlycatclaw/curlycatclaw.db"
 db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
-# Docker: env var CURLYCATCLAW_DB_PATH overrides this automatically.
 
-# MCP server configurations
-[[mcp.servers]]
-name    = "search"
-command = "npx"
-args    = ["-y", "@anthropic/mcp-server-brave-search"]
-[mcp.servers.env]
-BRAVE_API_KEY = "encrypted:ref:brave_api_key"
+# --- Optional features below. Everything works without these. ---
 
-# Prompt budget manager (uses Claude Haiku to classify context relevance)
+# Vector search via Qdrant + Ollama (semantic memory).
+# Docker Compose starts both Qdrant and Ollama automatically.
+# Bare metal: docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+# First run: ollama pull bge-m3
+# [vector]
+# enabled     = true
+# qdrant_addr = "localhost:6334"
+# embedder    = "ollama"              # "ollama" (default), "voyage" (paid), "fnv" (offline)
+# ollama_url   = "http://localhost:11434"
+# ollama_model = "bge-m3"
+# ollama_dim   = 1024
+# voyage_api_key = "pa-..."          # only if embedder = "voyage"
+# voyage_model   = "voyage-3-lite"
+# voyage_dim     = 512
+#
+# Docker env overrides: CURLYCATCLAW_EMBEDDER, CURLYCATCLAW_OLLAMA_URL
+
+# Hierarchical memory (user facts + conversation summaries).
+# Requires [vector] to be enabled for summary search.
+# [memory]
+# enabled = true
+# max_facts = 50
+# summary_relevance_limit = 3
+# summary_score_threshold = 0.3
+# min_messages_to_summarize = 4
+# vector_search_timeout_seconds = 5
+
+# MCP servers for extra tools.
+# [[mcp.servers]]
+# name    = "search"
+# command = "npx"
+# args    = ["-y", "@anthropic/mcp-server-brave-search"]
+# [mcp.servers.env]
+# BRAVE_API_KEY = "your-brave-api-key"
+
+# Prompt budget manager (Haiku-powered context classification).
 # [budget]
 # enabled = true
 # model   = "claude-haiku-4-5-20251001"
 
-# Vector search via Qdrant (requires Qdrant server running)
-# Bare metal: docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-# Docker Compose: Qdrant and Ollama start automatically.
-# [vector]
-# enabled     = true
-# qdrant_addr = "localhost:6334"
-#
-# Embedding provider: "ollama" (default, free local), "voyage" (paid, best), "fnv" (offline fallback)
-# embedder = "ollama"
-#
-# Ollama settings (when embedder = "ollama", the default)
-# ollama_url   = "http://localhost:11434"
-# ollama_model = "bge-m3"
-# ollama_dim   = 1024
-# First run: pull the model with `ollama pull bge-m3`
-# Docker Compose: `docker compose exec ollama ollama pull bge-m3`
-#
-# Voyage AI settings (when embedder = "voyage")
-# voyage_api_key = "pa-..."
-# voyage_model   = "voyage-3-lite"
-# voyage_dim     = 512
-#
-# FNV (offline fallback, no external service needed)
-# embedder = "fnv"
-#
-# Environment variable overrides (useful for Docker):
-# CURLYCATCLAW_EMBEDDER   - override embedder type
-# CURLYCATCLAW_OLLAMA_URL - override Ollama URL
-
-# Hierarchical memory (persistent user facts + conversation summaries)
-# [memory]
-# enabled = true
-# max_facts = 50                    # Max user facts per user
-# summary_relevance_limit = 3       # Max relevant summaries to retrieve per message
-# summary_score_threshold = 0.3     # Min similarity score to include a summary
-# summarize_model = ""              # Model for summarization (default: same as claude.model)
-# min_messages_to_summarize = 4     # Skip summarization for very short conversations
-# vector_search_timeout_seconds = 5 # Timeout for Qdrant summary search (default: 5s)
-
-# WebAssembly skill plugins
-# [wasm]
-# enabled    = true
-# skills_dir = "/home/you/.curlycatclaw/skills"
-
-# Logging configuration
-# [logging]
-# level = "info"          # debug, info, warn, error
-# file = "/var/log/curlycatclaw/curlycatclaw.log"
-# max_size = 50           # MB per file before rotation
-# max_age = 14            # days to keep old files
-# max_backups = 3         # number of old files to keep
-# format = "text"         # text or json
-
-# Health check HTTP endpoint (for Docker/monitoring).
-# Enabled by default. Binds to 127.0.0.1 only.
+# Health check endpoint (Docker/monitoring). Enabled by default.
 [health]
 enabled = true
 port    = 8080
 
-# Tool confirmation: tool name prefixes that require user confirmation before executing.
+# Tool confirmation for sensitive operations.
 # confirm_tools = ["cancel_reminder", "filesystem__delete"]
 
-# Projects for CLI work (use /project command to switch).
+# Projects for CLI work (/project command).
 # [[projects]]
 # name = "myapp"
 # path = "/home/you/projects/myapp"
-#
-# [[projects]]
-# name = "backend"
-# path = "/home/you/projects/backend"
 
-# External skill collections (exec-based skills loaded from disk)
-# Each collection is a directory containing subdirectories with skill.toml files.
-# Skills are registered as namespace__skillname (namespace defaults to dir name).
+# Logging.
+# [logging]
+# level = "info"
+# file = "/var/log/curlycatclaw/curlycatclaw.log"
+# format = "text"
+
+# External skill collections.
 # [[skill_collections]]
 # path = "/home/you/.curlycatclaw/skills/my-tools"
-# namespace = "mytools"   # optional, defaults to directory or collection.toml name
 
-# Filesystem sandbox (Linux only, requires kernel 5.13+)
+# Wasm plugins.
+# [wasm]
+# enabled    = true
+# skills_dir = "/home/you/.curlycatclaw/skills"
+
+# Filesystem sandbox (Linux only, kernel 5.13+).
 # [sandbox]
 # enabled = false
-# extra_paths = ["/usr/share/ca-certificates"]       # additional read-only paths
-# extra_paths_rw = ["/var/lib/curlycatclaw/custom"]  # additional read-write paths
+
+# Encrypted MCP credentials: set CURLYCATCLAW_MASTER_KEY env var (64 hex chars).
