@@ -170,7 +170,7 @@ func Load(path string) (*Config, error) {
 		Vector: VectorConfig{
 			Enabled:    false,
 			QdrantAddr: "localhost:6334",
-			Embedder:   "fnv",
+			Embedder:   "ollama",
 		},
 		Wasm: WasmConfig{
 			Enabled:   false,
@@ -233,6 +233,12 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("CURLYCATCLAW_ISOLATED_HOME"); v != "" {
 		c.Claude.IsolatedHome = v
+	}
+	if v := os.Getenv("CURLYCATCLAW_EMBEDDER"); v != "" {
+		c.Vector.Embedder = v
+	}
+	if v := os.Getenv("CURLYCATCLAW_OLLAMA_URL"); v != "" {
+		c.Vector.OllamaURL = v
 	}
 }
 

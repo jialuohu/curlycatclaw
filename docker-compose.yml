@@ -11,9 +11,12 @@ services:
       - CURLYCATCLAW_DB_PATH=/data/curlycatclaw.db
       - CURLYCATCLAW_QDRANT_ADDR=qdrant:6334
       - CURLYCATCLAW_ISOLATED_HOME=/data/claude-home
+      - CURLYCATCLAW_OLLAMA_URL=http://ollama:11434
       - HOME=/data
     depends_on:
       qdrant:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
@@ -35,5 +38,19 @@ services:
       timeout: 3s
       retries: 3
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
 volumes:
   qdrant-data:
+  ollama-data:
