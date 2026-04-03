@@ -965,6 +965,10 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE conversations ADD COLUMN chat_type TEXT DEFAULT ''`)     //nolint:errcheck // column may already exist
 	s.db.Exec(`ALTER TABLE conversation_summaries ADD COLUMN chat_type TEXT DEFAULT ''`) //nolint:errcheck // column may already exist
 
+	// Index for PendingSummarizations() and RecoverableSummarizations() queries
+	// which filter on summarization_status and sort by updated_at.
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversations_sum_status ON conversations (summarization_status, updated_at ASC)`) //nolint:errcheck
+
 	const embedderStateSchema = `
 	CREATE TABLE IF NOT EXISTS embedder_state (
 		id                 INTEGER PRIMARY KEY CHECK (id = 1),

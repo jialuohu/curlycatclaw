@@ -2,10 +2,11 @@
 
 ## [0.20.3] - 2026-04-03
 
-Performance: compile all regex patterns at module level.
+Performance improvements: regex compilation and missing SQLite index.
 
 ### Changed
-- **Streaming path**: `balancedTagRe` in `hasBalancedTags()` was compiled from the static `telegramTags` list on every call to `ConvertSafe()` (which runs on every streaming `finalFlush`). Now compiled once at package init.
+- **Streaming path**: `balancedTagRe` in `hasBalancedTags()` was compiled from the static `telegramTags` list on every call to `ConvertSafe()` (which runs on every streaming `finalFlush`). Now compiled once at package init. All 10 regex patterns in `mdhtml` are now module-level.
+- **Summarization queries**: Added missing index on `conversations.summarization_status` for `PendingSummarizations()` and `RecoverableSummarizations()` queries. Column was added via ALTER TABLE migration but never indexed.
 
 ## [0.20.2] - 2026-04-03
 
