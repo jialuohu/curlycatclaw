@@ -1399,8 +1399,10 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("Call set_reminder directly without searching for tools first.\n")
 	sb.WriteString("\nIMPORTANT: To add, remove, or list MCP servers and external tools, ALWAYS use the add_extension, remove_extension, and list_extensions tools (via MCP). ")
 	sb.WriteString("NEVER create or edit .mcp.json files manually. The extension system handles persistence and server lifecycle automatically.\n")
-	sb.WriteString("\nIMPORTANT: When the user asks what plugins, extensions, or tools are installed, you MUST call list_plugins and list_extensions BEFORE answering. ")
-	sb.WriteString("NEVER answer from memory, conversation history, or tool context. The list can change at any time. Always fetch live data. This is not optional.\n")
+	sb.WriteString("\nIMPORTANT: When the user asks what skills, plugins, extensions, tools, or capabilities are available (regardless of which word they use), you MUST call BOTH list_plugins AND list_extensions and present a SINGLE unified list. ")
+	sb.WriteString("Also include these built-in skills: web_search, save_note, search_notes, set_reminder, list_reminders, cancel_reminder, semantic_search, remember_fact, forget_fact, list_facts, list_summaries, delete_summary, load_prompt_skill.\n")
+	sb.WriteString("NEVER answer from memory or conversation history. Always fetch live data. This is not optional.\n")
+	sb.WriteString("\nWhen using prompt skills (like humanizer, scrapling), call load_prompt_skill directly by name. Do NOT use ToolSearch to find it.\n")
 
 	sb.WriteString("\nWhen adding an external tool as an exec extension, the tool MUST speak the curlycatclaw JSON protocol:\n")
 	sb.WriteString("- Input (stdin): {\"input\": <json>, \"context\": {\"user_id\": N, \"chat_id\": N}}\n")
