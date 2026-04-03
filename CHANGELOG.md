@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.20.0] - 2026-04-03
+
+Google Workspace integration via gws CLI. Ask your Telegram bot to check your calendar, send emails, or search Drive. A standalone MCP server discovers Google Workspace tools dynamically and proxies them through the gws CLI.
+
+### Added
+- **curlycatclaw-gws-mcp**: standalone MCP server bridging Claude to Google Workspace via the gws CLI. Discovers tools dynamically from `gws generate-skills`.
+- **Boolean flag detection**: parses `gws --help` output to correctly type boolean flags (e.g. `--html`, `--draft`) in tool schemas. Concurrent detection with bounded workers.
+- **Argument injection prevention**: validates positional args with regex, expands reserved flags list to block gws global flags, and filters helper tool input through a server-side flag allowlist.
+- **Docker gws support**: both Dockerfiles install the gws CLI binary. Goreleaser image uses multi-stage download.
+- **Headless auth flow**: config supports `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` for exported OAuth credentials. No keyring needed in containers.
+- **28 unit tests** for the gws-mcp package covering discovery, execution, boolean detection, argument validation, and filter matching.
+
+### Changed
+- **Docker-first config**: `config.toml.example` and `docker-compose.yml` use `/data/...` paths exclusively. Removed redundant `CURLYCATCLAW_*` env var overrides from docker-compose.yml.
+- **Design spec updated**: `GWS_MCP_FILTER` corrected to `GWS_FILTER` in the integration design doc.
+
 ## [0.19.0] - 2026-04-02
 
 Background embedding migration. Switch embedding models without downtime. Change your config, restart, and the system migrates vectors in the background while search keeps working. Ollama with bge-m3 is now the default embedder.

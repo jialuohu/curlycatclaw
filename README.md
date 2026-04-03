@@ -37,6 +37,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ### Extensibility
 
+- **Google Workspace** — Gmail, Calendar, Drive, Sheets, Docs, Tasks via the gws CLI. Ask "what's on my calendar today?" or "send an email to Alice" from Telegram. Standalone MCP server (`curlycatclaw-gws-mcp`) discovers tools dynamically with boolean flag detection, argument validation, and server-side flag allowlists
 - **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio, add/remove at runtime via Telegram, proxied through curlycatclaw-skills for reliable tool discovery in CLI mode
 - **Runtime extension registry** — add MCP servers, exec skills, and prompt-based skills through Telegram chat (`add_extension`, `remove_extension`, `list_extensions`), persisted to disk, no config edits or restarts needed, MCP extensions hot-reloaded instantly without losing conversation context
 - **Encrypted API key management** — set API keys for MCP extensions via chat (`set_extension_env`), encrypted at rest with AES-256-GCM, resolved at spawn time
@@ -62,80 +63,87 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Quick Start
 
-You need a [Telegram bot token](https://t.me/BotFather) and either a [Claude API key](https://console.anthropic.com/) or a [Claude subscription](https://claude.ai/code). Three ways to install:
+You need a [Telegram bot token](https://t.me/BotFather) and either a [Claude API key](https://console.anthropic.com/) or a [Claude subscription](https://claude.ai/code). CurlyCatClaw runs via Docker.
 
-### Option 1: Claude Code (recommended, guided)
+### Option 1: Claude Code (recommended)
 
-If you have [Claude Code](https://claude.ai/code) installed, it walks you through everything:
+If you have [Claude Code](https://claude.ai/code) installed, it handles everything: Docker setup, config, credentials, and first run.
 
 ```bash
 git clone https://github.com/jialuohu/curlycatclaw.git && cd curlycatclaw && claude
 ```
 
-Then type `/setup`. The skill detects your system, installs dependencies, collects credentials, and starts the service.
+Then type `/setup`. The skill detects your system, collects credentials, starts Docker Compose, and pulls the embedding model.
 
-### Option 2: Docker (one command, no clone needed)
-
-```bash
-mkdir -p ~/.curlycatclaw && curl -sL https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/deploy/docker-compose.yml -o docker-compose.yml && curl -sL https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/config.toml.example -o ~/.curlycatclaw/config.toml && docker compose up -d
-```
-
-Edit `~/.curlycatclaw/config.toml` with your API keys and Telegram token before running. Includes Qdrant for vector search and Ollama for embeddings. First run: `docker compose exec ollama ollama pull bge-m3`. See [deploy/docker.md](deploy/docker.md) for details.
-
-### Option 3: Build from source
-
-Requires Go 1.25+ and a running [Qdrant](https://qdrant.tech/) instance.
+### Option 2: Docker (manual)
 
 ```bash
 git clone https://github.com/jialuohu/curlycatclaw.git && cd curlycatclaw
-go build -o curlycatclaw ./cmd/curlycatclaw
 mkdir -p ~/.curlycatclaw && cp config.toml.example ~/.curlycatclaw/config.toml
-# Edit config.toml with your credentials
-./curlycatclaw
+# Edit ~/.curlycatclaw/config.toml with your credentials
+docker compose up -d
+docker compose exec ollama ollama pull bge-m3  # first run only
 ```
 
 Then message your Telegram bot. Done.
 
 ## Configuration
 
-All config lives in `~/.curlycatclaw/config.toml`. Copy from the example and fill in your credentials. See [`config.toml.example`](config.toml.example) for the full reference with all options.
+All config lives in `~/.curlycatclaw/config.toml` (mounted as `/data/config.toml` inside Docker). Copy from the example and fill in your credentials. See [`config.toml.example`](config.toml.example) for the full reference.
 
 ```toml
 timezone = "America/Los_Angeles"
 
 [claude]
-# Choose ONE auth method:
-cli_path    = "/home/you/.local/bin/claude"  # Claude subscription (via CLI subprocess)
-oauth_token = "sk-ant-oat01-..."             # from `claude setup-token`
-# api_key  = "sk-ant-..."                    # Direct API (separate billing)
-model       = "claude-sonnet-4-6-20250514"
+cli_path      = "/usr/local/bin/claude"
+oauth_token   = "sk-ant-oat01-..."          # from `claude setup-token`
+model         = "claude-sonnet-4-6-20250514"
+isolated_home = "/data/claude-home"
 
 [telegram]
 token = "123456:ABC-DEF..."
-allowed_user_ids = [123456789]  # your Telegram user ID
+allowed_user_ids = [123456789]
 
 [storage]
-db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
+db_path = "/data/curlycatclaw.db"
 
-# Vector search with semantic embeddings (default: Ollama with bge-m3)
-# Requires Qdrant running. Docker Compose starts both Qdrant and Ollama.
-# First run: ollama pull bge-m3
 [vector]
 enabled     = true
-qdrant_addr = "localhost:6334"
-# embedder = "ollama"           # default (free, local)
-# embedder = "voyage"           # paid, best quality
-# embedder = "fnv"              # offline fallback (no semantic understanding)
+qdrant_addr = "qdrant:6334"
+embedder    = "ollama"
+ollama_url  = "http://ollama:11434"
+ollama_model = "bge-m3"
+ollama_dim   = 1024
 
-# Hierarchical memory (user facts + conversation summaries)
-# [memory]
-# enabled = true
+[memory]
+enabled = true
 
-# Health check (enabled by default, used by Docker)
 [health]
 enabled = true
 port    = 8080
 ```
+
+### Google Workspace (optional)
+
+Add Gmail, Calendar, Drive, Sheets, Docs, Tasks access. On a machine with a browser:
+
+```bash
+gws auth login -s drive,gmail,calendar,sheets,docs,tasks
+gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json
+```
+
+Then add to `config.toml`:
+
+```toml
+[[mcp.servers]]
+name    = "gws"
+command = "curlycatclaw-gws-mcp"
+[mcp.servers.env]
+GWS_PATH = "gws"
+GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = "/data/gws-credentials.json"
+```
+
+Rebuild and restart: `docker compose build curlycatclaw && docker compose up -d`
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes). MCP servers, Wasm plugins, cron tasks, and other advanced options are documented in `config.toml.example`.
 
