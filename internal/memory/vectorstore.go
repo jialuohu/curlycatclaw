@@ -103,17 +103,23 @@ func NewVectorStore(ctx context.Context, addr string, embedder Embedder) (*Vecto
 	}
 
 	vs := &VectorStore{client: client, embedder: embedder}
-	if err := vs.ensureCollection(ctx, collectionMessages); err != nil {
-		client.Close()
-		return nil, err
-	}
-	if err := vs.ensureCollection(ctx, collectionNotes); err != nil {
-		client.Close()
-		return nil, err
-	}
-	if err := vs.ensureCollection(ctx, collectionSummaries); err != nil {
-		client.Close()
-		return nil, err
+
+	// If aliases exist (versioned mode), skip ensureCollection to avoid
+	// recreating raw collections that would shadow the aliases (A4).
+	hasAliases, _ := vs.HasAliases(ctx)
+	if !hasAliases {
+		if err := vs.ensureCollection(ctx, collectionMessages); err != nil {
+			client.Close()
+			return nil, err
+		}
+		if err := vs.ensureCollection(ctx, collectionNotes); err != nil {
+			client.Close()
+			return nil, err
+		}
+		if err := vs.ensureCollection(ctx, collectionSummaries); err != nil {
+			client.Close()
+			return nil, err
+		}
 	}
 
 	return vs, nil
