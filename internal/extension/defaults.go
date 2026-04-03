@@ -156,7 +156,16 @@ func DefaultMCPExtensions() []Extension {
 	return out
 }
 
-// MarshalSkillFiles is exported for testing.
+// IsDefault returns true if the named extension is a pre-installed default.
+func IsDefault(name string) bool {
+	for _, def := range defaultExtensions {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func init() {
 	// Validate defaultExtensions at init time.
 	for _, def := range defaultExtensions {

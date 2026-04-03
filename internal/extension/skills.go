@@ -247,6 +247,10 @@ func removeExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regis
 				return "", fmt.Errorf("extension %q not found", params.Name)
 			}
 
+			if IsDefault(params.Name) {
+				return "", fmt.Errorf("extension %q is a pre-installed default and cannot be removed", params.Name)
+			}
+
 			// Remove from persistence first (rolls back on disk-write failure),
 			// then mutate runtime state.
 			if err := reg.Remove(params.Name); err != nil {
