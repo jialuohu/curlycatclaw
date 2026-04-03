@@ -95,37 +95,84 @@ func runMigrateEmbedder(configPath string, dryRun bool) error {
 		return fmt.Errorf("embedder connectivity test failed: %w", err)
 	}
 
-	// Delete existing collections.
-	collections := memory.CollectionNames()
-	for _, name := range collections {
-		slog.Info("deleting collection", "name", name)
-		if err := vs.DeleteCollection(ctx, name); err != nil {
-			return fmt.Errorf("delete collection %s: %w", name, err)
+	// Determine current state and target version.
+	embState, _ := store.GetEmbedderState()
+	activeVersion := 0
+	if embState != nil {
+		activeVersion = embState.ActiveVersion
+	}
+	newVersion := activeVersion + 1
+	newCollections := memory.VersionedNames(newVersion)
+
+	// Check if aliases exist (versioned mode).
+	hasAliases, _ := vs.HasAliases(ctx)
+
+	// Delete old collections.
+	if hasAliases && activeVersion > 0 {
+		// Delete the versioned collections that aliases point to.
+		oldCollections := memory.VersionedNames(activeVersion)
+		for _, name := range oldCollections {
+			slog.Info("deleting versioned collection", "name", name)
+			if err := vs.DeleteCollection(ctx, name); err != nil {
+				return fmt.Errorf("delete collection %s: %w", name, err)
+			}
+		}
+	} else {
+		// Delete raw collections (v0 or first migration).
+		for _, name := range memory.CollectionNames() {
+			slog.Info("deleting collection", "name", name)
+			if err := vs.DeleteCollection(ctx, name); err != nil {
+				return fmt.Errorf("delete collection %s: %w", name, err)
+			}
 		}
 	}
 
-	// Create new collections with the target embedder's dimensions.
-	for _, name := range collections {
+	// Create new versioned collections.
+	for _, name := range newCollections {
 		slog.Info("creating collection", "name", name, "dim", embedder.Dimension())
 		if err := vs.CreateCollection(ctx, name, embedder.Dimension()); err != nil {
 			return fmt.Errorf("create collection %s: %w", name, err)
 		}
 	}
 
-	// Migrate each source.
+	// Migrate each source into the new versioned collections.
 	start := time.Now()
-	if err := migrateTexts(ctx, vs, embedder, collections[0], messages); err != nil {
+	if err := migrateTexts(ctx, vs, embedder, newCollections[0], messages); err != nil {
 		return fmt.Errorf("migrate messages: %w", err)
 	}
-	if err := migrateTexts(ctx, vs, embedder, collections[1], notes); err != nil {
+	if err := migrateTexts(ctx, vs, embedder, newCollections[1], notes); err != nil {
 		return fmt.Errorf("migrate notes: %w", err)
 	}
-	if err := migrateSummaries(ctx, vs, embedder, collections[2], summaries); err != nil {
+	if err := migrateSummaries(ctx, vs, embedder, newCollections[2], summaries); err != nil {
 		return fmt.Errorf("migrate summaries: %w", err)
 	}
 
-	fmt.Printf("migration complete: %d messages, %d notes, %d summaries in %s\n",
-		len(messages), len(notes), len(summaries), time.Since(start).Round(time.Millisecond))
+	// Set up aliases.
+	if hasAliases {
+		// Swap existing aliases to new collections.
+		oldCollections := memory.VersionedNames(activeVersion)
+		if err := vs.SwapAliases(ctx, newCollections, oldCollections); err != nil {
+			return fmt.Errorf("swap aliases: %w", err)
+		}
+	} else {
+		// First time: create aliases (raw collection names already deleted above).
+		if err := vs.BootstrapAliases(ctx, newCollections); err != nil {
+			return fmt.Errorf("bootstrap aliases: %w", err)
+		}
+	}
+
+	// Update embedder state.
+	if embState == nil {
+		store.InitEmbedderState(embedder.Name()) //nolint:errcheck
+	}
+	if err := store.CompleteMigration(embedder.Name(), newVersion); err != nil {
+		slog.Warn("failed to update embedder state after migration", "err", err)
+	}
+	// Persist config at steady state (A6).
+	store.UpdateEmbedderConfig(embedder.Name(), cfg.Vector.Embedder, embedderModel(cfg.Vector), int(embedder.Dimension())) //nolint:errcheck
+
+	fmt.Printf("migration complete: %d messages, %d notes, %d summaries in %s (v%d)\n",
+		len(messages), len(notes), len(summaries), time.Since(start).Round(time.Millisecond), newVersion)
 	return nil
 }
 
