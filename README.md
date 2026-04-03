@@ -98,7 +98,7 @@ Then message your Telegram bot. Done.
 
 ## Configuration
 
-All config lives in `~/.curlycatclaw/config.toml`. Copy from the example:
+All config lives in `~/.curlycatclaw/config.toml`. Copy from the example and fill in your credentials. See [`config.toml.example`](config.toml.example) for the full reference with all options.
 
 ```toml
 timezone = "America/Los_Angeles"
@@ -106,11 +106,9 @@ timezone = "America/Los_Angeles"
 [claude]
 # Choose ONE auth method:
 cli_path    = "/home/you/.local/bin/claude"  # Claude subscription (via CLI subprocess)
-oauth_token = "sk-ant-oat01-..."             # long-lived token from `claude setup-token`
-# api_key  = "sk-ant-..."                    # API key (direct API, separate billing)
+oauth_token = "sk-ant-oat01-..."             # from `claude setup-token`
+# api_key  = "sk-ant-..."                    # Direct API (separate billing)
 model       = "claude-sonnet-4-6-20250514"
-# Plugin management (requires CLI mode)
-# isolated_home   = "/home/you/.curlycatclaw/claude-home"
 
 [telegram]
 token = "123456:ABC-DEF..."
@@ -119,21 +117,27 @@ allowed_user_ids = [123456789]  # your Telegram user ID
 [storage]
 db_path = "/home/you/.curlycatclaw/curlycatclaw.db"
 
-# Optional: MCP servers for extra tools
-[[mcp.servers]]
-name    = "search"
-command = "npx"
-args    = ["-y", "@anthropic/mcp-server-brave-search"]
-[mcp.servers.env]
-BRAVE_API_KEY = "encrypted:ref:brave_api_key"
+# Vector search with semantic embeddings (default: Ollama with bge-m3)
+# Requires Qdrant running. Docker Compose starts both Qdrant and Ollama.
+# First run: ollama pull bge-m3
+[vector]
+enabled     = true
+qdrant_addr = "localhost:6334"
+# embedder = "ollama"           # default (free, local)
+# embedder = "voyage"           # paid, best quality
+# embedder = "fnv"              # offline fallback (no semantic understanding)
 
-# Health check (enabled by default)
+# Hierarchical memory (user facts + conversation summaries)
+# [memory]
+# enabled = true
+
+# Health check (enabled by default, used by Docker)
 [health]
 enabled = true
 port    = 8080
 ```
 
-For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
+For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes). MCP servers, Wasm plugins, cron tasks, and other advanced options are documented in `config.toml.example`.
 
 ## Architecture
 
