@@ -3,6 +3,8 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -414,5 +416,44 @@ func TestBuildImageMessage(t *testing.T) {
 	}
 	if source["media_type"] != "image/jpeg" {
 		t.Errorf("media_type = %q, want %q", source["media_type"], "image/jpeg")
+	}
+}
+
+func TestFilteredSpawnEnv_ExcludesSecrets(t *testing.T) {
+	// Set a secret that should be filtered out.
+	t.Setenv("CURLYCATCLAW_MASTER_KEY", "deadbeef")
+	t.Setenv("TELEGRAM_TOKEN", "123456:ABC")
+	// Set an allowed var.
+	t.Setenv("TZ", "America/Los_Angeles")
+
+	env := filteredSpawnEnv()
+
+	envMap := make(map[string]string)
+	for _, e := range env {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			envMap[k] = v
+		}
+	}
+
+	// Secrets must NOT be present.
+	if _, ok := envMap["CURLYCATCLAW_MASTER_KEY"]; ok {
+		t.Error("CURLYCATCLAW_MASTER_KEY should be filtered from CLI subprocess env")
+	}
+	if _, ok := envMap["TELEGRAM_TOKEN"]; ok {
+		t.Error("TELEGRAM_TOKEN should be filtered from CLI subprocess env")
+	}
+
+	// Allowed vars must be present.
+	if envMap["TZ"] != "America/Los_Angeles" {
+		t.Errorf("TZ should be in filtered env, got %q", envMap["TZ"])
+	}
+
+	// PATH must always be present (baseline).
+	if _, ok := envMap["PATH"]; !ok {
+		// PATH is almost always set, but on some CI it might not be.
+		// Only fail if it was set in the original env.
+		if os.Getenv("PATH") != "" {
+			t.Error("PATH should be in filtered env")
+		}
 	}
 }
