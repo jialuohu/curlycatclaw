@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/qdrant/go-client/qdrant"
@@ -27,10 +29,17 @@ type SearchResult struct {
 	ChatType  string // "private", "group", "supergroup", or "" (legacy)
 }
 
+// dualWriteState holds the state for dual-writing to a new collection during migration.
+type dualWriteState struct {
+	embedder    Embedder  // new embedder for the target collection
+	collections [3]string // versioned collection names [messages, notes, summaries]
+}
+
 // VectorStore provides vector search backed by Qdrant.
 type VectorStore struct {
 	client   *qdrant.Client
 	embedder Embedder
+	dw       atomic.Pointer[dualWriteState] // non-nil during migration
 }
 
 // NewVectorStoreRaw connects to Qdrant at addr without creating collections or
@@ -111,11 +120,12 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 		"created_at": time.Now().UTC().Format(time.RFC3339),
 	})
 
+	pointID := qdrant.NewID(ToUUID(id))
 	_, err = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: collection,
 		Points: []*qdrant.PointStruct{
 			{
-				Id:      qdrant.NewID(ToUUID(id)),
+				Id:      pointID,
 				Vectors: qdrant.NewVectorsDense(vec),
 				Payload: payload,
 			},
@@ -124,6 +134,22 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 	if err != nil {
 		return fmt.Errorf("vectorstore: upsert: %w", err)
 	}
+
+	// Dual-write to new collection during migration (best-effort).
+	if dw := vs.dw.Load(); dw != nil {
+		dwCol := dw.collections[collectionIndex(source)]
+		if vec2, err2 := dw.embedder.Embed(ctx, text); err2 == nil {
+			if _, err2 = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+				CollectionName: dwCol,
+				Points:         []*qdrant.PointStruct{{Id: pointID, Vectors: qdrant.NewVectorsDense(vec2), Payload: payload}},
+			}); err2 != nil {
+				slog.Warn("dual-write upsert failed", "collection", dwCol, "err", err2)
+			}
+		} else {
+			slog.Warn("dual-write embed failed", "err", err2)
+		}
+	}
+
 	return nil
 }
 
@@ -142,11 +168,12 @@ func (vs *VectorStore) IndexSummary(ctx context.Context, id string, text string,
 		"created_at": time.Now().UTC().Format(time.RFC3339),
 	})
 
+	pointID := qdrant.NewID(ToUUID(id))
 	_, err = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: collectionSummaries,
 		Points: []*qdrant.PointStruct{
 			{
-				Id:      qdrant.NewID(ToUUID(id)),
+				Id:      pointID,
 				Vectors: qdrant.NewVectorsDense(vec),
 				Payload: payload,
 			},
@@ -155,6 +182,21 @@ func (vs *VectorStore) IndexSummary(ctx context.Context, id string, text string,
 	if err != nil {
 		return fmt.Errorf("vectorstore: upsert summary: %w", err)
 	}
+
+	// Dual-write to new summaries collection during migration (best-effort).
+	if dw := vs.dw.Load(); dw != nil {
+		if vec2, err2 := dw.embedder.Embed(ctx, text); err2 == nil {
+			if _, err2 = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+				CollectionName: dw.collections[2],
+				Points:         []*qdrant.PointStruct{{Id: pointID, Vectors: qdrant.NewVectorsDense(vec2), Payload: payload}},
+			}); err2 != nil {
+				slog.Warn("dual-write summary upsert failed", "err", err2)
+			}
+		} else {
+			slog.Warn("dual-write summary embed failed", "err", err2)
+		}
+	}
+
 	return nil
 }
 
@@ -348,6 +390,151 @@ func (vs *VectorStore) BatchUpsert(ctx context.Context, collection string, point
 // CollectionNames returns the names of the three standard collections.
 func CollectionNames() [3]string {
 	return [3]string{collectionMessages, collectionNotes, collectionSummaries}
+}
+
+// VersionedNames returns versioned collection names for the given version.
+func VersionedNames(version int) [3]string {
+	base := CollectionNames()
+	return [3]string{
+		fmt.Sprintf("%s_v%d", base[0], version),
+		fmt.Sprintf("%s_v%d", base[1], version),
+		fmt.Sprintf("%s_v%d", base[2], version),
+	}
+}
+
+// collectionIndex maps a source type to its index in the collection triplet.
+func collectionIndex(source string) int {
+	switch source {
+	case "note":
+		return 1
+	case "summary":
+		return 2
+	default:
+		return 0
+	}
+}
+
+// EnableDualWrite activates dual-writing to new versioned collections.
+func (vs *VectorStore) EnableDualWrite(newEmb Embedder, newCollections [3]string) {
+	vs.dw.Store(&dualWriteState{embedder: newEmb, collections: newCollections})
+	slog.Info("dual-write enabled", "collections", newCollections)
+}
+
+// DisableDualWrite stops dual-writing.
+func (vs *VectorStore) DisableDualWrite() {
+	vs.dw.Store(nil)
+	slog.Info("dual-write disabled")
+}
+
+// CreateVersionedCollections creates the three versioned collections.
+func (vs *VectorStore) CreateVersionedCollections(ctx context.Context, names [3]string, dim uint64) error {
+	for _, name := range names {
+		if err := vs.CreateCollection(ctx, name, dim); err != nil {
+			return fmt.Errorf("vectorstore: create versioned %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// DeleteCollections deletes the three named collections (best-effort, logs errors).
+func (vs *VectorStore) DeleteCollections(ctx context.Context, names [3]string) {
+	for _, name := range names {
+		if err := vs.DeleteCollection(ctx, name); err != nil {
+			slog.Warn("failed to delete collection", "name", name, "err", err)
+		}
+	}
+}
+
+// SwapAliases atomically repoints the three standard aliases to new versioned collections.
+// Used for vN→vN+1 transitions where aliases already exist.
+func (vs *VectorStore) SwapAliases(ctx context.Context, newCollections, oldCollections [3]string) error {
+	aliasNames := CollectionNames()
+	var actions []*qdrant.AliasOperations
+	for i := range 3 {
+		actions = append(actions,
+			&qdrant.AliasOperations{
+				Action: &qdrant.AliasOperations_DeleteAlias{
+					DeleteAlias: &qdrant.DeleteAlias{AliasName: aliasNames[i]},
+				},
+			},
+			&qdrant.AliasOperations{
+				Action: &qdrant.AliasOperations_CreateAlias{
+					CreateAlias: &qdrant.CreateAlias{
+						AliasName:      aliasNames[i],
+						CollectionName: newCollections[i],
+					},
+				},
+			},
+		)
+	}
+	if err := vs.client.UpdateAliases(ctx, actions); err != nil {
+		return fmt.Errorf("vectorstore: swap aliases: %w", err)
+	}
+	slog.Info("aliases swapped", "new", newCollections)
+	return nil
+}
+
+// BootstrapAliases converts raw v0 collections to the versioned+alias scheme.
+// This deletes the raw collections and creates aliases pointing to the new versioned collections.
+// There is a brief gap during this one-time operation.
+func (vs *VectorStore) BootstrapAliases(ctx context.Context, newCollections [3]string) error {
+	aliasNames := CollectionNames()
+	slog.Warn("converting to versioned collections (one-time operation, brief search gap)")
+
+	// Delete raw collections (they can't coexist with same-name aliases).
+	for _, name := range aliasNames {
+		if err := vs.DeleteCollection(ctx, name); err != nil {
+			return fmt.Errorf("vectorstore: bootstrap delete %s: %w", name, err)
+		}
+	}
+
+	// Create aliases pointing to the new versioned collections.
+	var actions []*qdrant.AliasOperations
+	for i := range 3 {
+		actions = append(actions, &qdrant.AliasOperations{
+			Action: &qdrant.AliasOperations_CreateAlias{
+				CreateAlias: &qdrant.CreateAlias{
+					AliasName:      aliasNames[i],
+					CollectionName: newCollections[i],
+				},
+			},
+		})
+	}
+	if err := vs.client.UpdateAliases(ctx, actions); err != nil {
+		return fmt.Errorf("vectorstore: bootstrap aliases: %w", err)
+	}
+	slog.Info("versioned collection aliases created", "collections", newCollections)
+	return nil
+}
+
+// ListAliasTargets returns a map of alias→collection for all curlycatclaw aliases.
+func (vs *VectorStore) ListAliasTargets(ctx context.Context) (map[string]string, error) {
+	aliases, err := vs.client.ListAliases(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: list aliases: %w", err)
+	}
+	result := make(map[string]string)
+	for _, a := range aliases {
+		if strings.HasPrefix(a.AliasName, "curlycatclaw_") {
+			result[a.AliasName] = a.CollectionName
+		}
+	}
+	return result, nil
+}
+
+// HasAliases checks whether the standard collection names are aliases (not raw collections).
+func (vs *VectorStore) HasAliases(ctx context.Context) (bool, error) {
+	targets, err := vs.ListAliasTargets(ctx)
+	if err != nil {
+		return false, err
+	}
+	// If any of the standard names appear as aliases, we're in versioned mode.
+	for _, name := range CollectionNames() {
+		if _, ok := targets[name]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Close tears down the gRPC connection.
