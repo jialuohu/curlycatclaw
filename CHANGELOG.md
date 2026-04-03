@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.20.3] - 2026-04-03
+
+Performance improvements: regex compilation and missing SQLite index.
+
+### Changed
+- **Streaming path**: `balancedTagRe` in `hasBalancedTags()` was compiled from the static `telegramTags` list on every call to `ConvertSafe()` (which runs on every streaming `finalFlush`). Now compiled once at package init. All 10 regex patterns in `mdhtml` are now module-level.
+- **Summarization queries**: Added missing index on `conversations.summarization_status` for `PendingSummarizations()` and `RecoverableSummarizations()` queries. Column was added via ALTER TABLE migration but never indexed.
+- **FNV embedder**: Reuse hash object with `Reset()` instead of allocating per word. Same deterministic output, fewer heap allocations.
+- **Master key file**: Skip redundant `os.WriteFile` on every `buildMCPConfig` call. The key is immutable, write once on first message only.
+- **Context builder**: Reduce message fetch multiplier from `*20` to `*4`. Loads ~100 messages instead of ~500 when building the 25-turn sliding window.
+
 ## [0.20.2] - 2026-04-03
 
 Security hardening: CLI subprocess environment filtering.
