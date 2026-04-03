@@ -77,6 +77,10 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 - **Tool confirmation**: `confirm_tools` prefix list for sensitive operations, stateless via Claude re-ask
 - **Logging**: configurable level/format/file via `[logging]` config, lumberjack rotation
 - **Sandbox**: Landlock filesystem restriction (Linux-only, `//go:build linux`), opt-in via `[sandbox]` config
+- **Google Workspace MCP**: standalone `curlycatclaw-gws-mcp` binary bridges Claude to Google Workspace via the `gws` CLI; discovers tools dynamically from `gws generate-skills`; concurrent boolean flag detection from `--help` output; argument injection prevention (`validArg` regex + expanded reserved flags + server-side flag allowlist per helper tool); `_user_context` stripped; `generateSkills` uses `os.TempDir()` for Docker compatibility
+- **Config MCP server proxy**: in CLI mode, config-based MCP servers (`[[mcp.servers]]`) are proxied through curlycatclaw-skills subprocess (same pattern as runtime extensions); system prompt lists discovered tools so Claude uses them proactively
+- **Default extension protection**: pre-installed extensions (scrapling-mcp, scrapling, humanizer) cannot be removed via `remove_extension`; `IsDefault()` guard in `internal/extension/defaults.go`
+- **Unified capability listing**: system prompt instructs Claude to call both `list_plugins` and `list_extensions` for any capability query; built-in skills listed statically; fresh tool calls enforced every time
 
 ## Key Files
 
@@ -115,9 +119,11 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 
 ## Configuration
 
-Copy `config.toml.example` to `~/.curlycatclaw/config.toml` and fill in credentials.
+Copy `config.toml.example` to `~/.curlycatclaw/config.toml` and fill in credentials. All paths use Docker mount paths (`/data/...`). Docker Compose mounts `~/.curlycatclaw` as `/data`.
 
 Auth modes: `cli_path` + `oauth_token` (Claude subscription via CLI subprocess) or `api_key` (direct API). CLI mode uses `oauth_token` from `claude setup-token` injected as `CLAUDE_CODE_OAUTH_TOKEN` env var.
+
+For Google Workspace, export credentials on a machine with a browser (`gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json`) and set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = "/data/gws-credentials.json"` in `[mcp.servers.env]`.
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 

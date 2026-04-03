@@ -11,6 +11,11 @@ Google Workspace integration via gws CLI. Ask your Telegram bot to check your ca
 - **Docker gws support**: both Dockerfiles install the gws CLI binary. Goreleaser image uses multi-stage download.
 - **Headless auth flow**: config supports `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` for exported OAuth credentials. No keyring needed in containers.
 - **28 unit tests** for the gws-mcp package covering discovery, execution, boolean detection, argument validation, and filter matching.
+- **Config MCP server proxy**: config-based MCP servers are now proxied through curlycatclaw-skills in CLI mode, so Claude can discover and use them.
+- **System prompt tool awareness**: Claude's system prompt lists all available MCP tools, so it uses them proactively instead of saying "I don't have access."
+- **Unified capability listing**: asking "what skills?" now shows plugins, extensions, config MCP servers, and built-in skills in one response.
+- **Humanizer prompt skill**: pre-installed skill that removes AI writing patterns from text (29 patterns from Wikipedia's AI writing guide).
+- **Default extension protection**: pre-installed extensions (scrapling-mcp, scrapling, humanizer) cannot be removed via Telegram.
 
 ### Changed
 - **Docker-first config**: `config.toml.example` and `docker-compose.yml` use `/data/...` paths exclusively. Removed redundant `CURLYCATCLAW_*` env var overrides from docker-compose.yml.
