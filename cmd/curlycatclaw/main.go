@@ -318,7 +318,7 @@ func run(configPath string) error {
 					slog.Error("failed to start migration", "err", err)
 				} else {
 					st, _ := store.GetEmbedderState()
-					migrationMgr = memory.NewMigrationManager(store, nil, oldEmb, embedder, st) // vs set below
+					migrationMgr = memory.NewMigrationManager(store, nil, oldEmb, embedder, st, cfg.Vector.Embedder, embedderModel(cfg.Vector), int(embedder.Dimension())) // vs set below
 				}
 			} else {
 				slog.Warn("cannot reconstruct old embedder, using new embedder directly")
@@ -329,7 +329,7 @@ func run(configPath string) error {
 			oldEmb := reconstructEmbedder(embState, cfg.Vector)
 			if oldEmb != nil {
 				servingEmbedder = oldEmb
-				migrationMgr = memory.NewMigrationManager(store, nil, oldEmb, embedder, embState) // vs set below
+				migrationMgr = memory.NewMigrationManager(store, nil, oldEmb, embedder, embState, cfg.Vector.Embedder, embedderModel(cfg.Vector), int(embedder.Dimension())) // vs set below
 			} else {
 				slog.Warn("cannot reconstruct old embedder for crash recovery, using new embedder")
 			}

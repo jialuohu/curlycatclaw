@@ -718,18 +718,19 @@ func (s *Store) SetMigrationStatus(status string) error {
 }
 
 // CompleteMigration clears migration fields and updates the active embedder/version.
-func (s *Store) CompleteMigration(newEmbedder string, newVersion int) error {
+// Preserves the new embedder's type/model/dim so the next migration can reconstruct it.
+func (s *Store) CompleteMigration(newEmbedder string, newVersion int, newType, newModel string, newDim int) error {
 	_, err := s.db.Exec(`
 		UPDATE embedder_state SET
 			active_embedder = ?, active_version = ?,
 			migrating_embedder = NULL, migrating_version = NULL,
 			migration_status = NULL,
 			last_msg_id = 0, last_note_id = 0, last_summary_id = 0,
-			old_embedder_type = NULL, old_embedder_model = NULL, old_embedder_dim = NULL,
+			old_embedder_type = ?, old_embedder_model = ?, old_embedder_dim = ?,
 			started_at = NULL,
 			updated_at = datetime('now')
 		WHERE id = 1`,
-		newEmbedder, newVersion,
+		newEmbedder, newVersion, newType, newModel, newDim,
 	)
 	if err != nil {
 		return fmt.Errorf("memory: complete migration: %w", err)

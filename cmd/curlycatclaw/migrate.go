@@ -165,7 +165,7 @@ func runMigrateEmbedder(configPath string, dryRun bool) error {
 	if embState == nil {
 		store.InitEmbedderState(embedder.Name()) //nolint:errcheck
 	}
-	if err := store.CompleteMigration(embedder.Name(), newVersion); err != nil {
+	if err := store.CompleteMigration(embedder.Name(), newVersion, cfg.Vector.Embedder, embedderModel(cfg.Vector), int(embedder.Dimension())); err != nil {
 		slog.Warn("failed to update embedder state after migration", "err", err)
 	}
 	// Persist config at steady state (A6).

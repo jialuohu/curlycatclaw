@@ -111,7 +111,7 @@ func TestEmbedderStateMigrationLifecycle(t *testing.T) {
 	}
 
 	// Complete.
-	if err := s.CompleteMigration("ollama-bge-m3-1024", 1); err != nil {
+	if err := s.CompleteMigration("ollama-bge-m3-1024", 1, "ollama", "bge-m3", 1024); err != nil {
 		t.Fatalf("CompleteMigration: %v", err)
 	}
 	st, _ = s.GetEmbedderState()
@@ -129,6 +129,16 @@ func TestEmbedderStateMigrationLifecycle(t *testing.T) {
 	}
 	if st.LastMsgID != 0 {
 		t.Errorf("LastMsgID should be reset, got %d", st.LastMsgID)
+	}
+	// Verify metadata preserved for next migration (Fix 3).
+	if st.OldEmbedderType != "ollama" {
+		t.Errorf("OldEmbedderType should be preserved as 'ollama', got %q", st.OldEmbedderType)
+	}
+	if st.OldEmbedderModel != "bge-m3" {
+		t.Errorf("OldEmbedderModel should be preserved as 'bge-m3', got %q", st.OldEmbedderModel)
+	}
+	if st.OldEmbedderDim != 1024 {
+		t.Errorf("OldEmbedderDim should be preserved as 1024, got %d", st.OldEmbedderDim)
 	}
 }
 

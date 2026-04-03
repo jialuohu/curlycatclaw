@@ -39,7 +39,22 @@ type dualWriteState struct {
 type VectorStore struct {
 	client   *qdrant.Client
 	embedder Embedder
+	embSwap  atomic.Value // holds Embedder; non-nil after migration swap
 	dw       atomic.Pointer[dualWriteState] // non-nil during migration
+}
+
+// activeEmbedder returns the current embedder, checking for a post-migration swap.
+func (vs *VectorStore) activeEmbedder() Embedder {
+	if swapped := vs.embSwap.Load(); swapped != nil {
+		return swapped.(Embedder)
+	}
+	return vs.embedder
+}
+
+// SwapEmbedder atomically replaces the live embedder (called after migration alias swap).
+func (vs *VectorStore) SwapEmbedder(newEmb Embedder) {
+	vs.embSwap.Store(newEmb)
+	slog.Info("live embedder swapped", "new", newEmb.Name())
 }
 
 // NewVectorStoreRaw connects to Qdrant at addr without creating collections or
@@ -108,7 +123,7 @@ func NewVectorStore(ctx context.Context, addr string, embedder Embedder) (*Vecto
 // source must be "message", "note", or "summary".
 func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID int64, chatID int64, source string) error {
 	collection := collectionForSource(source)
-	vec, err := vs.embedder.Embed(ctx, text)
+	vec, err := vs.activeEmbedder().Embed(ctx, text)
 	if err != nil {
 		return fmt.Errorf("vectorstore: embed: %w", err)
 	}
@@ -121,7 +136,7 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 	})
 
 	pointID := qdrant.NewID(ToUUID(id))
-	_, err = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+	_, primaryErr := vs.client.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: collection,
 		Points: []*qdrant.PointStruct{
 			{
@@ -131,11 +146,9 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 			},
 		},
 	})
-	if err != nil {
-		return fmt.Errorf("vectorstore: upsert: %w", err)
-	}
 
 	// Dual-write to new collection during migration (best-effort).
+	// Runs even if primary upsert failed (e.g., during v0→v1 bootstrap gap).
 	if dw := vs.dw.Load(); dw != nil {
 		dwCol := dw.collections[collectionIndex(source)]
 		if vec2, err2 := dw.embedder.Embed(ctx, text); err2 == nil {
@@ -150,12 +163,15 @@ func (vs *VectorStore) Index(ctx context.Context, id string, text string, userID
 		}
 	}
 
+	if primaryErr != nil {
+		return fmt.Errorf("vectorstore: upsert: %w", primaryErr)
+	}
 	return nil
 }
 
 // IndexSummary upserts a summary with chat_type metadata for chat-type-aware retrieval.
 func (vs *VectorStore) IndexSummary(ctx context.Context, id string, text string, userID int64, chatID int64, chatType string) error {
-	vec, err := vs.embedder.Embed(ctx, text)
+	vec, err := vs.activeEmbedder().Embed(ctx, text)
 	if err != nil {
 		return fmt.Errorf("vectorstore: embed: %w", err)
 	}
@@ -169,7 +185,7 @@ func (vs *VectorStore) IndexSummary(ctx context.Context, id string, text string,
 	})
 
 	pointID := qdrant.NewID(ToUUID(id))
-	_, err = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+	_, primaryErr := vs.client.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: collectionSummaries,
 		Points: []*qdrant.PointStruct{
 			{
@@ -179,11 +195,9 @@ func (vs *VectorStore) IndexSummary(ctx context.Context, id string, text string,
 			},
 		},
 	})
-	if err != nil {
-		return fmt.Errorf("vectorstore: upsert summary: %w", err)
-	}
 
 	// Dual-write to new summaries collection during migration (best-effort).
+	// Runs even if primary upsert failed (e.g., during v0→v1 bootstrap gap).
 	if dw := vs.dw.Load(); dw != nil {
 		if vec2, err2 := dw.embedder.Embed(ctx, text); err2 == nil {
 			if _, err2 = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
@@ -197,13 +211,16 @@ func (vs *VectorStore) IndexSummary(ctx context.Context, id string, text string,
 		}
 	}
 
+	if primaryErr != nil {
+		return fmt.Errorf("vectorstore: upsert summary: %w", primaryErr)
+	}
 	return nil
 }
 
 // Search queries both collections for documents matching the query,
 // filtered by userID, and returns the top limit results.
 func (vs *VectorStore) Search(ctx context.Context, query string, userID int64, limit int) ([]SearchResult, error) {
-	vec, err := vs.embedder.Embed(ctx, query)
+	vec, err := vs.activeEmbedder().Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("vectorstore: embed query: %w", err)
 	}
@@ -275,7 +292,7 @@ func (vs *VectorStore) Search(ctx context.Context, query string, userID int64, l
 // For group/supergroup chats: returns only summaries from this specific chat.
 // Legacy vectors without chat_type are treated as private.
 func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID, chatID int64, chatType string, limit int, scoreThreshold float32) ([]SearchResult, error) {
-	vec, err := vs.embedder.Embed(ctx, query)
+	vec, err := vs.activeEmbedder().Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("vectorstore: embed query: %w", err)
 	}
@@ -561,7 +578,7 @@ func (vs *VectorStore) ensureCollection(ctx context.Context, name string) error 
 	err = vs.client.CreateCollection(ctx, &qdrant.CreateCollection{
 		CollectionName: name,
 		VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
-			Size:     vs.embedder.Dimension(),
+			Size:     vs.activeEmbedder().Dimension(),
 			Distance: qdrant.Distance_Cosine,
 		}),
 	})

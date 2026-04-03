@@ -19,19 +19,27 @@ type MigrationManager struct {
 	newEmb Embedder // for re-embedding into new versioned collections
 	state  *EmbedderState
 
+	// New embedder identity for persisting after completion.
+	newType  string
+	newModel string
+	newDim   int
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
 
 // NewMigrationManager creates a manager but does not start it.
-func NewMigrationManager(store *Store, vs *VectorStore, oldEmb, newEmb Embedder, state *EmbedderState) *MigrationManager {
+func NewMigrationManager(store *Store, vs *VectorStore, oldEmb, newEmb Embedder, state *EmbedderState, newType, newModel string, newDim int) *MigrationManager {
 	return &MigrationManager{
-		store:  store,
-		vs:     vs,
-		oldEmb: oldEmb,
-		newEmb: newEmb,
-		state:  state,
-		done:   make(chan struct{}),
+		store:    store,
+		vs:       vs,
+		oldEmb:   oldEmb,
+		newEmb:   newEmb,
+		state:    state,
+		newType:  newType,
+		newModel: newModel,
+		newDim:   newDim,
+		done:     make(chan struct{}),
 	}
 }
 
@@ -126,7 +134,10 @@ func (m *MigrationManager) run(ctx context.Context) {
 		return
 	}
 
-	// Disable dual-write — new collections are now live.
+	// Swap the live embedder so queries use the new model against new collections.
+	m.vs.SwapEmbedder(m.newEmb)
+
+	// Disable dual-write — new collections are now live with new embedder.
 	m.vs.DisableDualWrite()
 
 	// Clean up old versioned collections (best-effort).
@@ -136,7 +147,7 @@ func (m *MigrationManager) run(ctx context.Context) {
 	}
 
 	// Update SQLite state.
-	if err := m.store.CompleteMigration(m.newEmb.Name(), newVersion); err != nil {
+	if err := m.store.CompleteMigration(m.newEmb.Name(), newVersion, m.newType, m.newModel, m.newDim); err != nil {
 		slog.Error("migration: complete state update failed", "err", err)
 		return
 	}
