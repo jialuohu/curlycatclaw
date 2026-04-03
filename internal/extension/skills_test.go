@@ -46,7 +46,7 @@ func setupTest(t *testing.T) (*Registry, *mockMCPAdder, *skills.Registry, []*ski
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
 	_ = reloadCalled
-	ss := InitExtensionSkills(reg, mcpMgr, skillReg, reloadFunc, nil, nil)
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, reloadFunc, nil, nil, nil)
 	return reg, mcpMgr, skillReg, ss
 }
 
@@ -90,7 +90,7 @@ func TestAddMCPExtensionStartFailure(t *testing.T) {
 	}
 	mcpMgr := &mockMCPAdder{addErr: errors.New("connection refused")}
 	skillReg := skills.NewRegistry()
-	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil)
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"broken","type":"mcp","command":"echo"}`
@@ -110,7 +110,7 @@ func TestAddMCPExtensionNilManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	skillReg := skills.NewRegistry()
-	ss := InitExtensionSkills(reg, nil, skillReg, nil, nil, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, nil, nil, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"remote","type":"mcp","command":"npx","args":["-y","mcp-server"]}`
@@ -212,7 +212,7 @@ func TestListExtensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "No runtime extensions") {
+	if !strings.Contains(result, "No extensions") {
 		t.Fatalf("expected empty message, got: %s", result)
 	}
 
@@ -229,8 +229,8 @@ func TestListExtensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "2 extension(s)") {
-		t.Fatalf("expected 2 extensions, got: %s", result)
+	if !strings.Contains(result, "Runtime extensions") {
+		t.Fatalf("expected runtime extensions section, got: %s", result)
 	}
 	if !strings.Contains(result, "mcp1") || !strings.Contains(result, "exec1") {
 		t.Fatalf("expected both extensions listed, got: %s", result)
@@ -380,7 +380,7 @@ func TestAddMCPExtensionHotReload(t *testing.T) {
 	}
 	skillReg := skills.NewRegistry()
 	hr := &mockMCPHotReloader{}
-	ss := InitExtensionSkills(reg, nil, skillReg, nil, hr, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, nil, hr, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"hot","type":"mcp","command":"echo"}`
@@ -406,7 +406,7 @@ func TestAddMCPExtensionHotReloadFallback(t *testing.T) {
 	hr := &mockMCPHotReloader{connectErr: errors.New("connection refused")}
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
-	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"fallback","type":"mcp","command":"echo"}`
@@ -432,7 +432,7 @@ func TestRemoveMCPExtensionHotReload(t *testing.T) {
 	hr := &mockMCPHotReloader{}
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
-	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil)
 
 	// Add first.
 	addSkill := findSkill(ss, "add_extension")
@@ -467,7 +467,7 @@ func TestRemoveMCPExtensionHotReloadFallback(t *testing.T) {
 	hr := &mockMCPHotReloader{disconnectErr: errors.New("session gone")}
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
-	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil)
 
 	addSkill := findSkill(ss, "add_extension")
 	if _, err := addSkill.Execute(context.Background(), json.RawMessage(`{"name":"rm-fail","type":"mcp","command":"echo"}`)); err != nil {

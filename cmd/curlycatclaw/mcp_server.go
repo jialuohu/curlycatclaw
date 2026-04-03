@@ -212,7 +212,11 @@ func runMCPServer() error {
 		hotReloader = newMCPHotReloader(server, userID, chatID, credStore)
 
 		// mcpMgr is nil in MCP server subprocess mode.
-		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore) {
+		var cfgServers []extension.ConfigMCPServer
+		for _, srv := range cfg.MCP.Servers {
+			cfgServers = append(cfgServers, extension.ConfigMCPServer{Name: srv.Name, Command: srv.Command})
+		}
+		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore, cfgServers) {
 			reg.Register(s)
 		}
 	}
