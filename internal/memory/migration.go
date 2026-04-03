@@ -124,7 +124,7 @@ func (m *MigrationManager) run(ctx context.Context) {
 	}
 
 	// Alias swap.
-	if err := m.swapAliases(ctx, newVersion, newCollections); err != nil {
+	if err := m.swapAliases(ctx, newCollections); err != nil {
 		if ctx.Err() != nil {
 			slog.Info("migration cancelled during swap")
 			return
@@ -314,7 +314,7 @@ func (m *MigrationManager) catchUp(ctx context.Context, newCollections [3]string
 	return nil
 }
 
-func (m *MigrationManager) swapAliases(ctx context.Context, _ int, newCollections [3]string) error {
+func (m *MigrationManager) swapAliases(ctx context.Context, newCollections [3]string) error {
 	if m.state.ActiveVersion == 0 {
 		// First migration: convert raw collections to aliased scheme.
 		return m.vs.BootstrapAliases(ctx, newCollections)

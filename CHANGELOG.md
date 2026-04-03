@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.20.1] - 2026-04-03
+
+Codebase hygiene pass. Removes dead code, fixes a file descriptor leak, strengthens a path traversal guard, and cleans up inconsistent error handling.
+
+### Fixed
+- **File descriptor leak**: `stdout` pipe not closed when `cmd.Start()` fails in CLI subprocess spawn (`internal/claude/subprocess.go`)
+- **Path traversal guard**: `filepath.Abs()` error was silently discarded in skill loader, weakening the command-outside-directory check (`internal/skillloader/loader.go`)
+- **Inconsistent error handling**: `RowsAffected()` error discarded in `DeleteSummary`, now checked like `DeleteFact` (`internal/memory/store.go`)
+- **Misplaced doc comment**: `checkPluginCommand` doc was attached to `makePluginUpdateExecute` (`skills/plugin.go`)
+- **Regex recompilation**: `simpleItalicRe` compiled per call instead of once at module level (`internal/mdhtml/convert.go`)
+
+### Removed
+- `DefaultMCPExtensions()`, `SkillFilesJSON()` from extension defaults (never called)
+- `CreateVersionedCollections()` from vector store (migration uses `CreateCollection` directly)
+- `VoyageEmbedder.EmbedQuery()` (all search paths use `Embed()` via interface)
+- Custom `contains()`/`containsStr()` test helpers (replaced with `strings.Contains`)
+- Unused `delay` variable in reminder scheduling
+- Unused `_ int` parameter from migration `swapAliases`
+- Stale `// indirect` marker on `cron/v3` dependency
+
 ## [0.20.0] - 2026-04-03
 
 Google Workspace integration via gws CLI. Ask your Telegram bot to check your calendar, send emails, or search Drive. A standalone MCP server discovers Google Workspace tools dynamically and proxies them through the gws CLI.

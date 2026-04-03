@@ -11,6 +11,7 @@ require (
 	github.com/landlock-lsm/go-landlock v0.7.0
 	github.com/modelcontextprotocol/go-sdk v0.8.0
 	github.com/qdrant/go-client v1.17.1
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/tetratelabs/wazero v1.11.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	modernc.org/sqlite v1.47.0
@@ -24,7 +25,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

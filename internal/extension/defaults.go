@@ -2,7 +2,6 @@ package extension
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -143,19 +142,6 @@ func downloadSkillFiles(dir string, files map[string]string) error {
 	return nil
 }
 
-// DefaultMCPExtensions returns default extensions of type MCP for startup registration.
-// This is used by main.go to know which MCP servers to pre-register even before
-// extensions.json is loaded (in case it's the first run).
-func DefaultMCPExtensions() []Extension {
-	var out []Extension
-	for _, def := range defaultExtensions {
-		if def.Type == TypeMCP {
-			out = append(out, def.Extension)
-		}
-	}
-	return out
-}
-
 // IsDefault returns true if the named extension is a pre-installed default.
 func IsDefault(name string) bool {
 	for _, def := range defaultExtensions {
@@ -186,8 +172,3 @@ func init() {
 	}
 }
 
-// SkillFilesJSON returns the default skill files as JSON for inspection.
-func SkillFilesJSON() string {
-	data, _ := json.MarshalIndent(defaultExtensions, "", "  ")
-	return string(data)
-}

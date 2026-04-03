@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -113,7 +114,7 @@ func TestHandleProjectCommand_List(t *testing.T) {
 		if msg.ChatID != 100 {
 			t.Errorf("ChatID = %d, want 100", msg.ChatID)
 		}
-		if !contains(msg.Text, "myapp") || !contains(msg.Text, "backend") {
+		if !strings.Contains(msg.Text, "myapp") || !strings.Contains(msg.Text, "backend") {
 			t.Errorf("response should list projects, got: %s", msg.Text)
 		}
 	default:
@@ -210,7 +211,7 @@ func TestHandleProjectCommand_UnknownProject(t *testing.T) {
 
 	select {
 	case msg := <-tg.inbox:
-		if !contains(msg.Text, "Unknown project") {
+		if !strings.Contains(msg.Text, "Unknown project") {
 			t.Errorf("expected unknown project message, got: %s", msg.Text)
 		}
 	default:
@@ -670,15 +671,4 @@ func loadExtRegistry(path string) (*extension.Registry, error) {
 	return extension.Load(path)
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
-}
 
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

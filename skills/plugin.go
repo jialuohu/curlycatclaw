@@ -287,9 +287,6 @@ func makeMarketplaceListExecute(cliPath, isolatedHome string) func(ctx context.C
 	}
 }
 
-// checkPluginCommand reads the newly installed plugin's .mcp.json to find
-// what command it needs, and checks if that command is available. Returns a
-// warning string if the command is missing, empty string if all good.
 // makePluginUpdateExecute creates an Execute func for updating plugins.
 // If name is provided, updates that plugin. If empty, updates all installed plugins.
 func makePluginUpdateExecute(cliPath, isolatedHome string) func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -433,6 +430,9 @@ func ensurePluginsUpdated(cliPath, isolatedHome string) {
 	}
 }
 
+// checkPluginCommand reads the newly installed plugin's .mcp.json to find
+// what command it needs, and checks if that command is available. Returns a
+// warning string if the command is missing, empty string if all good.
 func checkPluginCommand(isolatedHome, pluginName string) string {
 	manifestPath := filepath.Join(isolatedHome, ".claude", "plugins", "installed_plugins.json")
 	data, err := os.ReadFile(manifestPath)

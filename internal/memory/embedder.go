@@ -232,11 +232,6 @@ func (e *VoyageEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 	return e.embed(ctx, text, "document")
 }
 
-// EmbedQuery produces an embedding optimized for search queries.
-func (e *VoyageEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	return e.embed(ctx, text, "query")
-}
-
 func (e *VoyageEmbedder) embed(ctx context.Context, text, inputType string) ([]float32, error) {
 	body, err := json.Marshal(map[string]any{
 		"model":      e.model,
