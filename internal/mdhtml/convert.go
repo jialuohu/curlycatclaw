@@ -357,16 +357,15 @@ func stripHorizontalRules(s string) string {
 // telegramTags are the tags that Telegram HTML mode supports.
 var telegramTags = []string{"b", "i", "u", "s", "code", "pre", "a", "blockquote"}
 
+// balancedTagRe matches opening or closing Telegram-supported HTML tags.
+// Compiled once at package init from the static telegramTags list.
+var balancedTagRe = regexp.MustCompile(`<(/?)(?:` + strings.Join(telegramTags, "|") + `)(?:\s[^>]*)?>`)
+
 // hasBalancedTags checks that all Telegram-supported HTML tags are properly
 // balanced (each opening tag has a matching close tag, in order).
 func hasBalancedTags(s string) bool {
-	// Build a regex that matches opening or closing Telegram tags.
-	// We look for <tag...> and </tag> patterns.
-	tagPattern := strings.Join(telegramTags, "|")
-	tagRe := regexp.MustCompile(`<(/?)(?:` + tagPattern + `)(?:\s[^>]*)?>`)
-
 	var stack []string
-	for _, match := range tagRe.FindAllStringSubmatch(s, -1) {
+	for _, match := range balancedTagRe.FindAllStringSubmatch(s, -1) {
 		full := match[0]
 		isClose := match[1] == "/"
 
