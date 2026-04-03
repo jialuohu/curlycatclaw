@@ -449,16 +449,6 @@ func (vs *VectorStore) DisableDualWrite() {
 	slog.Info("dual-write disabled")
 }
 
-// CreateVersionedCollections creates the three versioned collections.
-func (vs *VectorStore) CreateVersionedCollections(ctx context.Context, names [3]string, dim uint64) error {
-	for _, name := range names {
-		if err := vs.CreateCollection(ctx, name, dim); err != nil {
-			return fmt.Errorf("vectorstore: create versioned %s: %w", name, err)
-		}
-	}
-	return nil
-}
-
 // DeleteCollections deletes the three named collections (best-effort, logs errors).
 func (vs *VectorStore) DeleteCollections(ctx context.Context, names [3]string) {
 	for _, name := range names {

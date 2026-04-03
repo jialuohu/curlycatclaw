@@ -183,7 +183,10 @@ func (l *Loader) loadSkill(skillDir, namespace string) (*LoadedSkill, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve command path: %w", err)
 	}
-	absSkillDir, _ := filepath.Abs(skillDir)
+	absSkillDir, err := filepath.Abs(skillDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve skill dir path: %w", err)
+	}
 	if !strings.HasPrefix(absCommand, absSkillDir+string(filepath.Separator)) && absCommand != absSkillDir {
 		return nil, fmt.Errorf("command %q resolves outside skill directory %q", desc.Exec.Command, skillDir)
 	}

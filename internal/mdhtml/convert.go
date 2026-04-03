@@ -177,14 +177,16 @@ func convertBold(s string) string {
 	return boldRe.ReplaceAllString(s, "<b>$1</b>")
 }
 
+// simpleItalicRe matches single *text* patterns after bold conversion has
+// removed all ** pairs. The prefix group avoids matching inside tags or **.
+var simpleItalicRe = regexp.MustCompile(`(?:^|[^<*/])\*([^*\n]+?)\*`)
+
 // convertItalic converts *text* to <i>text</i>.
 // After bold conversion, ** markers are gone. Remaining single * pairs are italic.
 func convertItalic(s string) string {
 	// We need a custom replacer because the regex captures context chars.
 	// Instead, use a simpler approach: match lone * not part of ** or tags.
 	result := s
-	// After bold conversion, ** are gone. Single * remaining are italic candidates.
-	simpleItalicRe := regexp.MustCompile(`(?:^|[^<*/])\*([^*\n]+?)\*`)
 	for {
 		loc := simpleItalicRe.FindStringIndex(result)
 		if loc == nil {

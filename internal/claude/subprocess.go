@@ -421,6 +421,7 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
+		stdout.Close()
 		return nil, fmt.Errorf("cli: start process: %w", err)
 	}
 

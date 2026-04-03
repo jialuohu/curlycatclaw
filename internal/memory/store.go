@@ -332,7 +332,10 @@ func (s *Store) DeleteSummary(summaryID int64, userID int64) error {
 	if err != nil {
 		return fmt.Errorf("memory: delete summary: %w", err)
 	}
-	n, _ := result.RowsAffected()
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("memory: rows affected: %w", err)
+	}
 	if n == 0 {
 		return fmt.Errorf("summary: summary %d not found", summaryID)
 	}

@@ -397,12 +397,7 @@ func (ra *ReminderActor) scheduleReminder(scheduler gocron.Scheduler, r reminder
 	if r.CronExpr != nil {
 		jobDef = gocron.CronJob(*r.CronExpr, false)
 	} else {
-		delay := time.Until(r.FireAt)
-		if delay < 0 {
-			delay = 0
-		}
 		jobDef = gocron.OneTimeJob(gocron.OneTimeJobStartDateTime(r.FireAt))
-		_ = delay // gocron handles past times
 	}
 
 	task := gocron.NewTask(func() {
