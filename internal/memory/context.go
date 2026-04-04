@@ -1,10 +1,8 @@
 package memory
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 )
 
 const (
@@ -19,7 +17,6 @@ type ContextBuilder struct {
 	store    *Store
 	maxTurns int
 	maxChars int
-	budget   *BudgetManager
 }
 
 // NewContextBuilder returns a ContextBuilder with default limits:
@@ -40,11 +37,6 @@ func (cb *ContextBuilder) SetMaxTurns(n int) {
 // SetMaxChars overrides the maximum character budget.
 func (cb *ContextBuilder) SetMaxChars(n int) {
 	cb.maxChars = n
-}
-
-// SetBudget attaches a BudgetManager for relevance-based context pruning.
-func (cb *ContextBuilder) SetBudget(bm *BudgetManager) {
-	cb.budget = bm
 }
 
 // turn represents one conversational turn: a user message followed by the
@@ -85,77 +77,6 @@ func (cb *ContextBuilder) BuildContext(convID string) ([]Message, error) {
 	// Flatten turns back into a message slice.
 	var result []Message
 	for _, t := range turns {
-		result = append(result, t.messages...)
-	}
-
-	return result, nil
-}
-
-// BuildContextWithBudget loads recent messages for convID and applies
-// budget-aware relevance classification when a BudgetManager is available.
-// Turns classified as "full" are included verbatim, "summary" turns are
-// replaced with a synthetic user message containing the summary, and "none"
-// turns are dropped. Falls back to BuildContext on any error.
-func (cb *ContextBuilder) BuildContextWithBudget(ctx context.Context, convID, currentMsg string) ([]Message, error) {
-	// If no budget manager or it is disabled, use the standard path.
-	if cb.budget == nil || !cb.budget.enabled {
-		return cb.BuildContext(convID)
-	}
-
-	msgs, err := cb.store.GetMessages(convID, cb.maxTurns*4)
-	if err != nil {
-		return nil, fmt.Errorf("context: load messages: %w", err)
-	}
-	if len(msgs) == 0 {
-		return nil, nil
-	}
-
-	turns := splitTurns(msgs)
-
-	// Keep only the last maxTurns turns.
-	if len(turns) > cb.maxTurns {
-		turns = turns[len(turns)-cb.maxTurns:]
-	}
-
-	// Classify turns via the budget manager.
-	classified, err := cb.budget.ClassifyTurns(ctx, currentMsg, turns)
-	if err != nil {
-		slog.Warn("budget classification failed, falling back to standard context", "err", err)
-		return cb.BuildContext(convID)
-	}
-
-	// Build result from classified turns.
-	var budgetTurns []turn
-	for _, ct := range classified {
-		switch ct.Classification {
-		case "full":
-			budgetTurns = append(budgetTurns, ct.Turn)
-		case "summary":
-			summary := ct.Summary
-			if summary == "" {
-				summary = "[earlier conversation turn]"
-			}
-			syntheticContent, _ := json.Marshal(summary)
-			budgetTurns = append(budgetTurns, turn{
-				messages: []Message{{Role: "user", Content: syntheticContent}},
-				chars:    len(syntheticContent),
-			})
-		case "none":
-			// Drop the turn entirely.
-		default:
-			// Unknown classification: include fully to be safe.
-			budgetTurns = append(budgetTurns, ct.Turn)
-		}
-	}
-
-	// Apply char budget trimming as fallback.
-	for len(budgetTurns) > 1 && totalChars(budgetTurns) > cb.maxChars {
-		budgetTurns = budgetTurns[1:]
-	}
-
-	// Flatten turns back into a message slice.
-	var result []Message
-	for _, t := range budgetTurns {
 		result = append(result, t.messages...)
 	}
 

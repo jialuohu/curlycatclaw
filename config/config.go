@@ -18,7 +18,6 @@ type Config struct {
 	Telegram TGConfig      `toml:"telegram"`
 	Storage  StorageConfig `toml:"storage"`
 	MCP      MCPConfig     `toml:"mcp"`
-	Budget   BudgetConfig  `toml:"budget"`
 	Vector   VectorConfig  `toml:"vector"`
 	Wasm     WasmConfig    `toml:"wasm"`
 	Memory           MemoryConfig           `toml:"memory"`
@@ -82,11 +81,6 @@ type MCPServerConfig struct {
 	Args       []string          `toml:"args"`
 	Env        map[string]string `toml:"env"`
 	EnvInherit []string          `toml:"env_inherit"`
-}
-
-type BudgetConfig struct {
-	Enabled bool   `toml:"enabled"`
-	Model   string `toml:"model"`
 }
 
 type VectorConfig struct {
@@ -162,10 +156,6 @@ func Load(path string) (*Config, error) {
 		},
 		Storage: StorageConfig{
 			DBPath: filepath.Join(defaultDataDir(), "curlycatclaw.db"),
-		},
-		Budget: BudgetConfig{
-			Enabled: false,
-			Model:   "claude-haiku-4-5-20251001",
 		},
 		Vector: VectorConfig{
 			Enabled:    false,
@@ -271,9 +261,6 @@ func (c *Config) validate() error {
 		if srv.Command == "" {
 			return fmt.Errorf("config: mcp.servers[%d].command is required", i)
 		}
-	}
-	if c.Budget.Enabled && c.Budget.Model == "" {
-		return fmt.Errorf("config: budget.model is required when budget is enabled")
 	}
 	if c.Vector.Enabled && c.Vector.QdrantAddr == "" {
 		return fmt.Errorf("config: vector.qdrant_addr is required when vector is enabled")

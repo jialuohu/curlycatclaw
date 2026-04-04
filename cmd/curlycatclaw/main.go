@@ -262,21 +262,6 @@ func run(configPath string) error {
 	}
 	slog.Info("extension registry loaded", "path", extRegistryPath, "count", len(extReg.All()))
 
-	// Initialize prompt budget manager (optional, requires direct API — not available in CLI mode).
-	var budgetMgr *memory.BudgetManager
-	if cfg.Budget.Enabled && authOpt != nil {
-		haikuClient := claude.NewClient(authOpt, cfg.Budget.Model)
-		var bmErr error
-		budgetMgr, bmErr = memory.NewBudgetManager(store.DB(), haikuClient, true)
-		if bmErr != nil {
-			slog.Warn("budget manager init failed", "err", bmErr)
-		} else {
-			slog.Info("budget manager enabled", "model", cfg.Budget.Model)
-		}
-	} else if cfg.Budget.Enabled && cfg.Claude.UseCLI() {
-		slog.Info("budget manager disabled in CLI mode (requires direct API)")
-	}
-
 	// Initialize vector store (optional).
 	var vectorStore *memory.VectorStore
 	if cfg.Vector.Enabled {
@@ -497,7 +482,7 @@ func run(configPath string) error {
 	if summarizer != nil {
 		sessionSummarizer = summarizer
 	}
-	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, budgetMgr, vectorStore, factStore, sessionSummarizer, configPath, extReg)
+	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.

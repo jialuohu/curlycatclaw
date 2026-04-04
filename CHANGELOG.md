@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.20.4] - 2026-04-03
+
+Remove unused budget manager. The Haiku-powered context classification system was dead code in CLI mode (the only mode in use). Removes ~1000 lines across 13 files.
+
+### Removed
+- **Budget manager**: `BudgetManager`, `BuildContextWithBudget`, `ClassifiedTurn`, and all supporting code (`internal/memory/budget.go`, `budget_test.go`)
+- **Budget config**: `[budget]` TOML section, `BudgetConfig` struct, validation logic, config defaults
+- **Budget wiring**: `session.New()` budget parameter, `ContextBuilder.SetBudget()`, `ContextProvider` interface method
+
+### Changed
+- **Context builder**: `BuildContext()` is now the only context-building path (no budget fork)
+- **Session actor**: simplified `New()` signature, direct API mode calls `BuildContext()` instead of `BuildContextWithBudget()`
+
 ## [0.20.3] - 2026-04-03
 
 Performance improvements: regex compilation and missing SQLite index.
