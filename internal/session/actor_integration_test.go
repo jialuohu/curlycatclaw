@@ -195,6 +195,8 @@ func newMockTelegram() *mockTelegram {
 
 func (m *mockTelegram) Inbox() chan<- telegram.OutgoingMessage  { return m.inbox }
 func (m *mockTelegram) Updates() <-chan telegram.IncomingMessage { return m.updates }
+func (m *mockTelegram) SendTyping(_ int64)                       {}
+func (m *mockTelegram) SendDocument(_ int64, _ string, _ []byte, _ string) error { return nil }
 
 // drainInbox runs a goroutine that reads from inbox and responds to ResultCh
 // with a fake message ID, simulating the real Channel actor behavior.
@@ -803,8 +805,9 @@ func TestHandleMessage_ImageMessage(t *testing.T) {
 		ChatID: 500,
 		UserID: 42,
 		Text:   "describe this image",
-		Photos: []telegram.Photo{
+		Attachments: []telegram.Attachment{
 			{
+				Kind:     telegram.AttachPhoto,
 				Data:     photoData,
 				MimeType: "image/jpeg",
 				FileID:   "file-123",

@@ -61,6 +61,8 @@ type VectorIndexer interface {
 type TelegramTransport interface {
 	Inbox() chan<- telegram.OutgoingMessage
 	Updates() <-chan telegram.IncomingMessage
+	SendTyping(chatID int64)
+	SendDocument(chatID int64, fileName string, data []byte, caption string) error
 }
 
 // CLIClient abstracts the CLI subprocess manager for testing.

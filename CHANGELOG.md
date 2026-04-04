@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.21.1] - 2026-04-04
+
+Telegram media foundation and typing indicator. The bot now shows "typing..." while Claude thinks, and the message system supports documents, voice, and audio attachments (processing comes in a follow-up release).
+
+### Added
+- **Typing indicator**: Telegram shows "typing..." while Claude processes your message, refreshing every 4.5 seconds during long tool-use loops
+- **Generic Attachment type**: unified media handling replaces the per-type Photo field, supporting photos, documents, voice messages, and audio files
+- **Document/voice/audio download**: Telegram channel now downloads documents, voice messages, and audio files (processing by Claude comes next)
+- **SendTyping and SendDocument**: new methods on the Telegram transport interface for goroutine-safe typing actions and file sending
+
+### Changed
+- **Message model**: `IncomingMessage.Photos` replaced with `IncomingMessage.Attachments` (backward-compatible `Photos()` method provided)
+- **File download**: extracted generic `downloadFile()` from photo-specific `downloadPhoto()`
+
 ## [0.21.0] - 2026-04-04
 
 GitHub MCP server integration. curlycatclaw can now interact with GitHub repos, PRs, CI, issues, and releases via Telegram using GitHub's official MCP server.

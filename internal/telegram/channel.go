@@ -28,8 +28,28 @@ const (
 	channelBuffer = 64
 )
 
+// AttachmentKind identifies the type of a media attachment.
+type AttachmentKind int
+
+const (
+	AttachPhoto    AttachmentKind = iota // image (JPEG, PNG, etc.)
+	AttachDocument                       // file/document (PDF, text, binary)
+	AttachVoice                          // voice message (.ogg Opus)
+	AttachAudio                          // audio file (MP3, etc.)
+)
+
+// Attachment represents any media attached to a Telegram message.
+type Attachment struct {
+	Kind     AttachmentKind
+	Data     []byte // raw bytes (downloaded from Telegram)
+	MimeType string // e.g. "image/jpeg", "application/pdf"
+	FileName string // original filename (documents only)
+	FileID   string // Telegram file_id for reference storage
+	Duration int    // duration in seconds (voice/audio only)
+}
+
 // IncomingMessage represents a message received from a Telegram user.
-// It may contain text, photos, or both (photo with caption).
+// It may contain text, attachments (photos, documents, voice), or both.
 type IncomingMessage struct {
 	ChatID    int64
 	UserID    int64
@@ -37,16 +57,27 @@ type IncomingMessage struct {
 	MessageID int
 	// ChatType is the Telegram chat type: "private", "group", "supergroup", or "channel".
 	ChatType string
-	// Photos contains base64-encoded image data from attached photos.
-	// The channel actor downloads the best-quality photo from Telegram.
-	Photos []Photo
+	// Attachments contains downloaded media from the message.
+	Attachments []Attachment
+}
+
+// Photos returns photo attachments for backward compatibility.
+func (m IncomingMessage) Photos() []Attachment {
+	var out []Attachment
+	for _, a := range m.Attachments {
+		if a.Kind == AttachPhoto {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // Photo represents an image attached to a message.
+// Deprecated: use Attachment with AttachPhoto kind instead.
 type Photo struct {
-	Data      []byte // raw image bytes (downloaded from Telegram)
-	MimeType  string // e.g. "image/jpeg"
-	FileID    string // Telegram file_id for reference storage
+	Data     []byte // raw image bytes (downloaded from Telegram)
+	MimeType string // e.g. "image/jpeg"
+	FileID   string // Telegram file_id for reference storage
 }
 
 // OutgoingMessage represents a message to be sent to a Telegram chat.
@@ -67,6 +98,17 @@ type Channel struct {
 
 	inbox   chan OutgoingMessage  // session -> telegram
 	updates chan IncomingMessage  // telegram -> session
+	typing  chan int64            // chat IDs to send typing action to
+	docSend chan docSendRequest   // document send requests
+}
+
+// docSendRequest is an internal request to send a document.
+type docSendRequest struct {
+	ChatID   int64
+	FileName string
+	Data     []byte
+	Caption  string
+	ErrCh    chan error
 }
 
 // NewChannel creates a Channel actor from the given Telegram config.
@@ -87,6 +129,8 @@ func NewChannel(cfg config.TGConfig) (*Channel, error) {
 		allowed: allowed,
 		inbox:   make(chan OutgoingMessage, channelBuffer),
 		updates: make(chan IncomingMessage, channelBuffer),
+		typing:  make(chan int64, channelBuffer),
+		docSend: make(chan docSendRequest, 8),
 	}, nil
 }
 
@@ -137,6 +181,22 @@ func (ch *Channel) Run(ctx context.Context) error {
 
 		case msg := <-ch.inbox:
 			ch.sendMessage(bot, msg, rateTick)
+
+		case chatID := <-ch.typing:
+			action := tgbotapi.NewChatAction(chatID, "typing")
+			if _, err := bot.Send(action); err != nil {
+				slog.Debug("telegram: typing action failed", "chat_id", chatID, "err", err)
+			}
+
+		case req := <-ch.docSend:
+			doc := tgbotapi.NewDocument(req.ChatID, tgbotapi.FileBytes{Name: req.FileName, Bytes: req.Data})
+			if req.Caption != "" {
+				doc.Caption = req.Caption
+			}
+			_, err := bot.Send(doc)
+			if req.ErrCh != nil {
+				req.ErrCh <- err
+			}
 		}
 	}
 }
@@ -148,10 +208,13 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 		return
 	}
 
-	// Accept messages with text, photos, or both (caption).
+	// Accept messages with text, photos, documents, voice, or combinations.
 	hasText := upd.Message.Text != "" || upd.Message.Caption != ""
 	hasPhoto := len(upd.Message.Photo) > 0
-	if !hasText && !hasPhoto {
+	hasDocument := upd.Message.Document != nil
+	hasVoice := upd.Message.Voice != nil
+	hasAudio := upd.Message.Audio != nil
+	if !hasText && !hasPhoto && !hasDocument && !hasVoice && !hasAudio {
 		return
 	}
 
@@ -176,52 +239,110 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 		ChatType:  upd.Message.Chat.Type,
 	}
 
-	// Download photos if present (use the largest available size).
+	// Download attachments.
 	if hasPhoto {
 		photos := upd.Message.Photo
 		best := photos[len(photos)-1] // last = largest
-		photo, err := ch.downloadPhoto(bot, best)
+		att, err := ch.downloadFile(bot, best.FileID, AttachPhoto, "", 20<<20)
 		if err != nil {
 			slog.Warn("telegram: failed to download photo", "err", err)
 		} else {
-			msg.Photos = append(msg.Photos, photo)
+			msg.Attachments = append(msg.Attachments, att)
+		}
+	}
+	if hasDocument {
+		doc := upd.Message.Document
+		att, err := ch.downloadFile(bot, doc.FileID, AttachDocument, doc.FileName, 20<<20)
+		if err != nil {
+			slog.Warn("telegram: failed to download document", "err", err)
+		} else {
+			att.MimeType = doc.MimeType
+			msg.Attachments = append(msg.Attachments, att)
+		}
+	}
+	if hasVoice {
+		v := upd.Message.Voice
+		att, err := ch.downloadFile(bot, v.FileID, AttachVoice, "", 20<<20)
+		if err != nil {
+			slog.Warn("telegram: failed to download voice", "err", err)
+		} else {
+			att.Duration = v.Duration
+			if att.MimeType == "" {
+				att.MimeType = "audio/ogg"
+			}
+			msg.Attachments = append(msg.Attachments, att)
+		}
+	}
+	if hasAudio {
+		a := upd.Message.Audio
+		att, err := ch.downloadFile(bot, a.FileID, AttachAudio, a.FileName, 20<<20)
+		if err != nil {
+			slog.Warn("telegram: failed to download audio", "err", err)
+		} else {
+			att.MimeType = a.MimeType
+			att.Duration = a.Duration
+			msg.Attachments = append(msg.Attachments, att)
 		}
 	}
 
 	ch.updates <- msg
 }
 
-// downloadPhoto fetches photo data from Telegram servers.
-func (ch *Channel) downloadPhoto(bot *tgbotapi.BotAPI, ps tgbotapi.PhotoSize) (Photo, error) {
-	fileConfig := tgbotapi.FileConfig{FileID: ps.FileID}
-	file, err := bot.GetFile(fileConfig)
+// downloadFile fetches any file from Telegram servers and returns it as an Attachment.
+func (ch *Channel) downloadFile(bot *tgbotapi.BotAPI, fileID string, kind AttachmentKind, fileName string, maxBytes int64) (Attachment, error) {
+	file, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 	if err != nil {
-		return Photo{}, fmt.Errorf("get file: %w", err)
+		return Attachment{}, fmt.Errorf("get file: %w", err)
 	}
 
 	fileURL := file.Link(bot.Token)
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(fileURL) //nolint:gosec // URL from Telegram API
 	if err != nil {
-		return Photo{}, fmt.Errorf("download: %w", err)
+		return Attachment{}, fmt.Errorf("download: %w", err)
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20)) // 20MB max
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
-		return Photo{}, fmt.Errorf("read body: %w", err)
+		return Attachment{}, fmt.Errorf("read body: %w", err)
 	}
 
 	mime := resp.Header.Get("Content-Type")
-	if mime == "" {
+	if mime == "" && kind == AttachPhoto {
 		mime = "image/jpeg"
 	}
 
-	return Photo{
+	return Attachment{
+		Kind:     kind,
 		Data:     data,
 		MimeType: mime,
-		FileID:   ps.FileID,
+		FileName: fileName,
+		FileID:   fileID,
 	}, nil
+}
+
+// SendTyping sends a "typing..." chat action indicator to the given chat.
+// Safe to call from any goroutine; the action is executed in the Run loop.
+func (ch *Channel) SendTyping(chatID int64) {
+	select {
+	case ch.typing <- chatID:
+	default: // drop if buffer full
+	}
+}
+
+// SendDocument sends a file/document to the given chat.
+// Blocks until the send completes or fails.
+func (ch *Channel) SendDocument(chatID int64, fileName string, data []byte, caption string) error {
+	errCh := make(chan error, 1)
+	ch.docSend <- docSendRequest{
+		ChatID:   chatID,
+		FileName: fileName,
+		Data:     data,
+		Caption:  caption,
+		ErrCh:    errCh,
+	}
+	return <-errCh
 }
 
 // isAllowed reports whether the given user ID is permitted to interact
