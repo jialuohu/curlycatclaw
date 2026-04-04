@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.21.0] - 2026-04-04
+
+GitHub MCP server integration. curlycatclaw can now interact with GitHub repos, PRs, CI, issues, and releases via Telegram using GitHub's official MCP server.
+
+### Added
+- **GitHub MCP server**: integrated `github-mcp-server` (github/github-mcp-server v0.32.0) as an external MCP server via `[[mcp.servers]]` config, with default toolsets: repos, issues, pull_requests, actions, users
+- **GitHub workflow guidance**: system prompt dynamically lists available GitHub tools when the GitHub MCP server is configured, guiding Claude toward high-value dev workflows
+- **Docker support**: both `Dockerfile` and `Dockerfile.goreleaser` download and include the github-mcp-server binary
+- **Security default**: example config uses `--read-only` flag by default to prevent accidental write operations
+
+### Fixed
+- **Dockerfile.goreleaser multi-arch**: replaced hardcoded x86_64 architecture in gws download stage with dynamic detection via `uname -m`, enabling arm64 builds
+
 ## [0.20.4] - 2026-04-03
 
 Remove unused budget manager. The Haiku-powered context classification system was dead code in CLI mode (the only mode in use). Removes ~1000 lines across 13 files.

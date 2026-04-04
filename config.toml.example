@@ -73,6 +73,17 @@ db_path = "/data/curlycatclaw.db"
 # GWS_SKILLS_DIR = ""           # optional: pre-generated skills dir (skip gws generate-skills)
 # GWS_FILTER = "gmail_*,calendar_*,drive_*,sheets_*,docs_*,slides_*,tasks_*"  # optional: glob filter
 
+# GitHub via github-mcp-server (https://github.com/github/github-mcp-server).
+# Auth: create a Personal Access Token at https://github.com/settings/tokens
+# with scopes: repo, read:org, read:packages (minimum for dev workflows).
+# Remove --read-only if you need write operations (create issues, comment on PRs).
+# [[mcp.servers]]
+# name    = "github"
+# command = "github-mcp-server"
+# args    = ["stdio", "--toolsets", "repos,issues,pull_requests,actions,users", "--read-only"]
+# [mcp.servers.env]
+# GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..."
+
 # Health check endpoint (Docker/monitoring). Enabled by default.
 [health]
 enabled = true

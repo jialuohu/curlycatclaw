@@ -37,6 +37,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 ### Extensibility
 
 - **Google Workspace** — Gmail, Calendar, Drive, Sheets, Docs, Tasks via the gws CLI. Ask "what's on my calendar today?" or "send an email to Alice" from Telegram. Standalone MCP server (`curlycatclaw-gws-mcp`) discovers tools dynamically with boolean flag detection, argument validation, and server-side flag allowlists
+- **GitHub** — check CI status, review PRs, create issues, search code, and track releases from Telegram via GitHub's official MCP server (`github-mcp-server`). Read-only by default, configurable toolsets
 - **MCP tool integration** — connect any MCP server (search, filesystem, APIs) via stdio, add/remove at runtime via Telegram, proxied through curlycatclaw-skills for reliable tool discovery in CLI mode
 - **Runtime extension registry** — add MCP servers, exec skills, and prompt-based skills through Telegram chat (`add_extension`, `remove_extension`, `list_extensions`), persisted to disk, no config edits or restarts needed, MCP extensions hot-reloaded instantly without losing conversation context
 - **Encrypted API key management** — set API keys for MCP extensions via chat (`set_extension_env`), encrypted at rest with AES-256-GCM, resolved at spawn time
@@ -143,6 +144,21 @@ GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = "/data/gws-credentials.json"
 ```
 
 Rebuild and restart: `docker compose build curlycatclaw && docker compose up -d`
+
+### GitHub (optional)
+
+Access repos, PRs, CI status, issues, and releases from Telegram. Create a [Personal Access Token](https://github.com/settings/tokens) (classic PAT with `repo` scope recommended for private repo access), then add to `config.toml`:
+
+```toml
+[[mcp.servers]]
+name    = "github"
+command = "github-mcp-server"
+args    = ["stdio", "--toolsets", "repos,issues,pull_requests,actions,users", "--read-only"]
+[mcp.servers.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..."
+```
+
+Remove `--read-only` if you need write operations (create issues, comment on PRs). Rebuild and restart.
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes). MCP servers, Wasm plugins, cron tasks, and other advanced options are documented in `config.toml.example`.
 
