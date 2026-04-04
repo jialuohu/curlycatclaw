@@ -276,13 +276,16 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	return a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools)
 }
 
-// startTypingLoop sends a Telegram "typing..." indicator every 4.5 seconds
-// until the returned cancel function is called. Telegram typing indicators
-// expire after 5 seconds, so 4.5s keeps them alive during long operations.
+// typingRefreshInterval is the interval between "typing..." indicator refreshes.
+// Telegram typing indicators expire after 5 seconds, so 4.5s keeps them alive.
+const typingRefreshInterval = 4500 * time.Millisecond
+
+// startTypingLoop sends a Telegram "typing..." indicator every typingRefreshInterval
+// until the returned cancel function is called.
 func startTypingLoop(ctx context.Context, tg TelegramTransport, chatID int64) context.CancelFunc {
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
-		ticker := time.NewTicker(4500 * time.Millisecond)
+		ticker := time.NewTicker(typingRefreshInterval)
 		defer ticker.Stop()
 		for {
 			select {

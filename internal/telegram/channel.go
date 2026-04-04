@@ -26,6 +26,9 @@ const (
 
 	// channelBuffer is the capacity for both the inbox and updates channels.
 	channelBuffer = 64
+
+	// maxDownloadBytes is the maximum file size to download from Telegram (20 MiB).
+	maxDownloadBytes = 20 << 20
 )
 
 // AttachmentKind identifies the type of a media attachment.
@@ -70,14 +73,6 @@ func (m IncomingMessage) Photos() []Attachment {
 		}
 	}
 	return out
-}
-
-// Photo represents an image attached to a message.
-// Deprecated: use Attachment with AttachPhoto kind instead.
-type Photo struct {
-	Data     []byte // raw image bytes (downloaded from Telegram)
-	MimeType string // e.g. "image/jpeg"
-	FileID   string // Telegram file_id for reference storage
 }
 
 // OutgoingMessage represents a message to be sent to a Telegram chat.
@@ -243,7 +238,7 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 	if hasPhoto {
 		photos := upd.Message.Photo
 		best := photos[len(photos)-1] // last = largest
-		att, err := ch.downloadFile(bot, best.FileID, AttachPhoto, "", 20<<20)
+		att, err := ch.downloadFile(bot, best.FileID, AttachPhoto, "", maxDownloadBytes)
 		if err != nil {
 			slog.Warn("telegram: failed to download photo", "err", err)
 		} else {
@@ -252,22 +247,26 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 	}
 	if hasDocument {
 		doc := upd.Message.Document
-		att, err := ch.downloadFile(bot, doc.FileID, AttachDocument, doc.FileName, 20<<20)
+		att, err := ch.downloadFile(bot, doc.FileID, AttachDocument, doc.FileName, maxDownloadBytes)
 		if err != nil {
 			slog.Warn("telegram: failed to download document", "err", err)
 		} else {
-			att.MimeType = doc.MimeType
+			if doc.MimeType != "" {
+				att.MimeType = doc.MimeType
+			}
 			msg.Attachments = append(msg.Attachments, att)
 		}
 	}
 	if hasVoice {
 		v := upd.Message.Voice
-		att, err := ch.downloadFile(bot, v.FileID, AttachVoice, "", 20<<20)
+		att, err := ch.downloadFile(bot, v.FileID, AttachVoice, "", maxDownloadBytes)
 		if err != nil {
 			slog.Warn("telegram: failed to download voice", "err", err)
 		} else {
 			att.Duration = v.Duration
-			if att.MimeType == "" {
+			if v.MimeType != "" {
+				att.MimeType = v.MimeType
+			} else if att.MimeType == "" {
 				att.MimeType = "audio/ogg"
 			}
 			msg.Attachments = append(msg.Attachments, att)
@@ -275,11 +274,13 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 	}
 	if hasAudio {
 		a := upd.Message.Audio
-		att, err := ch.downloadFile(bot, a.FileID, AttachAudio, a.FileName, 20<<20)
+		att, err := ch.downloadFile(bot, a.FileID, AttachAudio, a.FileName, maxDownloadBytes)
 		if err != nil {
 			slog.Warn("telegram: failed to download audio", "err", err)
 		} else {
-			att.MimeType = a.MimeType
+			if a.MimeType != "" {
+				att.MimeType = a.MimeType
+			}
 			att.Duration = a.Duration
 			msg.Attachments = append(msg.Attachments, att)
 		}
@@ -303,9 +304,13 @@ func (ch *Channel) downloadFile(bot *tgbotapi.BotAPI, fileID string, kind Attach
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	// Read up to maxBytes+1 to detect truncation.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return Attachment{}, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return Attachment{}, fmt.Errorf("file too large (>%d bytes)", maxBytes)
 	}
 
 	mime := resp.Header.Get("Content-Type")
