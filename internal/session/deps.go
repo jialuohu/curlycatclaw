@@ -28,6 +28,7 @@ type MessageStore interface {
 	ConversationMeta(convID string) (userID, chatID int64, chatType string, msgCount int, firstAt, lastAt time.Time, err error)
 	RecoverableSummarizations() ([]string, error)
 	GetSummaryText(convID string) (string, error)
+	GetMaxMessageRowid(convID string) (int64, error)
 }
 
 // FactProvider abstracts user fact retrieval for the session actor.
@@ -76,6 +77,7 @@ type ObservationStore interface {
 	DeleteObservation(id string, userID int64) error
 	CountObservations(convID string) (int, error)
 	GetObservationFactsByIDs(ids []string) (map[string][]string, error)
+	RecoverableExtractions() ([]string, error)
 }
 
 // CLIClient abstracts the CLI subprocess manager for testing.

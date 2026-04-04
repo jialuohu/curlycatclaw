@@ -488,7 +488,56 @@ func run(configPath string) error {
 		transcriber = voice.NewOpenAITranscriber(cfg.Voice.OpenAIAPIKey, cfg.Voice.STTModel)
 		slog.Info("voice transcription enabled", "model", cfg.Voice.STTModel)
 	}
-	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber)
+
+	// Create observation extractor if enabled.
+	var observer *memory.ObservationExtractor
+	var obsStore session.ObservationStore
+	if cfg.Memory.Enabled && cfg.Memory.Observations.Enabled {
+		if cfg.Claude.APIKey != "" {
+			// Direct API mode: use a dedicated client for extraction.
+			obsModel := cfg.Memory.Observations.ExtractionModel
+			if obsModel == "" {
+				obsModel = "claude-haiku-4-5"
+			}
+			obsClient := claude.NewClient(cfg.Claude.AuthOption(), obsModel)
+			observer = memory.NewObservationExtractor(func(ctx context.Context, system, user string) (string, error) {
+				resp, err := obsClient.Send(ctx, claude.SendParams{
+					SystemPrompt: system,
+					Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(user))},
+					MaxTokens:    1024,
+				})
+				if err != nil {
+					return "", err
+				}
+				return resp.TextContent, nil
+			}, store)
+		} else if cliManager != nil {
+			// CLI mode: use SpawnOneShot (same pattern as summarizer).
+			observer = memory.NewObservationExtractor(func(ctx context.Context, system, user string) (string, error) {
+				proc, err := cliManager.SpawnOneShot(ctx, claude.SpawnParams{
+					SystemPrompt: system,
+					InitialMsg:   claude.BuildUserMessage(user),
+				})
+				if err != nil {
+					return "", fmt.Errorf("cli observe: spawn: %w", err)
+				}
+				defer proc.Kill()
+				var text strings.Builder
+				_, err = proc.Send(ctx, nil, func(delta string) {
+					text.WriteString(delta)
+				}, nil)
+				if err != nil {
+					return "", fmt.Errorf("cli observe: send: %w", err)
+				}
+				return text.String(), nil
+			}, store)
+		}
+		if observer != nil {
+			obsStore = store
+			slog.Info("observation memory enabled")
+		}
+	}
+	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber, observer, obsStore)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.

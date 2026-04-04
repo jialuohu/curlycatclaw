@@ -114,6 +114,10 @@ func (m *mockStore) GetSummaryText(_ string) (string, error) {
 	return "", nil
 }
 
+func (m *mockStore) GetMaxMessageRowid(_ string) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockStore) AppendMessage(convID, role string, content json.RawMessage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -241,6 +245,8 @@ func newTestActor(llm LLMClient, store MessageStore, ctxb ContextProvider, route
 		skills:   skills.NewRegistry(),
 		vector:   vector,
 		indexSem: make(chan struct{}, 10),
+		obsSem:   make(chan struct{}, 3),
+		obsState: make(map[string]*obsConvState),
 	}
 }
 
