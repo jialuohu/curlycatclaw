@@ -212,9 +212,14 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 		return fmt.Errorf("get conversation: %w", err)
 	}
 
-	// If a conversation expired, summarize it asynchronously.
+	// If a conversation expired, summarize it asynchronously and clean up obs state.
 	if expiredConvID != "" && a.cfg.Memory.Enabled && a.summarizer != nil {
 		a.asyncSummarize(expiredConvID)
+	}
+	if expiredConvID != "" {
+		a.obsStateMu.Lock()
+		delete(a.obsState, expiredConvID)
+		a.obsStateMu.Unlock()
 	}
 
 	// Process voice/audio attachments via speech-to-text.
@@ -727,8 +732,13 @@ func (a *Actor) recoverExtractions() {
 	}
 	slog.Info("recovering extractions from previous run", "count", len(ids))
 	for _, convID := range ids {
-		// Reset status to idle so next message triggers extraction.
-		_ = a.obsStore.UpdateExtractionState(convID, 0, 0, "idle")
+		// Reset status to idle, preserving the existing cursor position.
+		dbState, err := a.obsStore.GetExtractionState(convID)
+		if err == nil && dbState != nil {
+			_ = a.obsStore.UpdateExtractionState(convID, dbState.LastExtractedMsgRowid, 0, "idle")
+		} else {
+			_ = a.obsStore.UpdateExtractionState(convID, 0, 0, "idle")
+		}
 	}
 }
 

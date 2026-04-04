@@ -535,6 +535,17 @@ func run(configPath string) error {
 		if observer != nil {
 			obsStore = store
 			slog.Info("observation memory enabled")
+
+			// Register observation skills.
+			skillObsStore := &obsSkillAdapter{store: store, vs: vectorStore, cfg: cfg}
+			obsSkills, err := skills.InitObservationSkills(store.DB(), skillObsStore)
+			if err != nil {
+				slog.Warn("failed to init observation skills", "err", err)
+			} else {
+				for _, s := range obsSkills {
+					skillReg.Register(s)
+				}
+			}
 		}
 	}
 	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber, observer, obsStore)
@@ -791,4 +802,48 @@ func ensureIsolatedHome(homePath string) error {
 	}
 
 	return nil
+}
+
+// obsSkillAdapter bridges the skills.ObservationStore interface to the real
+// memory.Store and memory.VectorStore implementations.
+type obsSkillAdapter struct {
+	store *memory.Store
+	vs    *memory.VectorStore
+	cfg   *config.Config
+}
+
+func (a *obsSkillAdapter) SearchObservations(ctx context.Context, query string, userID int64, _ string, limit int) ([]skills.ObservationSearchResult, error) {
+	if a.vs == nil {
+		return nil, fmt.Errorf("vector store not configured")
+	}
+	threshold := float32(a.cfg.Memory.Observations.ScoreThreshold)
+	if threshold <= 0 {
+		threshold = 0.3
+	}
+	results, err := a.vs.SearchObservations(ctx, query, userID, 0, "private", limit, threshold)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]skills.ObservationSearchResult, len(results))
+	for i, r := range results {
+		out[i] = skills.ObservationSearchResult{
+			ID:        r.ID,
+			Title:     r.Title,
+			Type:      r.Type,
+			Score:     r.Score,
+			CreatedAt: r.CreatedAt,
+		}
+	}
+	return out, nil
+}
+
+func (a *obsSkillAdapter) DeleteObservation(id string, userID int64) error {
+	return a.store.DeleteObservation(id, userID)
+}
+
+func (a *obsSkillAdapter) DeleteObservationVector(ctx context.Context, id string) error {
+	if a.vs == nil {
+		return nil
+	}
+	return a.vs.DeleteObservationVector(ctx, id)
 }

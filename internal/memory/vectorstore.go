@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,8 @@ type VectorStore struct {
 	embedder Embedder
 	embSwap  atomic.Value // holds Embedder; non-nil after migration swap
 	dw       atomic.Pointer[dualWriteState] // non-nil during migration
+	obsCollOnce sync.Once // ensures observations collection is created at most once
+	obsCollErr  error
 }
 
 // activeEmbedder returns the current embedder, checking for a post-migration swap.
@@ -381,8 +384,11 @@ func (vs *VectorStore) IndexObservation(ctx context.Context, obs Observation) er
 		return fmt.Errorf("vectorstore: embed observation: %w", err)
 	}
 
-	if err := vs.ensureCollection(ctx, observationsCollection); err != nil {
-		return err
+	vs.obsCollOnce.Do(func() {
+		vs.obsCollErr = vs.ensureCollection(ctx, observationsCollection)
+	})
+	if vs.obsCollErr != nil {
+		return vs.obsCollErr
 	}
 
 	payload := qdrant.NewValueMap(map[string]any{
@@ -507,11 +513,6 @@ func (vs *VectorStore) SearchObservations(ctx context.Context, query string, use
 		if v, ok := sp.Payload["type"]; ok {
 			r.Type = v.GetStringValue()
 		}
-		var chatType string
-		if v, ok := sp.Payload["chat_type"]; ok {
-			chatType = v.GetStringValue()
-		}
-		_ = chatType
 		if v, ok := sp.Payload["created_at"]; ok {
 			r.CreatedAt = v.GetStringValue()
 		}

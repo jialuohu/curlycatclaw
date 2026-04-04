@@ -277,7 +277,7 @@ func makeForgetObservationExecute(store ObservationStore) func(ctx context.Conte
 			return "", err
 		}
 		// Best-effort vector cleanup; log but don't fail the skill.
-		if err := store.DeleteObservationVector(context.Background(), params.ID); err != nil {
+		if err := store.DeleteObservationVector(ctx, params.ID); err != nil {
 			return fmt.Sprintf("Deleted observation %s (vector cleanup failed: %v).", params.ID, err), nil
 		}
 		return fmt.Sprintf("Deleted observation %s.", params.ID), nil
