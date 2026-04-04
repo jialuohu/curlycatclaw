@@ -225,6 +225,11 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// Build system prompt with timezone, user facts, and relevant summaries.
 	systemPrompt := a.buildSystemPrompt(msg.UserID, msg.ChatID, msg.ChatType, msg.Text)
 
+	// Show typing indicator immediately and keep refreshing until we return.
+	a.tg.SendTyping(msg.ChatID)
+	stopTyping := startTypingLoop(ctx, a.tg, msg.ChatID)
+	defer stopTyping()
+
 	// CLI subprocess mode: delegate to claude CLI which handles the agent loop.
 	if a.cliMgr != nil {
 		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos(), systemPrompt)
@@ -269,6 +274,26 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// Run the tool_use loop.
 	return a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools)
+}
+
+// startTypingLoop sends a Telegram "typing..." indicator every 4.5 seconds
+// until the returned cancel function is called. Telegram typing indicators
+// expire after 5 seconds, so 4.5s keeps them alive during long operations.
+func startTypingLoop(ctx context.Context, tg TelegramTransport, chatID int64) context.CancelFunc {
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(4500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				tg.SendTyping(chatID)
+			}
+		}
+	}()
+	return cancel
 }
 
 // asyncSummarize summarizes an expired conversation in a background goroutine.

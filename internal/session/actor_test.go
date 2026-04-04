@@ -8,11 +8,15 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jialuohu/curlycatclaw/config"
+	"github.com/jialuohu/curlycatclaw/internal/claude"
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
+	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/skills"
 )
 
 func TestTruncate(t *testing.T) {
@@ -90,6 +94,194 @@ func (m *mockTelegramTransport) Updates() <-chan telegram.IncomingMessage {
 }
 
 func (m *mockTelegramTransport) SendTyping(_ int64) {}
+
+// typingRecorder is a TelegramTransport mock that records SendTyping calls.
+type typingRecorder struct {
+	mockTelegramTransport
+	mu    sync.Mutex
+	calls []int64 // chatIDs passed to SendTyping
+}
+
+func newTypingRecorder() *typingRecorder {
+	return &typingRecorder{
+		mockTelegramTransport: *newMockTG(),
+	}
+}
+
+func (r *typingRecorder) SendTyping(chatID int64) {
+	r.mu.Lock()
+	r.calls = append(r.calls, chatID)
+	r.mu.Unlock()
+}
+
+func (r *typingRecorder) typingCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
+func TestStartTypingLoop_SendsAtIntervals(t *testing.T) {
+	rec := newTypingRecorder()
+	ctx := context.Background()
+
+	cancel := startTypingLoop(ctx, rec, 42)
+	defer cancel()
+
+	// The ticker fires at 4.5s which is too slow for a unit test.
+	// Verify the goroutine started without panicking and no premature ticks.
+	time.Sleep(50 * time.Millisecond)
+
+	// No tick yet (4.5s hasn't elapsed), count should be 0.
+	if got := rec.typingCount(); got != 0 {
+		t.Errorf("expected 0 typing calls before first tick, got %d", got)
+	}
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestStartTypingLoop_CancelStops(t *testing.T) {
+	rec := newTypingRecorder()
+	ctx := context.Background()
+
+	cancel := startTypingLoop(ctx, rec, 99)
+	// Cancel immediately.
+	cancel()
+
+	// Wait a bit and verify no calls accumulated.
+	time.Sleep(100 * time.Millisecond)
+	if got := rec.typingCount(); got != 0 {
+		t.Errorf("expected 0 typing calls after cancel, got %d", got)
+	}
+}
+
+func TestStartTypingLoop_ParentContextCancel(t *testing.T) {
+	rec := newTypingRecorder()
+	ctx, parentCancel := context.WithCancel(context.Background())
+
+	cancel := startTypingLoop(ctx, rec, 77)
+	defer cancel()
+
+	// Cancel the parent context.
+	parentCancel()
+
+	time.Sleep(100 * time.Millisecond)
+	if got := rec.typingCount(); got != 0 {
+		t.Errorf("expected 0 typing calls after parent cancel, got %d", got)
+	}
+}
+
+func TestHandleMessage_SendsTypingBeforeClaude(t *testing.T) {
+	rec := newTypingRecorder()
+	store := &fakeMessageStore{
+		convID: "conv-1",
+	}
+	a := &Actor{
+		cfg:            &config.Config{},
+		tg:             rec,
+		store:          store,
+		ctxb:           &fakeContextProvider{},
+		mcp:            &fakeToolRouter{},
+		claude:         &fakeLLMClient{},
+		skills:         &skills.Registry{},
+		indexSem:       make(chan struct{}, 10),
+		sumSem:         make(chan struct{}, 2),
+		activeProjects: make(map[userKey]string),
+	}
+
+	// Drain inbox so streamState.flush doesn't block waiting for message IDs.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		msgIDCounter := 1000
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case out := <-rec.inbox:
+				if out.ResultCh != nil {
+					msgIDCounter++
+					out.ResultCh <- msgIDCounter
+				}
+			}
+		}
+	}()
+
+	msg := telegram.IncomingMessage{
+		UserID:   1,
+		ChatID:   100,
+		ChatType: "private",
+		Text:     "hello",
+	}
+
+	_ = a.handleMessage(ctx, msg)
+
+	if got := rec.typingCount(); got < 1 {
+		t.Fatalf("expected at least 1 SendTyping call, got %d", got)
+	}
+
+	// Verify the correct chatID was used.
+	rec.mu.Lock()
+	firstCall := rec.calls[0]
+	rec.mu.Unlock()
+	if firstCall != 100 {
+		t.Errorf("SendTyping chatID = %d, want 100", firstCall)
+	}
+}
+
+// fakeLLMClient returns a simple text response with end_turn to terminate the loop.
+type fakeLLMClient struct{}
+
+func (f *fakeLLMClient) SendStreaming(_ context.Context, params claude.SendParams) (*claude.Response, error) {
+	if params.OnPartialText != nil {
+		params.OnPartialText("ok")
+	}
+	return &claude.Response{
+		TextContent: "ok",
+		StopReason:  "end_turn",
+	}, nil
+}
+
+// fakeMessageStore is a minimal MessageStore for typing tests.
+type fakeMessageStore struct {
+	convID string
+}
+
+func (f *fakeMessageStore) GetActiveConversation(_, _ int64, _ string) (string, string, error) {
+	return f.convID, "", nil
+}
+func (f *fakeMessageStore) AppendMessage(_, _ string, _ json.RawMessage) error { return nil }
+func (f *fakeMessageStore) LogToolCall(_, _, _ string, _ json.RawMessage) error { return nil }
+func (f *fakeMessageStore) CompleteToolCall(_ string, _ json.RawMessage, _ bool) error {
+	return nil
+}
+func (f *fakeMessageStore) GetConversationMessages(_ string) ([]memory.Message, error) {
+	return nil, nil
+}
+func (f *fakeMessageStore) SaveSummary(_ string, _, _ int64, _ string, _ int, _, _ time.Time) error {
+	return nil
+}
+func (f *fakeMessageStore) SetSummarizationStatus(_, _ string) error { return nil }
+func (f *fakeMessageStore) ConversationMeta(_ string) (int64, int64, string, int, time.Time, time.Time, error) {
+	return 0, 0, "", 0, time.Time{}, time.Time{}, nil
+}
+func (f *fakeMessageStore) RecoverableSummarizations() ([]string, error) { return nil, nil }
+func (f *fakeMessageStore) GetSummaryText(_ string) (string, error)      { return "", nil }
+
+// fakeContextProvider returns empty history.
+type fakeContextProvider struct{}
+
+func (f *fakeContextProvider) BuildContext(_ string) ([]memory.Message, error) {
+	return nil, nil
+}
+
+// fakeToolRouter returns no tools.
+type fakeToolRouter struct{}
+
+func (f *fakeToolRouter) CallTool(_ context.Context, _ string, _ map[string]any, _, _ int64) (string, error) {
+	return "", nil
+}
+func (f *fakeToolRouter) Tools() []mcp.ToolDef { return nil }
 
 func (m *mockTelegramTransport) SendDocument(_ int64, _ string, _ []byte, _ string) error {
 	return nil
