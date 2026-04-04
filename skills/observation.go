@@ -274,7 +274,7 @@ func makeForgetObservationExecute(store ObservationStore) func(ctx context.Conte
 		user := GetUser(ctx)
 
 		if err := store.DeleteObservation(params.ID, user.UserID); err != nil {
-			return "", err
+			return "", fmt.Errorf("delete observation: %w", err)
 		}
 		// Best-effort vector cleanup; log but don't fail the skill.
 		if err := store.DeleteObservationVector(ctx, params.ID); err != nil {

@@ -372,6 +372,314 @@ func TestGetObservation_IDOR(t *testing.T) {
 	}
 }
 
+func TestSearchObservations_EmptyQuery(t *testing.T) {
+	store := &mockObservationStore{}
+	db := newTestObservationDB(t)
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var searchSkill *Skill
+	for _, s := range skills {
+		if s.Name == "search_observations" {
+			searchSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	input, _ := json.Marshal(searchObservationsInput{Query: ""})
+	_, err = searchSkill.Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error for empty query")
+	}
+	if !strings.Contains(err.Error(), "query is required") {
+		t.Errorf("error = %q, want 'query is required'", err.Error())
+	}
+}
+
+func TestSearchObservations_StoreError(t *testing.T) {
+	store := &mockObservationStore{
+		searchErr: fmt.Errorf("connection refused"),
+	}
+	db := newTestObservationDB(t)
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var searchSkill *Skill
+	for _, s := range skills {
+		if s.Name == "search_observations" {
+			searchSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	input, _ := json.Marshal(searchObservationsInput{Query: "test"})
+	_, err = searchSkill.Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error when store fails")
+	}
+	if !strings.Contains(err.Error(), "search observations") {
+		t.Errorf("error = %q, want it to contain 'search observations'", err.Error())
+	}
+}
+
+func TestSearchObservations_NoResults(t *testing.T) {
+	store := &mockObservationStore{
+		searchResults: nil,
+	}
+	db := newTestObservationDB(t)
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var searchSkill *Skill
+	for _, s := range skills {
+		if s.Name == "search_observations" {
+			searchSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	input, _ := json.Marshal(searchObservationsInput{Query: "nonexistent"})
+	result, err := searchSkill.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(result, "No observations found") {
+		t.Errorf("result = %q, want 'No observations found'", result)
+	}
+}
+
+func TestSearchObservations_LimitClamping(t *testing.T) {
+	store := &mockObservationStore{
+		searchResults: []ObservationSearchResult{
+			{ID: "1", Title: "obs1", Type: "decision", Score: 0.9},
+		},
+	}
+	db := newTestObservationDB(t)
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var searchSkill *Skill
+	for _, s := range skills {
+		if s.Name == "search_observations" {
+			searchSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	// Negative limit should default to 10.
+	input, _ := json.Marshal(searchObservationsInput{Query: "test", Limit: -5})
+	_, err = searchSkill.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute(limit=-5): %v", err)
+	}
+
+	// Limit > 50 should be clamped.
+	input, _ = json.Marshal(searchObservationsInput{Query: "test", Limit: 100})
+	_, err = searchSkill.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute(limit=100): %v", err)
+	}
+}
+
+func TestGetObservation_EmptyID(t *testing.T) {
+	db := newTestObservationDB(t)
+	store := &mockObservationStore{}
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var getSkill *Skill
+	for _, s := range skills {
+		if s.Name == "get_observation" {
+			getSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	input, _ := json.Marshal(getObservationInput{ID: ""})
+	_, err = getSkill.Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error for empty ID")
+	}
+	if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("error = %q, want 'id is required'", err.Error())
+	}
+}
+
+func TestGetObservation_InvalidUUID(t *testing.T) {
+	db := newTestObservationDB(t)
+	store := &mockObservationStore{}
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var getSkill *Skill
+	for _, s := range skills {
+		if s.Name == "get_observation" {
+			getSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	input, _ := json.Marshal(getObservationInput{ID: "not-valid"})
+	_, err = getSkill.Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error for invalid UUID")
+	}
+	if !strings.Contains(err.Error(), "invalid observation ID format") {
+		t.Errorf("error = %q, want 'invalid observation ID format'", err.Error())
+	}
+}
+
+func TestForgetObservation_EmptyID(t *testing.T) {
+	store := &mockObservationStore{}
+	db := newTestObservationDB(t)
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var forgetSkill *Skill
+	for _, s := range skills {
+		if s.Name == "forget_observation" {
+			forgetSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	input, _ := json.Marshal(forgetObservationInput{ID: ""})
+	_, err = forgetSkill.Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error for empty ID")
+	}
+	if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("error = %q, want 'id is required'", err.Error())
+	}
+}
+
+func TestForgetObservation_VectorCleanupFailure(t *testing.T) {
+	store := &mockObservationStore{
+		vectorDelErr: fmt.Errorf("qdrant unreachable"),
+	}
+	db := newTestObservationDB(t)
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var forgetSkill *Skill
+	for _, s := range skills {
+		if s.Name == "forget_observation" {
+			forgetSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	validUUID := "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+	input, _ := json.Marshal(forgetObservationInput{ID: validUUID})
+	result, err := forgetSkill.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("expected success (vector cleanup is best-effort), got error: %v", err)
+	}
+	if !strings.Contains(result, "vector cleanup failed") {
+		t.Errorf("result = %q, want it to mention vector cleanup failure", result)
+	}
+	if !strings.Contains(result, "Deleted") {
+		t.Errorf("result = %q, want it to confirm deletion", result)
+	}
+}
+
+func TestForgetObservation_Success(t *testing.T) {
+	store := &mockObservationStore{}
+	db := newTestObservationDB(t)
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var forgetSkill *Skill
+	for _, s := range skills {
+		if s.Name == "forget_observation" {
+			forgetSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	validUUID := "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+	input, _ := json.Marshal(forgetObservationInput{ID: validUUID})
+	result, err := forgetSkill.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(result, "Deleted observation") {
+		t.Errorf("result = %q, want 'Deleted observation'", result)
+	}
+	if store.deletedID != validUUID {
+		t.Errorf("deletedID = %q, want %q", store.deletedID, validUUID)
+	}
+	if store.vectorDeleted != validUUID {
+		t.Errorf("vectorDeleted = %q, want %q", store.vectorDeleted, validUUID)
+	}
+}
+
+func TestListObservations_NegativeLimit(t *testing.T) {
+	db := newTestObservationDB(t)
+	store := &mockObservationStore{}
+	skills, err := InitObservationSkills(db.DB(), store)
+	if err != nil {
+		t.Fatalf("InitObservationSkills: %v", err)
+	}
+
+	var listSkill *Skill
+	for _, s := range skills {
+		if s.Name == "list_observations" {
+			listSkill = s
+			break
+		}
+	}
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	// Insert one observation.
+	_, err = db.DB().Exec(
+		`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', ?, ?)`,
+		"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b0001", int64(1), "decision", "Test obs", "hash-neg", time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Negative limit defaults to 10, should return the 1 observation.
+	input, _ := json.Marshal(listObservationsInput{Limit: -5})
+	result, err := listSkill.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute(limit=-5): %v", err)
+	}
+	if !strings.Contains(result, "1 observations") {
+		t.Errorf("expected 1 observation with default limit, got %q", result)
+	}
+}
+
 func TestListObservations_Empty(t *testing.T) {
 	db := newTestObservationDB(t)
 	store := &mockObservationStore{}

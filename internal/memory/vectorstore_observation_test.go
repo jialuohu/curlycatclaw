@@ -10,6 +10,10 @@ import (
 func resetObservationsCollection(t *testing.T, vs *VectorStore, ctx context.Context) {
 	t.Helper()
 	vs.DeleteCollection(ctx, observationsCollection) //nolint:errcheck
+	// Reset the lazy-init flag so ensureObservationsCollection will re-check.
+	vs.obsCollMu.Lock()
+	vs.obsCollDone = false
+	vs.obsCollMu.Unlock()
 	if err := vs.ensureCollection(ctx, observationsCollection); err != nil {
 		t.Fatalf("reset: create %s: %v", observationsCollection, err)
 	}
