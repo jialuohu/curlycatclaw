@@ -587,7 +587,7 @@ func (a *Actor) checkObservationTrigger(convID string, userID, chatID int64, cha
 	a.obsStateMu.Lock()
 	state, ok := a.obsState[convID]
 	if !ok {
-		state = &obsConvState{}
+		state = &obsConvState{lastMsgAt: time.Now()}
 		a.obsState[convID] = state
 	}
 	now := time.Now()

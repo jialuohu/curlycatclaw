@@ -493,14 +493,14 @@ func TestValidateRawObservation_ControlChars(t *testing.T) {
 	if strings.ContainsAny(obs.Title, "\x00") {
 		t.Error("title should have control chars stripped")
 	}
-	if obs.Title != "helloworld" {
-		t.Errorf("Title = %q, want %q", obs.Title, "helloworld")
+	if obs.Title != "hello world" {
+		t.Errorf("Title = %q, want %q", obs.Title, "hello world")
 	}
-	if obs.Summary != "testsummary" {
-		t.Errorf("Summary = %q, want %q", obs.Summary, "testsummary")
+	if obs.Summary != "test summary" {
+		t.Errorf("Summary = %q, want %q", obs.Summary, "test summary")
 	}
-	if len(obs.Facts) != 1 || obs.Facts[0] != "factone" {
-		t.Errorf("Facts = %v, want [factone]", obs.Facts)
+	if len(obs.Facts) != 1 || obs.Facts[0] != "fact one" {
+		t.Errorf("Facts = %v, want [fact one]", obs.Facts)
 	}
 }
 
@@ -531,9 +531,9 @@ func TestSanitizeObservationString(t *testing.T) {
 	}{
 		{"normal text", "normal text"},
 		{"  spaces  ", "spaces"},
-		{"ctrl\x00chars\x07here", "ctrlcharshere"},
-		{"tabs\tare\tcontrol", "tabsarecontrol"},
-		{"newlines\nare\ncontrol", "newlinesarecontrol"},
+		{"ctrl\x00chars\x07here", "ctrl chars here"},
+		{"tabs\tare\tcontrol", "tabs are control"},
+		{"newlines\nare\ncontrol", "newlines are control"},
 		{"keep spaces between words", "keep spaces between words"},
 		{"", ""},
 	}

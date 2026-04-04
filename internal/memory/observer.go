@@ -78,8 +78,7 @@ func (e *ObservationExtractor) Extract(
 		return nil, fmt.Errorf("observer: load messages: %w", err)
 	}
 
-	transcript := FormatTranscript(messages)
-	transcript = truncateToChars(transcript, maxTranscriptChars)
+	transcript := FormatTranscriptWithLimit(messages, maxTranscriptChars)
 
 	if len([]rune(transcript)) < minTranscriptChars {
 		return nil, nil
@@ -240,12 +239,14 @@ func observationContentHash(title, summary string) string {
 	return fmt.Sprintf("%x", h)
 }
 
-// sanitizeObservationString strips control characters (keeping spaces) and
-// trims whitespace. Mirrors the sanitizeFact pattern in facts.go.
+// sanitizeObservationString replaces control characters with spaces and
+// trims whitespace. This prevents garbled concatenation when Claude returns
+// multi-line text (e.g., "WAL mode\nenabled" becomes "WAL mode enabled").
 func sanitizeObservationString(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if unicode.IsControl(r) && r != ' ' {
+		if unicode.IsControl(r) {
+			b.WriteRune(' ')
 			continue
 		}
 		b.WriteRune(r)
@@ -260,12 +261,4 @@ func truncateRunes(s string, maxRunes int) string {
 		return string(runes[:maxRunes])
 	}
 	return s
-}
-
-// truncateToChars truncates a string to at most maxChars runes.
-func truncateToChars(s string, maxChars int) string {
-	if maxChars <= 0 {
-		return s
-	}
-	return truncateRunes(s, maxChars)
 }
