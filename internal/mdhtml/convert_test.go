@@ -31,6 +31,50 @@ func TestConvert(t *testing.T) {
 			want: "This is <i>italic</i> text",
 		},
 
+		// Underscore bold
+		{
+			name: "underscore bold",
+			in:   "This is __bold__ text",
+			want: "This is <b>bold</b> text",
+		},
+
+		// Underscore italic
+		{
+			name: "underscore italic",
+			in:   "This is _italic_ text",
+			want: "This is <i>italic</i> text",
+		},
+		{
+			name: "underscore italic with quotes",
+			in:   `_"A table database based note taking app"_`,
+			want: "<i>&#34;A table database based note taking app&#34;</i>",
+		},
+		{
+			name: "underscore not converted in snake_case",
+			in:   "Use file_name_here for the path",
+			want: "Use file_name_here for the path",
+		},
+		{
+			name: "underscore not converted in SCREAMING_SNAKE",
+			in:   "Set GITHUB_PERSONAL_ACCESS_TOKEN env var",
+			want: "Set GITHUB_PERSONAL_ACCESS_TOKEN env var",
+		},
+		{
+			name: "multiple underscore italic",
+			in:   "_first_ and _second_",
+			want: "<i>first</i> and <i>second</i>",
+		},
+		{
+			name: "unclosed underscore",
+			in:   "_no closing",
+			want: "_no closing",
+		},
+		{
+			name: "underscore in backticks protected",
+			in:   "Use `__init__` method",
+			want: "Use <code>__init__</code> method",
+		},
+
 		// Bold + Italic
 		{
 			name: "bold and italic",
