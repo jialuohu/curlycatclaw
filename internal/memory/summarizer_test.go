@@ -235,3 +235,95 @@ func TestFormatTranscript_ShortUnchanged(t *testing.T) {
 		t.Error("short transcript should contain full text")
 	}
 }
+
+func TestFormatTranscriptWithLimit_Short(t *testing.T) {
+	// Under limit: no truncation should occur.
+	content, _ := json.Marshal("Short message")
+	messages := []Message{
+		{Role: "user", Content: content},
+		{Role: "assistant", Content: content},
+	}
+
+	result := FormatTranscriptWithLimit(messages, 5000)
+
+	if strings.Contains(result, "[...truncated...]") {
+		t.Error("short transcript should not contain truncation marker")
+	}
+	if !strings.Contains(result, "User: Short message") {
+		t.Errorf("expected user message in transcript, got %q", result)
+	}
+	if !strings.Contains(result, "Assistant: Short message") {
+		t.Errorf("expected assistant message in transcript, got %q", result)
+	}
+}
+
+func TestFormatTranscriptWithLimit_Long(t *testing.T) {
+	// Over limit: head+tail sampling should apply with proportional split.
+	beginContent, _ := json.Marshal("BEGIN_MARKER start content")
+	endContent, _ := json.Marshal("END_MARKER final content")
+	// Fill the middle so total exceeds our small limit.
+	middleText := strings.Repeat("x", 600)
+	middleContent, _ := json.Marshal(middleText)
+
+	messages := []Message{
+		{Role: "user", Content: beginContent},
+		{Role: "assistant", Content: middleContent},
+		{Role: "user", Content: endContent},
+	}
+
+	const limit = 200
+	result := FormatTranscriptWithLimit(messages, limit)
+
+	if !strings.Contains(result, "[...truncated...]") {
+		t.Error("long transcript should contain truncation marker")
+	}
+
+	// Head/tail split = 200 * 5 / 12 = 83. The head should capture the
+	// beginning marker and the tail should capture the ending marker.
+	if !strings.Contains(result, "BEGIN_MARKER") {
+		t.Error("head portion should preserve beginning of conversation")
+	}
+	if !strings.Contains(result, "END_MARKER") {
+		t.Error("tail portion should preserve end of conversation")
+	}
+
+	// The result should be approximately headTail*2 + marker in rune length,
+	// not the full original.
+	runes := []rune(result)
+	headTail := limit * 5 / 12
+	maxExpected := headTail*2 + 50 // marker + some whitespace
+	if len(runes) > maxExpected {
+		t.Errorf("result rune length = %d, expected at most ~%d", len(runes), maxExpected)
+	}
+}
+
+func TestFormatTranscriptWithLimit_Empty(t *testing.T) {
+	// No messages: should return empty string.
+	result := FormatTranscriptWithLimit(nil, 5000)
+	if result != "" {
+		t.Errorf("expected empty string for nil messages, got %q", result)
+	}
+
+	result = FormatTranscriptWithLimit([]Message{}, 5000)
+	if result != "" {
+		t.Errorf("expected empty string for empty messages, got %q", result)
+	}
+}
+
+func TestFormatTranscriptWithLimit_ProportionalSplit(t *testing.T) {
+	// Verify that the default FormatTranscript and FormatTranscriptWithLimit
+	// with maxTranscriptChars produce the same result.
+	longText := strings.Repeat("word ", 3000) // 15000 chars
+	content, _ := json.Marshal(longText)
+
+	messages := []Message{
+		{Role: "user", Content: content},
+	}
+
+	resultDefault := FormatTranscript(messages)
+	resultExplicit := FormatTranscriptWithLimit(messages, maxTranscriptChars)
+
+	if resultDefault != resultExplicit {
+		t.Error("FormatTranscript and FormatTranscriptWithLimit(maxTranscriptChars) should produce identical output")
+	}
+}

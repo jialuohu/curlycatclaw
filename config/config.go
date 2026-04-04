@@ -118,6 +118,19 @@ type MemoryConfig struct {
 	SummarizeModel       string        `toml:"summarize_model"`
 	MinMsgToSummarize    int           `toml:"min_messages_to_summarize"`
 	VectorSearchTimeoutSec int `toml:"vector_search_timeout_seconds"`
+	Observations         ObservationsConfig `toml:"observations"`
+}
+
+// ObservationsConfig controls automatic observation extraction and retrieval.
+type ObservationsConfig struct {
+	Enabled             bool    `toml:"enabled"`
+	ExtractionInterval  int     `toml:"extraction_interval"`
+	ExtractionModel     string  `toml:"extraction_model"`
+	MaxPerConversation  int     `toml:"max_observations_per_conversation"`
+	MaxTranscriptChars  int     `toml:"max_transcript_chars"`
+	CooldownSeconds     int     `toml:"cooldown_seconds"`
+	RetrievalLimit      int     `toml:"retrieval_limit"`
+	ScoreThreshold      float64 `toml:"retrieval_score_threshold"`
 }
 
 type SandboxConfig struct {
@@ -188,6 +201,16 @@ func Load(path string) (*Config, error) {
 			SummaryScoreThreshold: 0.3,
 			MinMsgToSummarize:    4,
 			VectorSearchTimeoutSec: 5,
+			Observations: ObservationsConfig{
+				Enabled:            false,
+				ExtractionInterval: 3,
+				ExtractionModel:    "claude-haiku-4-5",
+				MaxPerConversation: 50,
+				MaxTranscriptChars: 4000,
+				CooldownSeconds:    60,
+				RetrievalLimit:     8,
+				ScoreThreshold:     0.3,
+			},
 		},
 		Sandbox: SandboxConfig{
 			Enabled: false,

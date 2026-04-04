@@ -65,6 +65,19 @@ type TelegramTransport interface {
 	SendDocument(chatID int64, fileName string, data []byte, caption string) error
 }
 
+// ObservationStore abstracts observation CRUD for the session actor.
+type ObservationStore interface {
+	SaveObservation(obs memory.Observation) error
+	GetRecentObservationTitles(convID string, limit int) ([]string, error)
+	GetExtractionState(convID string) (*memory.ExtractionState, error)
+	UpdateExtractionState(convID string, lastRowid int64, turnCount int, status string) error
+	IncrementExtractionTurnCount(convID string) error
+	ObservationExistsByHash(userID int64, hash string) (bool, error)
+	DeleteObservation(id string, userID int64) error
+	CountObservations(convID string) (int, error)
+	GetObservationFactsByIDs(ids []string) (map[string][]string, error)
+}
+
 // CLIClient abstracts the CLI subprocess manager for testing.
 type CLIClient interface {
 	GetOrCreate(ctx context.Context, userID, chatID int64, params claude.SpawnParams) (proc *claude.CLIProcess, isNew bool, err error)
