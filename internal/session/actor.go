@@ -227,7 +227,7 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// CLI subprocess mode: delegate to claude CLI which handles the agent loop.
 	if a.cliMgr != nil {
-		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos, systemPrompt)
+		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos(), systemPrompt)
 	}
 
 	// Direct API mode: build context and run the tool_use loop.
@@ -241,12 +241,13 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// Replace the last user message with one that includes image blocks
 	// from the current message (images in history are too expensive to replay).
-	if len(msg.Photos) > 0 && len(messages) > 0 {
+	photoAttachments := msg.Photos()
+	if len(photoAttachments) > 0 && len(messages) > 0 {
 		var blocks []anthropic.ContentBlockParamUnion
 		if msg.Text != "" {
 			blocks = append(blocks, anthropic.NewTextBlock(msg.Text))
 		}
-		for _, photo := range msg.Photos {
+		for _, photo := range photoAttachments {
 			blocks = append(blocks, anthropic.NewImageBlockBase64(
 				photo.MimeType,
 				base64.StdEncoding.EncodeToString(photo.Data),
@@ -844,7 +845,7 @@ func (a *Actor) handleWithCLI(
 	userID, chatID int64,
 	convID string,
 	userMsg string,
-	photos []telegram.Photo,
+	photos []telegram.Attachment,
 	systemPrompt string,
 ) error {
 	ss := &streamState{chatID: chatID, tg: a.tg}

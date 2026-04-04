@@ -89,6 +89,12 @@ func (m *mockTelegramTransport) Updates() <-chan telegram.IncomingMessage {
 	return m.updates
 }
 
+func (m *mockTelegramTransport) SendTyping(_ int64) {}
+
+func (m *mockTelegramTransport) SendDocument(_ int64, _ string, _ []byte, _ string) error {
+	return nil
+}
+
 func TestHandleProjectCommand_List(t *testing.T) {
 	tg := newMockTG()
 	a := &Actor{
