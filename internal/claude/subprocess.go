@@ -240,6 +240,7 @@ type SpawnParams struct {
 	InitialMsg   json.RawMessage // first message to send (required for spawn, CLI waits for it before init)
 	WorkDir      string          // if set, cmd.Dir is set to this path
 	HomeDir      string          // if set, HOME env var is replaced with this path
+	Model        string          // if set, overrides CLIManager.model for this spawn
 }
 
 // GetOrCreate returns the existing CLI process for a user or spawns a new one.
@@ -380,8 +381,12 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 		// set_reminder/list_reminders/cancel_reminder MCP skills.
 		args = append(args, "--disallowedTools", "CronCreate,CronDelete,CronList")
 	}
-	if m.model != "" {
-		args = append(args, "--model", m.model)
+	model := m.model
+	if params.Model != "" {
+		model = params.Model
+	}
+	if model != "" {
+		args = append(args, "--model", model)
 	}
 
 	cmd := exec.CommandContext(ctx, m.cliPath, args...)

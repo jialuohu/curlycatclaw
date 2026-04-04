@@ -414,11 +414,13 @@ func run(configPath string) error {
 				return resp.TextContent, nil
 			})
 		} else if cliManager != nil {
-			// CLI mode: use SpawnOneShot for summarization, same pattern as CronExecutor.
+			// CLI mode: use SpawnOneShot with summarize_model override (cheaper model for summarization).
+			summarizeModel := cfg.Memory.SummarizeModel
 			summarizer = memory.NewSummarizer(func(ctx context.Context, system, user string) (string, error) {
 				proc, err := cliManager.SpawnOneShot(ctx, claude.SpawnParams{
 					SystemPrompt: system,
 					InitialMsg:   claude.BuildUserMessage(user),
+					Model:        summarizeModel,
 				})
 				if err != nil {
 					return "", fmt.Errorf("cli summarize: spawn: %w", err)
@@ -512,11 +514,13 @@ func run(configPath string) error {
 				return resp.TextContent, nil
 			}, store)
 		} else if cliManager != nil {
-			// CLI mode: use SpawnOneShot (same pattern as summarizer).
+			// CLI mode: use SpawnOneShot with extraction_model override (cheaper model for extraction).
+			extractionModel := cfg.Memory.Observations.ExtractionModel
 			observer = memory.NewObservationExtractor(func(ctx context.Context, system, user string) (string, error) {
 				proc, err := cliManager.SpawnOneShot(ctx, claude.SpawnParams{
 					SystemPrompt: system,
 					InitialMsg:   claude.BuildUserMessage(user),
+					Model:        extractionModel,
 				})
 				if err != nil {
 					return "", fmt.Errorf("cli observe: spawn: %w", err)

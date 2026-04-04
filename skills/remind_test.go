@@ -695,7 +695,7 @@ type mockCronRunner struct {
 	called bool
 }
 
-func (m *mockCronRunner) Execute(_ context.Context, _, _ int64, _ string) (string, error) {
+func (m *mockCronRunner) Execute(_ context.Context, _, _ int64, _, _ string) (string, error) {
 	m.called = true
 	return m.result, m.err
 }

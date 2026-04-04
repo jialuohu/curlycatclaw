@@ -18,8 +18,9 @@ import (
 
 // CronRunner executes a prompt through Claude with clean context.
 // Implemented by session.CronExecutor; defined here to avoid circular imports.
+// model is optional: if non-empty, it overrides the default model for this execution.
 type CronRunner interface {
-	Execute(ctx context.Context, userID, chatID int64, prompt string) (string, error)
+	Execute(ctx context.Context, userID, chatID int64, prompt, model string) (string, error)
 }
 
 // InitRemindSkills creates the reminders table (if not exists) and returns
@@ -45,11 +46,17 @@ func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]
 			return nil, fmt.Errorf("skills: add prompt column: %w", err)
 		}
 	}
+	// Migrate: add model column for per-reminder model override.
+	if _, err := db.Exec(`ALTER TABLE reminders ADD COLUMN model TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return nil, fmt.Errorf("skills: add model column: %w", err)
+		}
+	}
 
 	setSkill := &Skill{
 		Name:        "set_reminder",
 		Description: "Set a reminder that will fire at the specified time. Optionally make it recurring with a cron expression.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string","description":"Reminder label/message"},"fire_at":{"type":"string","description":"When to fire (ISO 8601 datetime, e.g. 2025-01-15T09:00:00)"},"recurring":{"type":"string","description":"Optional cron expression for recurring reminders (e.g. 0 9 * * MON-FRI)"},"prompt":{"type":"string","description":"Optional: if set, Claude executes this prompt at fire time with tool access (web_search, notes, facts, etc) and sends the result to your chat. Example: 'Check my notes and summarize what I need to do today'"}},"required":["message","fire_at"]}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string","description":"Reminder label/message"},"fire_at":{"type":"string","description":"When to fire (ISO 8601 datetime, e.g. 2025-01-15T09:00:00)"},"recurring":{"type":"string","description":"Optional cron expression for recurring reminders (e.g. 0 9 * * MON-FRI)"},"prompt":{"type":"string","description":"Optional: if set, Claude executes this prompt at fire time with tool access (web_search, notes, facts, etc) and sends the result to your chat. Example: 'Check my notes and summarize what I need to do today'"},"model":{"type":"string","description":"Optional: model to use for this reminder's prompt (e.g. claude-haiku-4-5 for cheap tasks, claude-sonnet-4-6 for complex ones). Defaults to the main session model."}},"required":["message","fire_at"]}`),
 		Execute:     makeSetReminderExecute(db, signalCh, loc),
 	}
 
@@ -75,6 +82,7 @@ type setReminderInput struct {
 	FireAt    string `json:"fire_at"`
 	Recurring string `json:"recurring"`
 	Prompt    string `json:"prompt"`
+	Model     string `json:"model"`
 }
 
 func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -117,10 +125,14 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 		if params.Prompt != "" {
 			prompt = &params.Prompt
 		}
+		var model *string
+		if params.Model != "" {
+			model = &params.Model
+		}
 
 		res, err := db.ExecContext(ctx,
-			`INSERT INTO reminders (user_id, chat_id, message, fire_at, cron_expr, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
-			user.UserID, user.ChatID, params.Message, fireAtUTC, cronExpr, prompt, now,
+			`INSERT INTO reminders (user_id, chat_id, message, fire_at, cron_expr, prompt, model, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+			user.UserID, user.ChatID, params.Message, fireAtUTC, cronExpr, prompt, model, now,
 		)
 		if err != nil {
 			return "", fmt.Errorf("set reminder: %w", err)
@@ -334,7 +346,7 @@ func (ra *ReminderActor) Run(ctx context.Context) error {
 // which avoids deadlocks with single-connection pools (e.g., in-memory SQLite).
 func (ra *ReminderActor) loadPendingReminders(ctx context.Context, scheduler gocron.Scheduler) error {
 	rows, err := ra.db.QueryContext(ctx,
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt FROM reminders WHERE status = 'pending'`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model FROM reminders WHERE status = 'pending'`,
 	)
 	if err != nil {
 		return fmt.Errorf("query pending reminders: %w", err)
@@ -343,7 +355,7 @@ func (ra *ReminderActor) loadPendingReminders(ctx context.Context, scheduler goc
 	var reminders []reminderRow
 	for rows.Next() {
 		var r reminderRow
-		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model); err != nil {
 			slog.Error("reminder: scan row", "err", err)
 			continue
 		}
@@ -373,9 +385,9 @@ func (ra *ReminderActor) handleSignal(ctx context.Context, scheduler gocron.Sche
 	var r reminderRow
 	var status string
 	err := ra.db.QueryRowContext(ctx,
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, status FROM reminders WHERE id = ?`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, status FROM reminders WHERE id = ?`,
 		id,
-	).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &status)
+	).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model, &status)
 	if err != nil {
 		slog.Error("reminder: query signal target", "id", id, "err", err)
 		return
@@ -451,7 +463,11 @@ func (ra *ReminderActor) fireCronTask(r reminderRow) {
 
 	slog.Info("reminder: executing cron task", "id", r.ID, "chat_id", r.ChatID)
 
-	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt)
+	cronModel := ""
+	if r.Model != nil {
+		cronModel = *r.Model
+	}
+	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt, cronModel)
 	if err != nil {
 		slog.Error("reminder: cron task failed", "id", r.ID, "err", err)
 		errMsg := telegram.OutgoingMessage{
@@ -510,7 +526,7 @@ func (ra *ReminderActor) markFiredIfOneTime(r reminderRow) {
 // the MCP server subprocess which shares the DB but not the signal channel).
 func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.Scheduler) {
 	rows, err := ra.db.QueryContext(ctx,
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt FROM reminders WHERE status = 'pending'`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model FROM reminders WHERE status = 'pending'`,
 	)
 	if err != nil {
 		slog.Error("reminder: poll query failed", "err", err)
@@ -520,7 +536,7 @@ func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.
 	var unscheduled []reminderRow
 	for rows.Next() {
 		var r reminderRow
-		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model); err != nil {
 			slog.Error("reminder: poll scan", "err", err)
 			continue
 		}
@@ -572,4 +588,5 @@ type reminderRow struct {
 	FireAt   time.Time
 	CronExpr *string
 	Prompt   *string
+	Model    *string
 }
