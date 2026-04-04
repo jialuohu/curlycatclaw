@@ -39,11 +39,13 @@ func Convert(markdown string) string {
 	// Phase 4: Convert links [text](url) -> <a href="url">text</a>
 	markdown = convertLinks(markdown)
 
-	// Phase 5: Convert bold **text** -> <b>text</b>
+	// Phase 5: Convert bold **text** and __text__ -> <b>text</b>
 	markdown = convertBold(markdown)
+	markdown = convertUnderscoreBold(markdown)
 
-	// Phase 6: Convert italic *text* -> <i>text</i>
+	// Phase 6: Convert italic *text* and _text_ -> <i>text</i>
 	markdown = convertItalic(markdown)
+	markdown = convertUnderscoreItalic(markdown)
 
 	// Phase 7: Convert strikethrough ~~text~~ -> <s>text</s>
 	markdown = convertStrikethrough(markdown)
@@ -200,6 +202,59 @@ func convertItalic(s string) string {
 		// Extract content between the *s.
 		content := inner[1 : len(inner)-1]
 		replacement := prefix + "<i>" + content + "</i>"
+		result = result[:loc[0]] + replacement + result[loc[1]:]
+	}
+	return result
+}
+
+// underscoreBoldRe matches __text__ at word boundaries (not inside identifiers).
+// The underscore must not be preceded/followed by alphanumeric or underscore chars.
+var underscoreBoldRe = regexp.MustCompile(`(?:^|[^a-zA-Z0-9_])__([^_\n]+?)__(?:$|[^a-zA-Z0-9_])`)
+
+func convertUnderscoreBold(s string) string {
+	result := s
+	for {
+		loc := underscoreBoldRe.FindStringIndex(result)
+		if loc == nil {
+			break
+		}
+		match := result[loc[0]:loc[1]]
+		// Find the actual __...__ within the match (may have a prefix/suffix char).
+		startIdx := strings.Index(match, "__")
+		endIdx := strings.LastIndex(match, "__")
+		if startIdx == endIdx {
+			break
+		}
+		prefix := match[:startIdx]
+		suffix := match[endIdx+2:]
+		content := match[startIdx+2 : endIdx]
+		replacement := prefix + "<b>" + content + "</b>" + suffix
+		result = result[:loc[0]] + replacement + result[loc[1]:]
+	}
+	return result
+}
+
+// underscoreItalicRe matches _text_ at word boundaries (not inside identifiers).
+var underscoreItalicRe = regexp.MustCompile(`(?:^|[^a-zA-Z0-9_])_([^_\n]+?)_(?:$|[^a-zA-Z0-9_])`)
+
+func convertUnderscoreItalic(s string) string {
+	result := s
+	for {
+		loc := underscoreItalicRe.FindStringIndex(result)
+		if loc == nil {
+			break
+		}
+		match := result[loc[0]:loc[1]]
+		// Find the actual _..._ within the match (may have a prefix/suffix char).
+		startIdx := strings.Index(match, "_")
+		endIdx := strings.LastIndex(match, "_")
+		if startIdx == endIdx {
+			break
+		}
+		prefix := match[:startIdx]
+		suffix := match[endIdx+1:]
+		content := match[startIdx+1 : endIdx]
+		replacement := prefix + "<i>" + content + "</i>" + suffix
 		result = result[:loc[0]] + replacement + result[loc[1]:]
 	}
 	return result
