@@ -116,4 +116,10 @@ port    = 8080
 # [sandbox]
 # enabled = false
 
+# Voice transcription via OpenAI Whisper (speech-to-text).
+# [voice]
+# enabled = false
+# openai_api_key = ""
+# stt_model = "whisper-1"
+
 # Encrypted MCP credentials: set CURLYCATCLAW_MASTER_KEY env var (64 hex chars).

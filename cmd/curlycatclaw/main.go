@@ -29,6 +29,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/session"
 	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/internal/voice"
 	"github.com/jialuohu/curlycatclaw/internal/wasm"
 	"github.com/jialuohu/curlycatclaw/skills"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -482,7 +483,12 @@ func run(configPath string) error {
 	if summarizer != nil {
 		sessionSummarizer = summarizer
 	}
-	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg)
+	var transcriber voice.Transcriber
+	if cfg.Voice.Enabled {
+		transcriber = voice.NewOpenAITranscriber(cfg.Voice.OpenAIAPIKey, cfg.Voice.STTModel)
+		slog.Info("voice transcription enabled", "model", cfg.Voice.STTModel)
+	}
+	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
