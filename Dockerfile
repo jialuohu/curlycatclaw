@@ -24,7 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && GWS_ARCH=$(dpkg --print-architecture | sed 's/amd64/x86_64/;s/arm64/aarch64/') \
     && curl -fsSL "https://github.com/googleworkspace/cli/releases/latest/download/google-workspace-cli-${GWS_ARCH}-unknown-linux-musl.tar.gz" \
-       | tar -xz --strip-components=0 -C /usr/local/bin ./gws
+       | tar -xz --strip-components=0 -C /usr/local/bin ./gws \
+    && GH_MCP_ARCH=$(dpkg --print-architecture | sed 's/amd64/x86_64/') \
+    && curl -fsSL "https://github.com/github/github-mcp-server/releases/download/v0.32.0/github-mcp-server_Linux_${GH_MCP_ARCH}.tar.gz" \
+       | tar -xz -C /usr/local/bin github-mcp-server
 RUN useradd -m -d /data curlycatclaw
 COPY --from=builder /curlycatclaw /usr/local/bin/curlycatclaw
 COPY --from=builder /curlycatclaw-gws-mcp /usr/local/bin/curlycatclaw-gws-mcp

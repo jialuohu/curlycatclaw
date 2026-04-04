@@ -1,12 +1,20 @@
 FROM alpine:3.21 AS gws-dl
 RUN apk add --no-cache curl && \
-    curl -fsSL "https://github.com/googleworkspace/cli/releases/latest/download/google-workspace-cli-x86_64-unknown-linux-musl.tar.gz" \
+    GWS_ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/googleworkspace/cli/releases/latest/download/google-workspace-cli-${GWS_ARCH}-unknown-linux-musl.tar.gz" \
     | tar -xz -C /tmp ./gws
+
+FROM alpine:3.21 AS github-mcp-dl
+RUN apk add --no-cache curl && \
+    GH_MCP_ARCH=$(uname -m | sed 's/aarch64/arm64/') && \
+    curl -fsSL "https://github.com/github/github-mcp-server/releases/download/v0.32.0/github-mcp-server_Linux_${GH_MCP_ARCH}.tar.gz" \
+    | tar -xz -C /tmp github-mcp-server
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY curlycatclaw /usr/bin/curlycatclaw
 COPY curlycatclaw-gws-mcp /usr/bin/curlycatclaw-gws-mcp
 COPY --from=gws-dl /tmp/gws /usr/bin/gws
+COPY --from=github-mcp-dl /tmp/github-mcp-server /usr/bin/github-mcp-server
 COPY config.toml.example /etc/curlycatclaw/config.toml.example
 ENTRYPOINT ["/usr/bin/curlycatclaw"]
 CMD ["--config", "/etc/curlycatclaw/config.toml"]

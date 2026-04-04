@@ -1386,6 +1386,15 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 				fmt.Fprintf(&sb, "- **%s**: %s\n", server, strings.Join(names, ", "))
 			}
 			sb.WriteString("Use these tools proactively when the user's request matches their capabilities. Do NOT say you lack access to a service if you have tools for it.\n\n")
+
+			// Add GitHub-specific workflow guidance when GitHub MCP tools are available.
+			if ghTools, ok := serverTools["github"]; ok {
+				sb.WriteString("## GitHub Workflows\n")
+				sb.WriteString("When the user asks about their code, repos, or development work, use the available GitHub tools.\n")
+				sb.WriteString("Available GitHub tools: ")
+				sb.WriteString(strings.Join(ghTools, ", "))
+				sb.WriteString("\n\n")
+			}
 		}
 	}
 

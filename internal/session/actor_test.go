@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/extension"
+	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 )
 
@@ -669,6 +671,83 @@ func TestBuildMCPConfig_ExcludesMCPExtensions(t *testing.T) {
 // loadExtRegistry is a test helper that loads an extension registry.
 func loadExtRegistry(path string) (*extension.Registry, error) {
 	return extension.Load(path)
+}
+
+// stubToolRouter is a minimal ToolRouter for unit tests.
+type stubToolRouter struct {
+	tools []mcp.ToolDef
+}
+
+func (s *stubToolRouter) Tools() []mcp.ToolDef { return s.tools }
+func (s *stubToolRouter) CallTool(_ context.Context, _ string, _ map[string]any, _, _ int64) (string, error) {
+	return "", nil
+}
+
+func TestBuildSystemPrompt_GitHubWorkflowGuidance(t *testing.T) {
+	githubTools := []mcp.ToolDef{
+		{ServerName: "github", Name: "github__list_workflow_runs", RawName: "list_workflow_runs"},
+		{ServerName: "github", Name: "github__get_pull_request", RawName: "get_pull_request"},
+		{ServerName: "github", Name: "github__create_issue", RawName: "create_issue"},
+	}
+	gwsTools := []mcp.ToolDef{
+		{ServerName: "gws", Name: "gws__gmail_send", RawName: "gmail_send"},
+	}
+
+	tests := []struct {
+		name      string
+		tools     []mcp.ToolDef
+		wantGH    bool
+		wantGWS   bool
+	}{
+		{
+			name:    "github_tools_present",
+			tools:   append(githubTools, gwsTools...),
+			wantGH:  true,
+			wantGWS: true,
+		},
+		{
+			name:    "no_github_tools",
+			tools:   gwsTools,
+			wantGH:  false,
+			wantGWS: true,
+		},
+		{
+			name:    "no_tools",
+			tools:   nil,
+			wantGH:  false,
+			wantGWS: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Actor{
+				cfg: &config.Config{Timezone: "UTC"},
+				mcp: &stubToolRouter{tools: tc.tools},
+			}
+
+			prompt := a.buildSystemPrompt(42, 100, "private", "hello")
+
+			hasGH := strings.Contains(prompt, "GitHub Workflows")
+			if hasGH != tc.wantGH {
+				t.Errorf("GitHub guidance present=%v, want %v", hasGH, tc.wantGH)
+			}
+
+			hasGWS := strings.Contains(prompt, "gws")
+			if hasGWS != tc.wantGWS {
+				t.Errorf("GWS tools listed=%v, want %v", hasGWS, tc.wantGWS)
+			}
+
+			if tc.wantGH {
+				// Verify that actual tool names from the mock are listed in the prompt.
+				for _, toolName := range []string{"list_workflow_runs", "get_pull_request", "create_issue"} {
+					if !strings.Contains(prompt, toolName) {
+						t.Errorf("missing GitHub tool name in prompt: %q", toolName)
+					}
+				}
+			}
+		})
+	}
 }
 
 
