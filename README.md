@@ -32,7 +32,6 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - **Conversation memory** — SQLite (WAL mode), sliding window context (25 turns, ~150K tokens), conversation history injected on subprocess restart so Claude doesn't forget mid-conversation
 - **Hierarchical memory** — three tiers: user facts in system prompt, conversation summaries via Qdrant relevance search, current sliding window
-- **Smart context** — Haiku-powered prompt budget manager classifies turn relevance
 - **Vector search** — semantic retrieval via Qdrant with pluggable embeddings (Ollama local default with bge-m3, FNV offline fallback, Voyage AI paid), background migration when switching providers (zero-downtime, crash-resumable)
 
 ### Extensibility
@@ -169,7 +168,7 @@ For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex cha
 │       │               │    Skills / MCP / Wasm / Ext  │
 │       │               │               │               │
 │       │               └──► Memory ◄───┘               │
-│       │                    SQLite / Budget / Vector   │
+│       │                    SQLite / Vector             │
 │       │                                               │
 │       │◄── [tool] lines + [confirm?] previews         │
 │       │                                               │
@@ -207,7 +206,7 @@ Each tool round produces a distinct Telegram message. Text edits respect Telegra
 
 ### Memory System
 
-Three-tier hierarchical memory with smart context building:
+Three-tier hierarchical memory:
 
 ```
 Context Assembly (per request)
@@ -216,13 +215,6 @@ Context Assembly (per request)
 │  Tier 2 (semantic)  │ Relevant Summaries (Qdrant)        │  cosine similarity
 │  Tier 3 (window)    │ Recent Messages (SQLite)           │  25 turns, ~150K tokens
 └──────────────────────────────────────────────────────────┘
-
-Budget Classification (per turn in Tier 3):
-  Keyword match ──hit──► "full" (include verbatim)
-       │ miss
-  SHA256 cache (7d TTL) ──hit──► cached result
-       │ miss
-  Haiku LLM (batch) ──► "full" | "summary" (1-line) | "none" (drop)
 
 Conversation Archival (>4h idle, both API and CLI modes):
   Expired conv ──► Load messages ──► Format (head+tail 12K) ──► Claude summarize
