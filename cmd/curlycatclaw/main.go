@@ -488,7 +488,67 @@ func run(configPath string) error {
 		transcriber = voice.NewOpenAITranscriber(cfg.Voice.OpenAIAPIKey, cfg.Voice.STTModel)
 		slog.Info("voice transcription enabled", "model", cfg.Voice.STTModel)
 	}
-	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber)
+
+	// Create observation extractor if enabled.
+	var observer *memory.ObservationExtractor
+	var obsStore session.ObservationStore
+	if cfg.Memory.Enabled && cfg.Memory.Observations.Enabled {
+		if cfg.Claude.APIKey != "" {
+			// Direct API mode: use a dedicated client for extraction.
+			obsModel := cfg.Memory.Observations.ExtractionModel
+			if obsModel == "" {
+				obsModel = "claude-haiku-4-5"
+			}
+			obsClient := claude.NewClient(cfg.Claude.AuthOption(), obsModel)
+			observer = memory.NewObservationExtractor(func(ctx context.Context, system, user string) (string, error) {
+				resp, err := obsClient.Send(ctx, claude.SendParams{
+					SystemPrompt: system,
+					Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(user))},
+					MaxTokens:    1024,
+				})
+				if err != nil {
+					return "", err
+				}
+				return resp.TextContent, nil
+			}, store)
+		} else if cliManager != nil {
+			// CLI mode: use SpawnOneShot (same pattern as summarizer).
+			observer = memory.NewObservationExtractor(func(ctx context.Context, system, user string) (string, error) {
+				proc, err := cliManager.SpawnOneShot(ctx, claude.SpawnParams{
+					SystemPrompt: system,
+					InitialMsg:   claude.BuildUserMessage(user),
+				})
+				if err != nil {
+					return "", fmt.Errorf("cli observe: spawn: %w", err)
+				}
+				defer proc.Kill()
+				var text strings.Builder
+				_, err = proc.Send(ctx, nil, func(delta string) {
+					text.WriteString(delta)
+				}, nil)
+				if err != nil {
+					return "", fmt.Errorf("cli observe: send: %w", err)
+				}
+				return text.String(), nil
+			}, store)
+		}
+		if observer != nil {
+			obsStore = store
+			slog.Info("observation memory enabled")
+
+			// Register observation skills.
+			skillObsStore := &obsSkillAdapter{store: store, vs: vectorStore, cfg: cfg}
+			obsSkills, err := skills.InitObservationSkills(store.DB(), skillObsStore)
+			if err != nil {
+				slog.Warn("failed to init observation skills", "err", err)
+			} else {
+				for _, s := range obsSkills {
+					skillReg.Register(s)
+				}
+			}
+		}
+	}
+	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber, observer, obsStore)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
@@ -742,4 +802,60 @@ func ensureIsolatedHome(homePath string) error {
 	}
 
 	return nil
+}
+
+// obsSkillAdapter bridges the skills.ObservationStore interface to the real
+// memory.Store and memory.VectorStore implementations.
+type obsSkillAdapter struct {
+	store *memory.Store
+	vs    *memory.VectorStore
+	cfg   *config.Config
+}
+
+func (a *obsSkillAdapter) SearchObservations(ctx context.Context, query string, userID int64, obsType string, limit int) ([]skills.ObservationSearchResult, error) {
+	if a.vs == nil {
+		return nil, fmt.Errorf("vector store not configured")
+	}
+	threshold := float32(a.cfg.Memory.Observations.ScoreThreshold)
+	if threshold <= 0 {
+		threshold = 0.3
+	}
+	// When filtering by type, over-fetch from Qdrant since post-filtering
+	// may discard results of other types.
+	fetchLimit := limit
+	if obsType != "" {
+		fetchLimit = limit * 3
+	}
+	results, err := a.vs.SearchObservations(ctx, query, userID, 0, "private", fetchLimit, threshold)
+	if err != nil {
+		return nil, err
+	}
+	var out []skills.ObservationSearchResult
+	for _, r := range results {
+		if obsType != "" && r.Type != obsType {
+			continue
+		}
+		out = append(out, skills.ObservationSearchResult{
+			ID:        r.ID,
+			Title:     r.Title,
+			Type:      r.Type,
+			Score:     r.Score,
+			CreatedAt: r.CreatedAt,
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (a *obsSkillAdapter) DeleteObservation(id string, userID int64) error {
+	return a.store.DeleteObservation(id, userID)
+}
+
+func (a *obsSkillAdapter) DeleteObservationVector(ctx context.Context, id string) error {
+	if a.vs == nil {
+		return nil
+	}
+	return a.vs.DeleteObservationVector(ctx, id)
 }

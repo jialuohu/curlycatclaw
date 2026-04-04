@@ -882,6 +882,311 @@ func (s *Store) SummaryTextsAfter(afterID int64, limit int) ([]MigrationText, in
 	return results, maxID, nil
 }
 
+// SaveObservation inserts an observation and its facts in a transaction.
+// If obs.ID is empty, a new UUID is generated.
+func (s *Store) SaveObservation(obs *Observation) error {
+	if obs.ID == "" {
+		id, err := newUUID()
+		if err != nil {
+			return fmt.Errorf("memory: generate observation uuid: %w", err)
+		}
+		obs.ID = id
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("memory: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	now := time.Now().UTC()
+	_, err = tx.Exec(
+		`INSERT INTO observations (id, conversation_id, user_id, chat_id, chat_type, type, title, summary, importance, source_msg_start, source_msg_end, content_hash, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		obs.ID, obs.ConversationID, obs.UserID, obs.ChatID, obs.ChatType,
+		obs.Type, obs.Title, obs.Summary, obs.Importance,
+		obs.SourceMsgStart, obs.SourceMsgEnd, obs.ContentHash, now,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: insert observation: %w", err)
+	}
+
+	for _, fact := range obs.Facts {
+		_, err = tx.Exec(
+			`INSERT INTO observation_facts (observation_id, fact) VALUES (?, ?)`,
+			obs.ID, fact,
+		)
+		if err != nil {
+			return fmt.Errorf("memory: insert observation fact: %w", err)
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("memory: commit observation tx: %w", err)
+	}
+	return nil
+}
+
+// GetRecentObservationTitles returns recent observation titles for a conversation,
+// ordered newest first. Used for dedup context during extraction.
+func (s *Store) GetRecentObservationTitles(convID string, limit int) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT title FROM observations WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?`,
+		convID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get recent observation titles: %w", err)
+	}
+	defer rows.Close()
+
+	var titles []string
+	for rows.Next() {
+		var title string
+		if err := rows.Scan(&title); err != nil {
+			return nil, fmt.Errorf("memory: scan observation title: %w", err)
+		}
+		titles = append(titles, title)
+	}
+	return titles, rows.Err()
+}
+
+// GetExtractionState returns the extraction state for a conversation, or nil if not found.
+func (s *Store) GetExtractionState(convID string) (*ExtractionState, error) {
+	var st ExtractionState
+	var lastExtractionAt sql.NullString
+	var lastMsgAt sql.NullString
+	err := s.db.QueryRow(
+		`SELECT conversation_id, last_extracted_msg_rowid, last_extraction_at, last_msg_at, turn_count_since_extraction, status
+		 FROM observation_extraction_state WHERE conversation_id = ?`,
+		convID,
+	).Scan(&st.ConversationID, &st.LastExtractedMsgRowid, &lastExtractionAt, &lastMsgAt, &st.TurnCount, &st.Status)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("memory: get extraction state: %w", err)
+	}
+
+	if lastExtractionAt.Valid {
+		t, pErr := parseTimeStr(lastExtractionAt.String)
+		if pErr == nil {
+			st.LastExtractionAt = &t
+		}
+	}
+	if lastMsgAt.Valid {
+		t, pErr := parseTimeStr(lastMsgAt.String)
+		if pErr == nil {
+			st.LastMsgAt = t
+		}
+	}
+	return &st, nil
+}
+
+// UpdateExtractionState upserts the extraction state for a conversation.
+func (s *Store) UpdateExtractionState(convID string, lastRowid int64, turnCount int, status string) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`INSERT INTO observation_extraction_state (conversation_id, last_extracted_msg_rowid, last_extraction_at, turn_count_since_extraction, status, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(conversation_id) DO UPDATE SET
+		   last_extracted_msg_rowid = excluded.last_extracted_msg_rowid,
+		   last_extraction_at = excluded.last_extraction_at,
+		   turn_count_since_extraction = excluded.turn_count_since_extraction,
+		   status = excluded.status,
+		   updated_at = excluded.updated_at`,
+		convID, lastRowid, now, turnCount, status, now,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: update extraction state: %w", err)
+	}
+	return nil
+}
+
+// IncrementExtractionTurnCount upserts the extraction state, incrementing turn_count by 1
+// and setting last_msg_at to the current time.
+func (s *Store) IncrementExtractionTurnCount(convID string) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`INSERT INTO observation_extraction_state (conversation_id, last_extracted_msg_rowid, turn_count_since_extraction, last_msg_at, status, updated_at)
+		 VALUES (?, 0, 1, ?, 'idle', ?)
+		 ON CONFLICT(conversation_id) DO UPDATE SET
+		   turn_count_since_extraction = turn_count_since_extraction + 1,
+		   last_msg_at = excluded.last_msg_at,
+		   updated_at = excluded.updated_at`,
+		convID, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: increment extraction turn count: %w", err)
+	}
+	return nil
+}
+
+// ObservationExistsByHash checks if an observation with the given content_hash
+// already exists for the given user (dedup scoped to user_id).
+func (s *Store) ObservationExistsByHash(userID int64, hash string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM observations WHERE user_id = ? AND content_hash = ?)`,
+		userID, hash,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("memory: check observation hash: %w", err)
+	}
+	return exists, nil
+}
+
+// DeleteObservation deletes an observation and its facts in a transaction.
+// IDOR-protected: the observation must belong to the given userID.
+func (s *Store) DeleteObservation(id string, userID int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("memory: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	// Verify ownership before deleting.
+	var ownerID int64
+	err = tx.QueryRow(`SELECT user_id FROM observations WHERE id = ?`, id).Scan(&ownerID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("observation: observation %q not found", id)
+	}
+	if err != nil {
+		return fmt.Errorf("memory: lookup observation: %w", err)
+	}
+	if ownerID != userID {
+		return fmt.Errorf("observation: observation %q not found", id)
+	}
+
+	// Delete facts first (no CASCADE).
+	if _, err = tx.Exec(`DELETE FROM observation_facts WHERE observation_id = ?`, id); err != nil {
+		return fmt.Errorf("memory: delete observation facts: %w", err)
+	}
+
+	if _, err = tx.Exec(`DELETE FROM observations WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("memory: delete observation: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("memory: commit delete observation tx: %w", err)
+	}
+	return nil
+}
+
+// CountObservations returns the number of observations in a conversation.
+func (s *Store) CountObservations(convID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM observations WHERE conversation_id = ?`,
+		convID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("memory: count observations: %w", err)
+	}
+	return count, nil
+}
+
+// GetObservationFactsByIDs batch-loads facts for the given observation IDs.
+// Returns a map of observation_id -> []fact.
+func (s *Store) GetObservationFactsByIDs(ids []string) (map[string][]string, error) {
+	if len(ids) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	// Build parameterized query with placeholders.
+	placeholders := make([]byte, 0, len(ids)*2-1)
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args[i] = id
+	}
+
+	rows, err := s.db.Query(
+		`SELECT observation_id, fact FROM observation_facts WHERE observation_id IN (`+string(placeholders)+`) ORDER BY rowid ASC`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get observation facts: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]string, len(ids))
+	for rows.Next() {
+		var obsID, fact string
+		if err := rows.Scan(&obsID, &fact); err != nil {
+			return nil, fmt.Errorf("memory: scan observation fact: %w", err)
+		}
+		result[obsID] = append(result[obsID], fact)
+	}
+	return result, rows.Err()
+}
+
+// RecoverableExtractions returns conversation IDs with extraction status
+// IN ('failed', 'pending'), for crash recovery.
+func (s *Store) RecoverableExtractions() ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT conversation_id FROM observation_extraction_state WHERE status IN ('failed', 'pending') ORDER BY updated_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: recoverable extractions: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GetMaxMessageRowid returns the maximum rowid from messages for a conversation.
+// Used by extraction to know the cursor boundary.
+func (s *Store) GetMaxMessageRowid(convID string) (int64, error) {
+	var maxRowid sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT MAX(id) FROM messages WHERE conversation_id = ?`,
+		convID,
+	).Scan(&maxRowid)
+	if err != nil {
+		return 0, fmt.Errorf("memory: get max message rowid: %w", err)
+	}
+	if !maxRowid.Valid {
+		return 0, nil
+	}
+	return maxRowid.Int64, nil
+}
+
+// GetMessagesSinceRowid loads messages in the rowid range (afterRowid, upToRowid]
+// for a conversation, ordered by id ascending. Used by extraction.
+func (s *Store) GetMessagesSinceRowid(convID string, afterRowid, upToRowid int64) ([]Message, error) {
+	rows, err := s.db.Query(
+		`SELECT role, content FROM messages WHERE conversation_id = ? AND id > ? AND id <= ? ORDER BY id ASC`,
+		convID, afterRowid, upToRowid,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get messages since rowid: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []Message
+	for rows.Next() {
+		var m Message
+		var content string
+		if err := rows.Scan(&m.Role, &content); err != nil {
+			return nil, fmt.Errorf("memory: scan message: %w", err)
+		}
+		m.Content = json.RawMessage(content)
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
 // migrate creates the schema tables if they do not exist.
 func (s *Store) migrate() error {
 	const schema = `
@@ -968,6 +1273,47 @@ func (s *Store) migrate() error {
 	// Index for PendingSummarizations() and RecoverableSummarizations() queries
 	// which filter on summarization_status and sort by updated_at.
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversations_sum_status ON conversations (summarization_status, updated_at ASC)`) //nolint:errcheck
+
+	const observationSchema = `
+	CREATE TABLE IF NOT EXISTS observations (
+		rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+		id TEXT UNIQUE NOT NULL,
+		conversation_id TEXT NOT NULL,
+		user_id INTEGER NOT NULL,
+		chat_id INTEGER NOT NULL,
+		chat_type TEXT NOT NULL DEFAULT 'private',
+		type TEXT NOT NULL,
+		title TEXT NOT NULL,
+		summary TEXT NOT NULL,
+		importance INTEGER NOT NULL DEFAULT 5,
+		source_msg_start INTEGER,
+		source_msg_end INTEGER,
+		content_hash TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+	);
+	CREATE TABLE IF NOT EXISTS observation_facts (
+		rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+		observation_id TEXT NOT NULL,
+		fact TEXT NOT NULL,
+		FOREIGN KEY (observation_id) REFERENCES observations(id)
+	);
+	CREATE TABLE IF NOT EXISTS observation_extraction_state (
+		conversation_id TEXT PRIMARY KEY,
+		last_extracted_msg_rowid INTEGER NOT NULL DEFAULT 0,
+		last_extraction_at TIMESTAMP,
+		last_msg_at TIMESTAMP,
+		turn_count_since_extraction INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'idle',
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_observations_user ON observations(user_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_user_hash ON observations(user_id, content_hash);
+	CREATE INDEX IF NOT EXISTS idx_observation_facts_obs ON observation_facts(observation_id);
+	`
+	if _, err := s.db.Exec(observationSchema); err != nil {
+		return fmt.Errorf("memory: create observation tables: %w", err)
+	}
 
 	const embedderStateSchema = `
 	CREATE TABLE IF NOT EXISTS embedder_state (

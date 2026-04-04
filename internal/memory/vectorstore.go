@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,9 +16,10 @@ import (
 )
 
 const (
-	collectionMessages  = "curlycatclaw_messages"
-	collectionNotes     = "curlycatclaw_notes"
-	collectionSummaries = "curlycatclaw_summaries"
+	collectionMessages     = "curlycatclaw_messages"
+	collectionNotes        = "curlycatclaw_notes"
+	collectionSummaries    = "curlycatclaw_summaries"
+	observationsCollection = "curlycatclaw_observations"
 )
 
 // SearchResult holds a single vector search result.
@@ -41,6 +44,8 @@ type VectorStore struct {
 	embedder Embedder
 	embSwap  atomic.Value // holds Embedder; non-nil after migration swap
 	dw       atomic.Pointer[dualWriteState] // non-nil during migration
+	obsCollMu   sync.Mutex // guards lazy creation of observations collection
+	obsCollDone bool       // true after observations collection is successfully created
 }
 
 // activeEmbedder returns the current embedder, checking for a post-migration swap.
@@ -370,6 +375,196 @@ func (vs *VectorStore) SearchSummaries(ctx context.Context, query string, userID
 	return results, nil
 }
 
+// IndexObservation upserts an observation into the observations collection.
+// The text embedded is "Title. Summary". The collection is created on first write.
+func (vs *VectorStore) IndexObservation(ctx context.Context, obs Observation) error {
+	text := obs.Title + ". " + obs.Summary
+	vec, err := vs.activeEmbedder().Embed(ctx, text)
+	if err != nil {
+		return fmt.Errorf("vectorstore: embed observation: %w", err)
+	}
+
+	if err := vs.ensureObservationsCollection(ctx); err != nil {
+		return err
+	}
+
+	payload := qdrant.NewValueMap(map[string]any{
+		"user_id":    obs.UserID,
+		"chat_id":    obs.ChatID,
+		"chat_type":  obs.ChatType,
+		"type":       obs.Type,
+		"importance": obs.Importance,
+		"obs_id":     obs.ID,
+		"title":      obs.Title,
+		"summary":    obs.Summary,
+		"created_at": obs.CreatedAt.Format(time.RFC3339),
+	})
+
+	pointID := qdrant.NewID(ToUUID(obs.ID))
+	_, primaryErr := vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+		CollectionName: observationsCollection,
+		Points: []*qdrant.PointStruct{
+			{
+				Id:      pointID,
+				Vectors: qdrant.NewVectorsDense(vec),
+				Payload: payload,
+			},
+		},
+	})
+
+	// Dual-write to new collection during migration (best-effort).
+	if dw := vs.dw.Load(); dw != nil {
+		if vec2, err2 := dw.embedder.Embed(ctx, text); err2 == nil {
+			// Observations are not part of the standard [3]string triplet,
+			// so dual-write uses the same collection name (Phase 1: no migration integration).
+			if _, err2 = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+				CollectionName: observationsCollection,
+				Points:         []*qdrant.PointStruct{{Id: pointID, Vectors: qdrant.NewVectorsDense(vec2), Payload: payload}},
+			}); err2 != nil {
+				slog.Warn("dual-write observation upsert failed", "err", err2)
+			}
+		} else {
+			slog.Warn("dual-write observation embed failed", "err", err2)
+		}
+	}
+
+	if primaryErr != nil {
+		return fmt.Errorf("vectorstore: upsert observation: %w", primaryErr)
+	}
+	return nil
+}
+
+// SearchObservations queries the observations collection for relevant observations.
+// For private chats: returns all private observations for this user.
+// For group/supergroup chats: returns only observations from this specific chat.
+// Results are re-ranked by score * recencyWeight * importanceWeight.
+// Observations with importance < 3 are filtered out entirely.
+func (vs *VectorStore) SearchObservations(ctx context.Context, query string, userID, chatID int64, chatType string, limit int, scoreThreshold float32) ([]ObservationResult, error) {
+	// Ensure collection exists (no-op if already created by IndexObservation).
+	if err := vs.ensureObservationsCollection(ctx); err != nil {
+		return nil, nil // Collection doesn't exist yet, return empty results.
+	}
+
+	vec, err := vs.activeEmbedder().Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: embed query: %w", err)
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	// Fetch more than needed so we can filter by importance and re-rank.
+	fetchLimit := uint64(limit * 3)
+	if fetchLimit < 20 {
+		fetchLimit = 20
+	}
+
+	var filter *qdrant.Filter
+	if chatType == "private" || chatType == "" {
+		// Private chats: search all private observations for this user.
+		filter = &qdrant.Filter{
+			Must: []*qdrant.Condition{
+				qdrant.NewMatchInt("user_id", userID),
+			},
+			MustNot: []*qdrant.Condition{
+				qdrant.NewMatchKeyword("chat_type", "group"),
+				qdrant.NewMatchKeyword("chat_type", "supergroup"),
+			},
+		}
+	} else {
+		// Group/supergroup: only this chat's observations.
+		filter = &qdrant.Filter{
+			Must: []*qdrant.Condition{
+				qdrant.NewMatchInt("user_id", userID),
+				qdrant.NewMatchInt("chat_id", chatID),
+			},
+		}
+	}
+
+	scored, err := vs.client.Query(ctx, &qdrant.QueryPoints{
+		CollectionName: observationsCollection,
+		Query:          qdrant.NewQueryDense(vec),
+		Filter:         filter,
+		Limit:          &fetchLimit,
+		WithPayload:    qdrant.NewWithPayload(true),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("vectorstore: query observations: %w", err)
+	}
+
+	now := time.Now()
+	var results []ObservationResult
+	for _, sp := range scored {
+		if sp.Score < scoreThreshold {
+			continue
+		}
+
+		var importance int
+		if v, ok := sp.Payload["importance"]; ok {
+			importance = int(v.GetIntegerValue())
+		}
+		// Filter out low-importance observations entirely.
+		if importance < 3 {
+			continue
+		}
+
+		r := ObservationResult{
+			Importance: importance,
+			Score:      sp.Score,
+		}
+		if v, ok := sp.Payload["obs_id"]; ok {
+			r.ID = v.GetStringValue()
+		}
+		if v, ok := sp.Payload["type"]; ok {
+			r.Type = v.GetStringValue()
+		}
+		if v, ok := sp.Payload["title"]; ok {
+			r.Title = v.GetStringValue()
+		}
+		if v, ok := sp.Payload["summary"]; ok {
+			r.Summary = v.GetStringValue()
+		}
+		if v, ok := sp.Payload["created_at"]; ok {
+			r.CreatedAt = v.GetStringValue()
+		}
+
+		// Re-rank: score * recencyWeight * importanceWeight
+		var daysAgo float64
+		if t, err := time.Parse(time.RFC3339, r.CreatedAt); err == nil {
+			daysAgo = math.Max(0, now.Sub(t).Hours()/24.0)
+		}
+		recencyWeight := 1.0 / (1.0 + daysAgo*0.05)
+		importanceWeight := 0.5 + (float64(importance) / 20.0)
+		rankScore := float64(sp.Score) * recencyWeight * importanceWeight
+		r.Score = float32(rankScore)
+
+		results = append(results, r)
+	}
+
+	// Sort by re-ranked score descending.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	return results, nil
+}
+
+// DeleteObservationVector deletes an observation's vector from the observations collection.
+func (vs *VectorStore) DeleteObservationVector(ctx context.Context, obsID string) error {
+	pointID := qdrant.NewID(ToUUID(obsID))
+	_, err := vs.client.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: observationsCollection,
+		Points:         qdrant.NewPointsSelector(pointID),
+	})
+	if err != nil {
+		return fmt.Errorf("vectorstore: delete observation: %w", err)
+	}
+	return nil
+}
+
 // DeleteCollection deletes a Qdrant collection by name.
 // Returns nil if the collection does not exist.
 func (vs *VectorStore) DeleteCollection(ctx context.Context, name string) error {
@@ -559,6 +754,23 @@ func (vs *VectorStore) Close() error {
 	err := vs.client.Close()
 	vs.client = nil
 	return err
+}
+
+// ensureObservationsCollection lazily creates the observations collection.
+// Unlike sync.Once, this retries on transient failures (e.g., Qdrant
+// temporarily unreachable) so a single network blip doesn't permanently
+// disable observations for the process lifetime.
+func (vs *VectorStore) ensureObservationsCollection(ctx context.Context) error {
+	vs.obsCollMu.Lock()
+	defer vs.obsCollMu.Unlock()
+	if vs.obsCollDone {
+		return nil
+	}
+	if err := vs.ensureCollection(ctx, observationsCollection); err != nil {
+		return err
+	}
+	vs.obsCollDone = true
+	return nil
 }
 
 // ensureCollection creates a collection if it does not already exist.

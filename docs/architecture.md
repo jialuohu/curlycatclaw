@@ -58,15 +58,24 @@ Each tool round produces a distinct Telegram message. Text edits respect Telegra
 
 ## Memory System
 
-Three-tier hierarchical memory:
+Four-tier hierarchical memory:
 
 ```
 Context Assembly (per request)
 ┌──────────────────────────────────────────────────────────┐
 │  Tier 1 (always)    │ User Facts (SQLite)                │  system prompt
-│  Tier 2 (semantic)  │ Relevant Summaries (Qdrant)        │  cosine similarity
-│  Tier 3 (window)    │ Recent Messages (SQLite)           │  25 turns, ~150K tokens
+│  Tier 2 (semantic)  │ Observations (Qdrant)              │  decisions, preferences, project state
+│  Tier 3 (semantic)  │ Relevant Summaries (Qdrant)        │  cosine similarity
+│  Tier 4 (window)    │ Recent Messages (SQLite)           │  25 turns, ~150K tokens
 └──────────────────────────────────────────────────────────┘
+
+Observation Extraction (idle detection, in-memory turn counter):
+  Conversation turns ──► Turn threshold ──► ObservationExtractor
+                                                   │
+                              SQLite (structured) ◄─┤
+                              Qdrant (embed) ◄──────┘
+  Categories: decisions, preferences, project_state
+  System prompt: "What I remember" section with dedup against facts
 
 Conversation Archival (>4h idle, both API and CLI modes):
   Expired conv ──► Load messages ──► Format (head+tail 12K) ──► Claude summarize
@@ -119,9 +128,10 @@ Embedder Interface: Embed(text) → vector
   └─ Voyage AI (512d, API, voyage-3-lite)
 
 Qdrant (gRPC, cosine similarity, user_id tenant isolation):
-  ├─ curlycatclaw_messages   ◄── user messages
-  ├─ curlycatclaw_notes      ◄── saved notes
-  └─ curlycatclaw_summaries  ◄── archived conversations
+  ├─ curlycatclaw_messages      ◄── user messages
+  ├─ curlycatclaw_notes         ◄── saved notes
+  ├─ curlycatclaw_summaries     ◄── archived conversations
+  └─ curlycatclaw_observations  ◄── extracted observations (decisions, preferences, project state)
 
 query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked results
 ```

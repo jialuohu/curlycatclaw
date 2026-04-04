@@ -29,6 +29,11 @@ ollama_dim   = 1024
 [memory]
 enabled = true
 
+[memory.observations]
+enabled = true                # enable automatic observation extraction
+# extraction_interval = 300  # seconds between extraction runs (default: 300)
+# max_observations = 50      # max observations per user (default: 50)
+
 [health]
 enabled = true
 port    = 8080

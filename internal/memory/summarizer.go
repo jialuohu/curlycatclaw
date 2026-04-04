@@ -11,10 +11,7 @@ import (
 const (
 	summarySystemPrompt = "You summarize conversations. Be specific with names, files, numbers. No greetings or filler."
 	summaryUserPrompt   = "Summarize this conversation in 2-3 sentences. Focus on: what the user asked about, key decisions made, any action items or follow-ups mentioned.\n\nConversation:\n%s"
-	maxTranscriptChars  = 12000
-	// headTailChars is the number of characters to keep from each end when
-	// the full transcript exceeds maxTranscriptChars.
-	headTailChars = 5000
+	maxTranscriptChars = 12000
 )
 
 // ConversationSummarizer generates summaries of conversations via a Claude client.
@@ -43,6 +40,14 @@ func (s *ConversationSummarizer) Summarize(ctx context.Context, messages []Messa
 // suitable for summarization. Strips tool_use/tool_result blocks and
 // extracts readable text. Truncates to maxTranscriptChars.
 func FormatTranscript(messages []Message) string {
+	return FormatTranscriptWithLimit(messages, maxTranscriptChars)
+}
+
+// FormatTranscriptWithLimit works like FormatTranscript but allows the
+// caller to specify the maximum character (rune) limit. The head/tail
+// split is proportional: headTail = maxChars * 5 / 12 (matching the
+// default 5000/12000 ratio).
+func FormatTranscriptWithLimit(messages []Message, maxChars int) string {
 	var sb strings.Builder
 
 	for _, m := range messages {
@@ -65,11 +70,19 @@ func FormatTranscript(messages []Message) string {
 
 	result := sb.String()
 	runes := []rune(result)
-	if len(runes) > maxTranscriptChars {
+	if maxChars > 0 && len(runes) > maxChars {
 		// Head+tail sampling: keep the beginning and end of the conversation
 		// so the summary captures both the opening topic and final conclusions.
-		head := string(runes[:headTailChars])
-		tail := string(runes[len(runes)-headTailChars:])
+		headTail := maxChars * 5 / 12
+		if headTail <= 0 {
+			headTail = 1
+		}
+		// Clamp so we never index past the slice.
+		if headTail > len(runes) {
+			headTail = len(runes)
+		}
+		head := string(runes[:headTail])
+		tail := string(runes[len(runes)-headTail:])
 		result = head + "\n[...truncated...]\n" + tail
 	}
 	return strings.TrimSpace(result)

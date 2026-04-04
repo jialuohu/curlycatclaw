@@ -276,6 +276,7 @@ func (f *fakeMessageStore) ConversationMeta(_ string) (int64, int64, string, int
 }
 func (f *fakeMessageStore) RecoverableSummarizations() ([]string, error) { return nil, nil }
 func (f *fakeMessageStore) GetSummaryText(_ string) (string, error)      { return "", nil }
+func (f *fakeMessageStore) GetMaxMessageRowid(_ string) (int64, error)   { return 0, nil }
 
 // fakeContextProvider returns empty history.
 type fakeContextProvider struct{}
