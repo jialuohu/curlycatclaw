@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.22.0] - 2026-04-04
+
+Observation memory system (Phase 1). The bot now automatically captures decisions, preferences, and project state from conversations and injects them into future sessions. No manual `/remember` needed.
+
+### Added
+- **Observation extractor**: async Claude-based extraction runs every 3 user turns (or after 5-min idle gaps), producing structured observations with title, summary, facts, and importance score
+- **Three observation types**: `decision`, `preference`, `project_state` captured automatically from conversation flow
+- **Qdrant observation search**: new `curlycatclaw_observations` collection with re-ranking by recency, importance, and vector similarity
+- **System prompt injection**: relevant observations injected as "What I remember" section between user facts and conversation summaries
+- **Four observation skills**: `search_observations`, `list_observations`, `get_observation`, `forget_observation` (all IDOR-protected)
+- **Parallel Qdrant queries**: observation and summary searches run concurrently via sync.WaitGroup, no latency increase
+- **FormatTranscriptWithLimit**: configurable char-limit extraction from existing FormatTranscript for observation and summarization use
+
+### Changed
+- **ObservationsConfig**: new `[memory.observations]` config section with extraction_interval, extraction_model, retrieval_limit, and score_threshold
+- **Actor wiring**: in-memory turn counter avoids per-message DB writes, CAS lock prevents concurrent extraction, dedicated 3-slot semaphore bounds extraction goroutines
+- **Content dedup**: SHA-256 hash scoped to (user_id, content_hash) with unique DB constraint
+- **LLM output validation**: type whitelist, rune truncation, importance clamping, code fence stripping, control char replacement (spaces instead of stripping)
+
 ## [0.21.1] - 2026-04-04
 
 Telegram media foundation and typing indicator. The bot now shows "typing..." while Claude thinks, and the message system supports documents, voice, and audio attachments (processing comes in a follow-up release).
