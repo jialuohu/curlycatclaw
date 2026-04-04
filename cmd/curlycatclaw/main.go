@@ -538,7 +538,8 @@ func run(configPath string) error {
 
 			// Register observation skills.
 			skillObsStore := &obsSkillAdapter{store: store, vs: vectorStore, cfg: cfg}
-			obsSkills, err := skills.InitObservationSkills(store.DB(), skillObsStore)
+			entityStore := &entitySkillAdapter{store: store}
+			obsSkills, err := skills.InitObservationSkills(store.DB(), skillObsStore, entityStore)
 			if err != nil {
 				slog.Warn("failed to init observation skills", "err", err)
 			} else {
@@ -858,4 +859,25 @@ func (a *obsSkillAdapter) DeleteObservationVector(ctx context.Context, id string
 		return nil
 	}
 	return a.vs.DeleteObservationVector(ctx, id)
+}
+
+// entitySkillAdapter bridges the skills.EntityStore interface to memory.Store.
+type entitySkillAdapter struct {
+	store *memory.Store
+}
+
+func (a *entitySkillAdapter) SearchEntitiesFTS(query string, entityType string, userID int64, limit int) ([]skills.EntitySearchResult, error) {
+	results, err := a.store.SearchEntitiesFTS(query, entityType, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]skills.EntitySearchResult, len(results))
+	for i, r := range results {
+		out[i] = skills.EntitySearchResult{
+			ObservationID: r.ObservationID,
+			Name:          r.Name,
+			EntityType:    r.EntityType,
+		}
+	}
+	return out, nil
 }

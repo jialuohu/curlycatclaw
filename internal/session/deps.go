@@ -78,6 +78,9 @@ type ObservationStore interface {
 	CountObservations(convID string) (int, error)
 	GetObservationFactsByIDs(ids []string) (map[string][]string, error)
 	RecoverableExtractions() ([]string, error)
+	SaveEntities(obsID string, entities []memory.Entity) error
+	DeleteEntitiesByObservation(obsID string) error
+	SearchObservationsFTS(query string, userID int64, limit int) ([]memory.FTSResult, error)
 }
 
 // CLIClient abstracts the CLI subprocess manager for testing.

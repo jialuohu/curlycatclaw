@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -1057,7 +1058,13 @@ func (s *Store) DeleteObservation(id string, userID int64) error {
 		return fmt.Errorf("observation: observation %q not found", id)
 	}
 
-	// Delete facts first (no CASCADE).
+	// Delete related rows first (no CASCADE). Order: relations, entities, facts, observation.
+	if _, err = tx.Exec(`DELETE FROM observation_relations WHERE source_id = ? OR target_id = ?`, id, id); err != nil {
+		return fmt.Errorf("memory: delete observation relations: %w", err)
+	}
+	if _, err = tx.Exec(`DELETE FROM observation_entities WHERE observation_id = ?`, id); err != nil {
+		return fmt.Errorf("memory: delete observation entities: %w", err)
+	}
 	if _, err = tx.Exec(`DELETE FROM observation_facts WHERE observation_id = ?`, id); err != nil {
 		return fmt.Errorf("memory: delete observation facts: %w", err)
 	}
@@ -1315,6 +1322,97 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("memory: create observation tables: %w", err)
 	}
 
+	// Phase 2: FTS5 virtual tables for keyword search on observations.
+	const observationFTSSchema = `
+	CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+		title, summary, content=observations, content_rowid=rowid
+	);
+	CREATE VIRTUAL TABLE IF NOT EXISTS observation_facts_fts USING fts5(
+		fact, content=observation_facts, content_rowid=rowid
+	);
+	`
+	if _, err := s.db.Exec(observationFTSSchema); err != nil {
+		return fmt.Errorf("memory: create FTS5 tables: %w", err)
+	}
+
+	// Triggers to keep FTS5 in sync with content tables.
+	ftsTriggersSQL := []string{
+		`CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+			INSERT INTO observations_fts(rowid, title, summary) VALUES (new.rowid, new.title, new.summary);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+			INSERT INTO observations_fts(observations_fts, rowid, title, summary) VALUES('delete', old.rowid, old.title, old.summary);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS observation_facts_ai AFTER INSERT ON observation_facts BEGIN
+			INSERT INTO observation_facts_fts(rowid, fact) VALUES (new.rowid, new.fact);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS observation_facts_ad AFTER DELETE ON observation_facts BEGIN
+			INSERT INTO observation_facts_fts(observation_facts_fts, rowid, fact) VALUES('delete', old.rowid, old.fact);
+		END`,
+	}
+	for _, sql := range ftsTriggersSQL {
+		if _, err := s.db.Exec(sql); err != nil {
+			return fmt.Errorf("memory: create FTS5 trigger: %w", err)
+		}
+	}
+
+	// Phase 2: entity extraction table.
+	const entitySchema = `
+	CREATE TABLE IF NOT EXISTS observation_entities (
+		rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+		observation_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		entity_type TEXT NOT NULL,
+		FOREIGN KEY (observation_id) REFERENCES observations(id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_obs_entities_obs ON observation_entities(observation_id);
+	CREATE VIRTUAL TABLE IF NOT EXISTS observation_entities_fts USING fts5(
+		name, content=observation_entities, content_rowid=rowid
+	);
+	`
+	if _, err := s.db.Exec(entitySchema); err != nil {
+		return fmt.Errorf("memory: create entity tables: %w", err)
+	}
+
+	// Entity FTS5 sync triggers.
+	entityTriggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS obs_entities_ai AFTER INSERT ON observation_entities BEGIN
+			INSERT INTO observation_entities_fts(rowid, name) VALUES (new.rowid, new.name);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS obs_entities_ad AFTER DELETE ON observation_entities BEGIN
+			INSERT INTO observation_entities_fts(observation_entities_fts, rowid, name) VALUES('delete', old.rowid, old.name);
+		END`,
+	}
+	for _, sql := range entityTriggers {
+		if _, err := s.db.Exec(sql); err != nil {
+			return fmt.Errorf("memory: create entity FTS5 trigger: %w", err)
+		}
+	}
+
+	// Phase 2: observation relations for supersession (advisory, not hiding).
+	const observationRelationsSchema = `
+	CREATE TABLE IF NOT EXISTS observation_relations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		source_id TEXT NOT NULL,
+		target_id TEXT NOT NULL,
+		relation_type TEXT NOT NULL,
+		confidence REAL NOT NULL,
+		confirmed BOOLEAN DEFAULT 0,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (source_id) REFERENCES observations(id),
+		FOREIGN KEY (target_id) REFERENCES observations(id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_obs_relations_source ON observation_relations(source_id);
+	CREATE INDEX IF NOT EXISTS idx_obs_relations_target ON observation_relations(target_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_relations_unique ON observation_relations(source_id, target_id, relation_type);
+	`
+	if _, err := s.db.Exec(observationRelationsSchema); err != nil {
+		return fmt.Errorf("memory: create observation_relations table: %w", err)
+	}
+
+	// Backfill FTS5 indexes from existing data (idempotent, safe to run on every startup).
+	s.RebuildFTS() //nolint:errcheck // best-effort: FTS5 tables may not have data yet
+
 	const embedderStateSchema = `
 	CREATE TABLE IF NOT EXISTS embedder_state (
 		id                 INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1353,6 +1451,326 @@ func parseTimeStr(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unrecognized time format: %q", s)
+}
+
+// FTSResult holds a keyword search result from the observations_fts table.
+type FTSResult struct {
+	ObsRowid int64
+	ObsID    string
+	Title    string
+	Summary  string
+	Rank     float64
+}
+
+// SearchObservationsFTS performs keyword search on observations using FTS5.
+// Returns results sorted by BM25 relevance. The query is escaped for safe MATCH use.
+func (s *Store) SearchObservationsFTS(query string, userID int64, limit int) ([]FTSResult, error) {
+	escaped := EscapeFTS5Query(query)
+	if escaped == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.Query(
+		`SELECT o.rowid, o.id, o.title, o.summary, f.rank
+		 FROM observations_fts f
+		 JOIN observations o ON o.rowid = f.rowid
+		 WHERE observations_fts MATCH ? AND o.user_id = ?
+		 ORDER BY f.rank
+		 LIMIT ?`,
+		escaped, userID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: fts5 search: %w", err)
+	}
+	defer rows.Close()
+
+	var results []FTSResult
+	for rows.Next() {
+		var r FTSResult
+		if err := rows.Scan(&r.ObsRowid, &r.ObsID, &r.Title, &r.Summary, &r.Rank); err != nil {
+			return results, fmt.Errorf("memory: fts5 scan: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+// RebuildFTS rebuilds the FTS5 indexes from the content tables.
+// Call on startup if schema version changed or if FTS5 might be out of sync.
+func (s *Store) RebuildFTS() error {
+	if _, err := s.db.Exec(`INSERT INTO observations_fts(observations_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("memory: rebuild observations_fts: %w", err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO observation_facts_fts(observation_facts_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("memory: rebuild observation_facts_fts: %w", err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO observation_entities_fts(observation_entities_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("memory: rebuild observation_entities_fts: %w", err)
+	}
+	return nil
+}
+
+// ObservationTextsAfter returns observation texts for migration backfill.
+// Each observation yields "Title. Summary" as the text for embedding.
+func (s *Store) ObservationTextsAfter(afterID int64, limit int) ([]MigrationText, int64, error) {
+	rows, err := s.db.Query(
+		`SELECT rowid, id, user_id, chat_id, title, summary, COALESCE(chat_type, 'private')
+		 FROM observations
+		 WHERE rowid > ?
+		 ORDER BY rowid ASC
+		 LIMIT ?`, afterID, limit,
+	)
+	if err != nil {
+		return nil, afterID, fmt.Errorf("memory: observation texts after: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MigrationText
+	maxID := afterID
+	for rows.Next() {
+		var rowid int64
+		var obsID string
+		var userID, chatID int64
+		var title, summary, chatType string
+		if err := rows.Scan(&rowid, &obsID, &userID, &chatID, &title, &summary, &chatType); err != nil {
+			return nil, maxID, fmt.Errorf("memory: scan observation text: %w", err)
+		}
+		if rowid > maxID {
+			maxID = rowid
+		}
+		results = append(results, MigrationText{
+			ID:       obsID,
+			Text:     title + ". " + summary,
+			UserID:   userID,
+			ChatID:   chatID,
+			Source:   "observation",
+			ChatType: chatType,
+		})
+	}
+	return results, maxID, rows.Err()
+}
+
+// SaveEntities stores entities for an observation. Does not fail on empty slice.
+func (s *Store) SaveEntities(obsID string, entities []Entity) error {
+	if len(entities) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("memory: begin entity tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmt, err := tx.Prepare(`INSERT INTO observation_entities (observation_id, name, entity_type) VALUES (?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("memory: prepare entity insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, e := range entities {
+		if _, err := stmt.Exec(obsID, e.Name, e.Type); err != nil {
+			return fmt.Errorf("memory: insert entity: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// GetEntitiesByObservationIDs returns entities grouped by observation ID.
+func (s *Store) GetEntitiesByObservationIDs(ids []string) (map[string][]Entity, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT observation_id, name, entity_type FROM observation_entities WHERE observation_id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get entities by IDs: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]Entity)
+	for rows.Next() {
+		var obsID, name, eType string
+		if err := rows.Scan(&obsID, &name, &eType); err != nil {
+			return result, err
+		}
+		result[obsID] = append(result[obsID], Entity{Name: name, Type: eType})
+	}
+	return result, rows.Err()
+}
+
+// EntitySearchResult holds a result from entity FTS5 search.
+type EntitySearchResult struct {
+	ObservationID string
+	Name          string
+	EntityType    string
+}
+
+// SearchEntitiesFTS performs keyword search on entity names using FTS5.
+func (s *Store) SearchEntitiesFTS(query string, entityType string, userID int64, limit int) ([]EntitySearchResult, error) {
+	escaped := EscapeFTS5Query(query)
+	if escaped == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	var rows *sql.Rows
+	var err error
+	if entityType != "" {
+		rows, err = s.db.Query(
+			`SELECT e.observation_id, e.name, e.entity_type
+			 FROM observation_entities_fts f
+			 JOIN observation_entities e ON e.rowid = f.rowid
+			 JOIN observations o ON o.id = e.observation_id
+			 WHERE observation_entities_fts MATCH ? AND o.user_id = ? AND e.entity_type = ?
+			 ORDER BY f.rank
+			 LIMIT ?`,
+			escaped, userID, entityType, limit,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT e.observation_id, e.name, e.entity_type
+			 FROM observation_entities_fts f
+			 JOIN observation_entities e ON e.rowid = f.rowid
+			 JOIN observations o ON o.id = e.observation_id
+			 WHERE observation_entities_fts MATCH ? AND o.user_id = ?
+			 ORDER BY f.rank
+			 LIMIT ?`,
+			escaped, userID, limit,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("memory: entity fts search: %w", err)
+	}
+	defer rows.Close()
+
+	var results []EntitySearchResult
+	for rows.Next() {
+		var r EntitySearchResult
+		if err := rows.Scan(&r.ObservationID, &r.Name, &r.EntityType); err != nil {
+			return results, err
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+// DeleteEntitiesByObservation removes all entities for a given observation.
+func (s *Store) DeleteEntitiesByObservation(obsID string) error {
+	_, err := s.db.Exec(`DELETE FROM observation_entities WHERE observation_id = ?`, obsID)
+	if err != nil {
+		return fmt.Errorf("memory: delete entities: %w", err)
+	}
+	return nil
+}
+
+// ObservationRelation represents a relationship between two observations.
+type ObservationRelation struct {
+	ID           int64
+	SourceID     string // newer observation
+	TargetID     string // older observation
+	RelationType string // supersedes, refines, contradicts
+	Confidence   float64
+	Confirmed    bool
+	CreatedAt    time.Time
+}
+
+// AddObservationRelation creates a relation between two observations.
+// IDOR protection: both source and target must belong to the same user.
+func (s *Store) AddObservationRelation(sourceID, targetID, relationType string, confidence float64, userID int64) error {
+	res, err := s.db.Exec(
+		`INSERT INTO observation_relations (source_id, target_id, relation_type, confidence)
+		 SELECT ?, ?, ?, ?
+		 WHERE EXISTS (SELECT 1 FROM observations WHERE id = ? AND user_id = ?)
+		   AND EXISTS (SELECT 1 FROM observations WHERE id = ? AND user_id = ?)`,
+		sourceID, targetID, relationType, confidence,
+		sourceID, userID, targetID, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: add observation relation: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("memory: observation relation not created (invalid IDs or wrong user)")
+	}
+	return nil
+}
+
+// GetObservationRelations returns all relations where obsID is source or target.
+// Scoped by user_id via JOIN to observations.
+func (s *Store) GetObservationRelations(obsID string, userID int64) ([]ObservationRelation, error) {
+	rows, err := s.db.Query(
+		`SELECT r.id, r.source_id, r.target_id, r.relation_type, r.confidence, r.confirmed, r.created_at
+		 FROM observation_relations r
+		 JOIN observations src ON src.id = r.source_id
+		 JOIN observations tgt ON tgt.id = r.target_id
+		 WHERE (r.source_id = ? OR r.target_id = ?) AND src.user_id = ? AND tgt.user_id = ?`,
+		obsID, obsID, userID, userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get observation relations: %w", err)
+	}
+	defer rows.Close()
+
+	var results []ObservationRelation
+	for rows.Next() {
+		var r ObservationRelation
+		if err := rows.Scan(&r.ID, &r.SourceID, &r.TargetID, &r.RelationType, &r.Confidence, &r.Confirmed, &r.CreatedAt); err != nil {
+			return results, err
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+// GetSupersededObservationIDs returns observation IDs that have been superseded
+// (are targets of a 'supersedes' relation) for the given user.
+func (s *Store) GetSupersededObservationIDs(userID int64) (map[string]bool, error) {
+	rows, err := s.db.Query(
+		`SELECT r.target_id
+		 FROM observation_relations r
+		 JOIN observations o ON o.id = r.target_id
+		 WHERE r.relation_type = 'supersedes' AND r.confirmed = 1 AND o.user_id = ?`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get superseded IDs: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return ids, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
+// EscapeFTS5Query wraps user input in double quotes for safe use in FTS5
+// MATCH queries, escaping any embedded double quotes by doubling them.
+// Returns an empty string for blank input (callers should skip MATCH in that case).
+func EscapeFTS5Query(query string) string {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return ""
+	}
+	escaped := strings.ReplaceAll(trimmed, `"`, `""`)
+	return `"` + escaped + `"`
 }
 
 // newUUID generates a version-4 UUID using crypto/rand.
