@@ -59,6 +59,21 @@ func TestConvert(t *testing.T) {
 			in:   "Set GITHUB_PERSONAL_ACCESS_TOKEN env var",
 			want: "Set GITHUB_PERSONAL_ACCESS_TOKEN env var",
 		},
+		{
+			name: "multiple underscore italic",
+			in:   "_first_ and _second_",
+			want: "<i>first</i> and <i>second</i>",
+		},
+		{
+			name: "unclosed underscore",
+			in:   "_no closing",
+			want: "_no closing",
+		},
+		{
+			name: "underscore in backticks protected",
+			in:   "Use `__init__` method",
+			want: "Use <code>__init__</code> method",
+		},
 
 		// Bold + Italic
 		{
