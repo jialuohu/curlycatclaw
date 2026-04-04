@@ -1308,7 +1308,7 @@ func (s *Store) migrate() error {
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_observations_user ON observations(user_id);
-	CREATE INDEX IF NOT EXISTS idx_observations_hash ON observations(content_hash);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_user_hash ON observations(user_id, content_hash);
 	CREATE INDEX IF NOT EXISTS idx_observation_facts_obs ON observation_facts(observation_id);
 	`
 	if _, err := s.db.Exec(observationSchema); err != nil {

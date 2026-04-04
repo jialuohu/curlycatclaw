@@ -398,6 +398,8 @@ func (vs *VectorStore) IndexObservation(ctx context.Context, obs Observation) er
 		"type":       obs.Type,
 		"importance": obs.Importance,
 		"obs_id":     obs.ID,
+		"title":      obs.Title,
+		"summary":    obs.Summary,
 		"created_at": obs.CreatedAt.Format(time.RFC3339),
 	})
 
@@ -441,6 +443,14 @@ func (vs *VectorStore) IndexObservation(ctx context.Context, obs Observation) er
 // Results are re-ranked by score * recencyWeight * importanceWeight.
 // Observations with importance < 3 are filtered out entirely.
 func (vs *VectorStore) SearchObservations(ctx context.Context, query string, userID, chatID int64, chatType string, limit int, scoreThreshold float32) ([]ObservationResult, error) {
+	// Ensure collection exists (no-op if already created by IndexObservation).
+	vs.obsCollOnce.Do(func() {
+		vs.obsCollErr = vs.ensureCollection(ctx, observationsCollection)
+	})
+	if vs.obsCollErr != nil {
+		return nil, nil // Collection doesn't exist yet, return empty results.
+	}
+
 	vec, err := vs.activeEmbedder().Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("vectorstore: embed query: %w", err)
@@ -512,6 +522,12 @@ func (vs *VectorStore) SearchObservations(ctx context.Context, query string, use
 		}
 		if v, ok := sp.Payload["type"]; ok {
 			r.Type = v.GetStringValue()
+		}
+		if v, ok := sp.Payload["title"]; ok {
+			r.Title = v.GetStringValue()
+		}
+		if v, ok := sp.Payload["summary"]; ok {
+			r.Summary = v.GetStringValue()
 		}
 		if v, ok := sp.Payload["created_at"]; ok {
 			r.CreatedAt = v.GetStringValue()

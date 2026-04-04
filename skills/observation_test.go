@@ -68,6 +68,10 @@ func newTestObservationDB(t *testing.T) *memory.Store {
 	if err != nil {
 		t.Fatalf("create observations table: %v", err)
 	}
+	_, err = store.DB().Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_user_hash ON observations(user_id, content_hash)`)
+	if err != nil {
+		t.Fatalf("create unique index: %v", err)
+	}
 	return store
 }
 
@@ -229,9 +233,9 @@ func TestListObservations_LimitClamping(t *testing.T) {
 	now := time.Now().UTC()
 	for i := range 5 {
 		_, err := db.DB().Exec(
-			`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', 'hash', ?)`,
+			`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', ?, ?)`,
 			fmt.Sprintf("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b%04x", i), int64(1), "decision",
-			fmt.Sprintf("Observation %d", i), now.Add(-time.Duration(i)*time.Hour),
+			fmt.Sprintf("Observation %d", i), fmt.Sprintf("hash-%d", i), now.Add(-time.Duration(i)*time.Hour),
 		)
 		if err != nil {
 			t.Fatalf("insert observation: %v", err)
@@ -290,12 +294,12 @@ func TestListObservations_TypeFilter(t *testing.T) {
 
 	// Insert observations of different types.
 	_, _ = db.DB().Exec(
-		`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', 'hash', ?)`,
-		"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b0001", int64(1), "decision", "Decision obs", now,
+		`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', ?, ?)`,
+		"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b0001", int64(1), "decision", "Decision obs", "hash-decision", now,
 	)
 	_, _ = db.DB().Exec(
-		`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', 'hash', ?)`,
-		"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b0002", int64(1), "preference", "Pref obs", now,
+		`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', ?, ?)`,
+		"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b0002", int64(1), "preference", "Pref obs", "hash-pref", now,
 	)
 
 	// Filter by "decision" type.
@@ -339,8 +343,8 @@ func TestGetObservation_IDOR(t *testing.T) {
 	now := time.Now().UTC()
 	obsID := "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b0099"
 	_, err = db.DB().Exec(
-		`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', 'hash', ?)`,
-		obsID, int64(1), "preference", "Secret observation", now,
+		`INSERT INTO observations (id, conversation_id, user_id, chat_id, type, title, summary, content_hash, created_at) VALUES (?, 'conv1', ?, 1, ?, ?, '', ?, ?)`,
+		obsID, int64(1), "preference", "Secret observation", "hash-secret", now,
 	)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
