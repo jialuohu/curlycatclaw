@@ -244,13 +244,22 @@ func (f *fakeLLMClient) SendStreaming(_ context.Context, params claude.SendParam
 
 // fakeMessageStore is a minimal MessageStore for typing tests.
 type fakeMessageStore struct {
-	convID string
+	convID      string
+	lastContent string // captured from AppendMessage for test assertions
 }
 
 func (f *fakeMessageStore) GetActiveConversation(_, _ int64, _ string) (string, string, error) {
 	return f.convID, "", nil
 }
-func (f *fakeMessageStore) AppendMessage(_, _ string, _ json.RawMessage) error { return nil }
+func (f *fakeMessageStore) AppendMessage(_, role string, content json.RawMessage) error {
+	if role == "user" {
+		var text string
+		if err := json.Unmarshal(content, &text); err == nil {
+			f.lastContent = text
+		}
+	}
+	return nil
+}
 func (f *fakeMessageStore) LogToolCall(_, _, _ string, _ json.RawMessage) error { return nil }
 func (f *fakeMessageStore) CompleteToolCall(_ string, _ json.RawMessage, _ bool) error {
 	return nil
@@ -879,6 +888,170 @@ type stubToolRouter struct {
 func (s *stubToolRouter) Tools() []mcp.ToolDef { return s.tools }
 func (s *stubToolRouter) CallTool(_ context.Context, _ string, _ map[string]any, _, _ int64) (string, error) {
 	return "", nil
+}
+
+// mockTranscriber is a voice.Transcriber that returns a canned result.
+type mockTranscriber struct {
+	text string
+	err  error
+}
+
+func (m *mockTranscriber) Transcribe(_ context.Context, _ []byte, _ string) (string, error) {
+	return m.text, m.err
+}
+
+func TestHandleMessage_VoiceTranscription(t *testing.T) {
+	tg := newMockTG()
+	store := &fakeMessageStore{convID: "conv-1"}
+	a := &Actor{
+		cfg:            &config.Config{},
+		tg:             tg,
+		store:          store,
+		ctxb:           &fakeContextProvider{},
+		mcp:            &fakeToolRouter{},
+		claude:         &fakeLLMClient{},
+		skills:         &skills.Registry{},
+		indexSem:       make(chan struct{}, 10),
+		sumSem:         make(chan struct{}, 2),
+		activeProjects: make(map[userKey]string),
+		transcriber:    &mockTranscriber{text: "hello from voice"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case out := <-tg.inbox:
+				if out.ResultCh != nil {
+					out.ResultCh <- 1000
+				}
+			}
+		}
+	}()
+
+	msg := telegram.IncomingMessage{
+		UserID:   1,
+		ChatID:   100,
+		ChatType: "private",
+		Attachments: []telegram.Attachment{
+			{Kind: telegram.AttachVoice, Data: []byte("fake-ogg"), MimeType: "audio/ogg"},
+		},
+	}
+
+	if err := a.handleMessage(ctx, msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	// Verify the stored message includes the transcription.
+	if store.lastContent == "" {
+		t.Fatal("expected message to be stored")
+	}
+	if !strings.Contains(store.lastContent, "[Voice message transcribed]: hello from voice") {
+		t.Errorf("stored message = %q, want voice transcription", store.lastContent)
+	}
+}
+
+func TestHandleMessage_VoiceDisabled(t *testing.T) {
+	tg := newMockTG()
+	store := &fakeMessageStore{convID: "conv-1"}
+	a := &Actor{
+		cfg:            &config.Config{},
+		tg:             tg,
+		store:          store,
+		ctxb:           &fakeContextProvider{},
+		mcp:            &fakeToolRouter{},
+		claude:         &fakeLLMClient{},
+		skills:         &skills.Registry{},
+		indexSem:       make(chan struct{}, 10),
+		sumSem:         make(chan struct{}, 2),
+		activeProjects: make(map[userKey]string),
+		transcriber:    nil, // voice disabled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case out := <-tg.inbox:
+				if out.ResultCh != nil {
+					out.ResultCh <- 1000
+				}
+			}
+		}
+	}()
+
+	msg := telegram.IncomingMessage{
+		UserID:   1,
+		ChatID:   100,
+		ChatType: "private",
+		Attachments: []telegram.Attachment{
+			{Kind: telegram.AttachVoice, Data: []byte("fake-ogg"), MimeType: "audio/ogg"},
+		},
+	}
+
+	if err := a.handleMessage(ctx, msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	if !strings.Contains(store.lastContent, "speech-to-text is not configured") {
+		t.Errorf("stored message = %q, want 'not configured' notice", store.lastContent)
+	}
+}
+
+func TestHandleMessage_VoiceEmptyTranscription(t *testing.T) {
+	tg := newMockTG()
+	store := &fakeMessageStore{convID: "conv-1"}
+	a := &Actor{
+		cfg:            &config.Config{},
+		tg:             tg,
+		store:          store,
+		ctxb:           &fakeContextProvider{},
+		mcp:            &fakeToolRouter{},
+		claude:         &fakeLLMClient{},
+		skills:         &skills.Registry{},
+		indexSem:       make(chan struct{}, 10),
+		sumSem:         make(chan struct{}, 2),
+		activeProjects: make(map[userKey]string),
+		transcriber:    &mockTranscriber{text: "   "},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case out := <-tg.inbox:
+				if out.ResultCh != nil {
+					out.ResultCh <- 1000
+				}
+			}
+		}
+	}()
+
+	msg := telegram.IncomingMessage{
+		UserID:   1,
+		ChatID:   100,
+		ChatType: "private",
+		Attachments: []telegram.Attachment{
+			{Kind: telegram.AttachVoice, Data: []byte("silence"), MimeType: "audio/ogg"},
+		},
+	}
+
+	if err := a.handleMessage(ctx, msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	if !strings.Contains(store.lastContent, "no speech detected") {
+		t.Errorf("stored message = %q, want 'no speech detected' notice", store.lastContent)
+	}
 }
 
 func TestBuildSystemPrompt_GitHubWorkflowGuidance(t *testing.T) {

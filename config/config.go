@@ -24,6 +24,7 @@ type Config struct {
 	Logging          LoggingConfig          `toml:"logging"`
 	Sandbox          SandboxConfig          `toml:"sandbox"`
 	Health           HealthConfig           `toml:"health"`
+	Voice            VoiceConfig            `toml:"voice"`
 	ConfirmTools     []string               `toml:"confirm_tools"`
 	Projects         []ProjectConfig        `toml:"projects"`
 	SkillCollections []SkillCollectionConfig `toml:"skill_collections"`
@@ -130,6 +131,13 @@ type HealthConfig struct {
 	Port    int  `toml:"port"`
 }
 
+// VoiceConfig controls speech-to-text transcription for voice messages.
+type VoiceConfig struct {
+	Enabled      bool   `toml:"enabled"`
+	OpenAIAPIKey string `toml:"openai_api_key"`
+	STTModel     string `toml:"stt_model"`
+}
+
 // Location returns the parsed timezone location.
 func (c *Config) Location() *time.Location {
 	loc, err := time.LoadLocation(c.Timezone)
@@ -187,6 +195,10 @@ func Load(path string) (*Config, error) {
 		Health: HealthConfig{
 			Enabled: true,
 			Port:    8080,
+		},
+		Voice: VoiceConfig{
+			Enabled:  false,
+			STTModel: "whisper-1",
 		},
 	}
 
@@ -309,6 +321,9 @@ func (c *Config) validate() error {
 		if !info.IsDir() {
 			return fmt.Errorf("config: projects[%d].path %q is not a directory", i, p.Path)
 		}
+	}
+	if c.Voice.Enabled && c.Voice.OpenAIAPIKey == "" {
+		return fmt.Errorf("config: voice.openai_api_key is required when voice is enabled")
 	}
 	for i, sc := range c.SkillCollections {
 		if sc.Path == "" {

@@ -10,5 +10,6 @@ config.toml
 .DS_Store
 .gstack/
 .idea/
+docs/superpowers/
 .claude/*
 !.claude/skills/

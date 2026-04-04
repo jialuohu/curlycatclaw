@@ -21,6 +21,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/internal/voice"
 	"github.com/jialuohu/curlycatclaw/skills"
 )
 
@@ -48,6 +49,9 @@ type Actor struct {
 	ctxb   ContextProvider
 	skills *skills.Registry
 	vector VectorIndexer
+
+	// Voice transcription (nil when disabled).
+	transcriber voice.Transcriber
 
 	// Hierarchical memory (Phase 7).
 	facts       FactProvider
@@ -95,6 +99,7 @@ func New(
 	summarizer Summarizer,
 	configPath string,
 	extReg *extension.Registry,
+	transcriber voice.Transcriber,
 ) *Actor {
 	ctxb := memory.NewContextBuilder(store)
 	var vi VectorIndexer
@@ -111,6 +116,7 @@ func New(
 		ctxb:           ctxb,
 		skills:         skillReg,
 		vector:         vi,
+		transcriber:    transcriber,
 		facts:          factStore,
 		summarizer:     summarizer,
 		vectorStore:    vectorStore,
@@ -193,6 +199,28 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// If a conversation expired, summarize it asynchronously.
 	if expiredConvID != "" && a.cfg.Memory.Enabled && a.summarizer != nil {
 		a.asyncSummarize(expiredConvID)
+	}
+
+	// Process voice/audio attachments via speech-to-text.
+	for _, att := range msg.Attachments {
+		if att.Kind != telegram.AttachVoice && att.Kind != telegram.AttachAudio {
+			continue
+		}
+		if a.transcriber == nil {
+			msg.Text += "\n\n[Voice message received but speech-to-text is not configured]"
+			continue
+		}
+		text, err := a.transcriber.Transcribe(ctx, att.Data, "ogg")
+		if err != nil {
+			slog.Warn("voice transcription failed", "err", err)
+			msg.Text += "\n\n[Could not transcribe voice message]"
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
+			msg.Text += "\n\n[Voice message received but no speech detected]"
+			continue
+		}
+		msg.Text += "\n\n[Voice message transcribed]: " + text
 	}
 
 	// Store the user message (text only; image refs stored separately).

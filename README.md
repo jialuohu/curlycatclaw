@@ -20,46 +20,17 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Features
 
-### Core
+💬 **Telegram-native** -- text, photos, documents, voice, audio, typing indicators, streaming responses with tool previews
 
-- **Telegram-native** -- message your bot like a friend, with HTML formatting, typing indicators, and inline tool previews
-- **Claude-powered** -- streaming responses with tool use, direct API or CLI subprocess mode (Claude subscription)
-- **Real-time streaming** -- text deltas streamed via message edits with 500ms debounce, final render as Telegram HTML
-- **Media support** -- send photos, documents, voice messages, and audio files; Claude sees images via vision
-- **Project work** -- `/project <name>` to plan, implement, and review code in a repo via Telegram
+🧠 **Smart memory** -- three-tier context (user facts, conversation summaries via Qdrant, sliding window), pluggable embeddings, voice messages transcribed via OpenAI Whisper
 
-### Memory & Context
+🔌 **Extensible** -- Google Workspace, GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, all manageable from chat
 
-- **Conversation memory** -- SQLite WAL mode, sliding window (25 turns, ~150K tokens), history injected on subprocess restart
-- **Hierarchical memory** -- user facts, conversation summaries via Qdrant, current sliding window
-- **Vector search** -- Qdrant with pluggable embeddings (Ollama, FNV, Voyage AI), zero-downtime background migration
+⏰ **Cron tasks** -- scheduled prompts through Claude with full tool access
 
-### Extensibility
+🔒 **Secure** -- Landlock sandbox, AES-256-GCM encrypted credentials, SSRF protection, user scoping, tool confirmation
 
-- **Google Workspace** -- Gmail, Calendar, Drive, Sheets, Docs, Tasks via standalone MCP server
-- **GitHub** -- CI status, PRs, issues, releases via GitHub's official MCP server
-- **MCP tool integration** -- connect any MCP server via stdio, add/remove at runtime, hot-reloaded without restart
-- **Runtime extensions** -- add MCP servers, exec skills, and prompt skills through Telegram chat, persisted to disk
-- **Encrypted credentials** -- API keys for MCP extensions encrypted at rest with AES-256-GCM
-- **Built-in skills** -- web search, notes, reminders, semantic search, user facts, plugin/extension management
-- **Wasm plugins** -- custom skills via WebAssembly with capability-based security and hot-reload
-- **External skill collections** -- exec-based skills from directory trees with sandboxed env and fsnotify hot-reload
-- **Plugin management** -- install/manage Claude Code plugins through Telegram with standard plugins pre-installed
-
-### Operations
-
-- **Health endpoint** -- `GET /health` for Docker/monitoring liveness checks
-- **Supervision** -- automatic restart with exponential backoff, graceful 30s drain on shutdown
-- **Cron tasks** -- scheduled prompts through Claude with full tool access and ephemeral context
-- **Configurable logging** -- level, format, file output with lumberjack rotation
-- **Docker ready** -- docker-compose with Qdrant + Ollama, one command to run
-
-### Security
-
-- **Landlock sandbox** -- Linux filesystem restriction (opt-in)
-- **Encrypted credentials** -- AES-256-GCM for MCP server secrets
-- **Secure defaults** -- MCP env filtering, Wasm SSRF/DNS-rebinding protection, enforced user scoping, config validation
-- **Tool transparency** -- see what tools Claude calls; confirmation prompts for sensitive operations
+🐳 **Docker ready** -- one command to run with Qdrant + Ollama, health endpoint, supervised actors with auto-restart
 
 ## Quick Start
 
