@@ -18,6 +18,11 @@ Observation memory system (Phase 1). The bot now automatically captures decision
 - **Actor wiring**: in-memory turn counter avoids per-message DB writes, CAS lock prevents concurrent extraction, dedicated 3-slot semaphore bounds extraction goroutines
 - **Content dedup**: SHA-256 hash scoped to (user_id, content_hash) with unique DB constraint
 - **LLM output validation**: type whitelist, rune truncation, importance clamping, code fence stripping, control char replacement (spaces instead of stripping)
+- **Memory dedup**: when observations are enabled, Claude is instructed to use `remember_fact` only for stable identity facts (name, role, timezone), not decisions or project state. Observations whose titles overlap >60% with existing facts are filtered from injection to avoid redundancy.
+
+### Fixed
+- **SaveObservation pointer**: observation IDs now propagate correctly to Qdrant indexing (was causing all observations to overwrite the same vector point)
+- **Lazy collection creation**: replaced `sync.Once` with mutex+bool retry pattern so transient Qdrant failures don't permanently disable observation indexing
 
 ## [0.21.1] - 2026-04-04
 
