@@ -68,7 +68,7 @@ type TelegramTransport interface {
 
 // ObservationStore abstracts observation CRUD for the session actor.
 type ObservationStore interface {
-	SaveObservation(obs memory.Observation) error
+	SaveObservation(obs *memory.Observation) error
 	GetRecentObservationTitles(convID string, limit int) ([]string, error)
 	GetExtractionState(convID string) (*memory.ExtractionState, error)
 	UpdateExtractionState(convID string, lastRowid int64, turnCount int, status string) error

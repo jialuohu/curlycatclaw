@@ -39,7 +39,7 @@ const minTranscriptChars = 200
 
 // ObserverStore is the subset of store operations needed by ObservationExtractor.
 type ObserverStore interface {
-	SaveObservation(obs Observation) error
+	SaveObservation(obs *Observation) error
 	GetRecentObservationTitles(convID string, limit int) ([]string, error)
 	ObservationExistsByHash(userID int64, hash string) (bool, error)
 	CountObservations(convID string) (int, error)
@@ -141,7 +141,7 @@ func (e *ObservationExtractor) Extract(
 		obs.ContentHash = hash
 		obs.CreatedAt = now
 
-		if err := e.store.SaveObservation(obs); err != nil {
+		if err := e.store.SaveObservation(&obs); err != nil {
 			return saved, fmt.Errorf("observer: save: %w", err)
 		}
 		saved = append(saved, obs)

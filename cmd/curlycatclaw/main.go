@@ -812,7 +812,7 @@ type obsSkillAdapter struct {
 	cfg   *config.Config
 }
 
-func (a *obsSkillAdapter) SearchObservations(ctx context.Context, query string, userID int64, _ string, limit int) ([]skills.ObservationSearchResult, error) {
+func (a *obsSkillAdapter) SearchObservations(ctx context.Context, query string, userID int64, obsType string, limit int) ([]skills.ObservationSearchResult, error) {
 	if a.vs == nil {
 		return nil, fmt.Errorf("vector store not configured")
 	}
@@ -820,18 +820,30 @@ func (a *obsSkillAdapter) SearchObservations(ctx context.Context, query string, 
 	if threshold <= 0 {
 		threshold = 0.3
 	}
-	results, err := a.vs.SearchObservations(ctx, query, userID, 0, "private", limit, threshold)
+	// When filtering by type, over-fetch from Qdrant since post-filtering
+	// may discard results of other types.
+	fetchLimit := limit
+	if obsType != "" {
+		fetchLimit = limit * 3
+	}
+	results, err := a.vs.SearchObservations(ctx, query, userID, 0, "private", fetchLimit, threshold)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]skills.ObservationSearchResult, len(results))
-	for i, r := range results {
-		out[i] = skills.ObservationSearchResult{
+	var out []skills.ObservationSearchResult
+	for _, r := range results {
+		if obsType != "" && r.Type != obsType {
+			continue
+		}
+		out = append(out, skills.ObservationSearchResult{
 			ID:        r.ID,
 			Title:     r.Title,
 			Type:      r.Type,
 			Score:     r.Score,
 			CreatedAt: r.CreatedAt,
+		})
+		if len(out) >= limit {
+			break
 		}
 	}
 	return out, nil

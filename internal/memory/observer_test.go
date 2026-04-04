@@ -35,11 +35,14 @@ func (m *mockObserverStore) GetMessagesSinceRowid(convID string, afterRowid, upT
 	return m.messages, nil
 }
 
-func (m *mockObserverStore) SaveObservation(obs Observation) error {
+func (m *mockObserverStore) SaveObservation(obs *Observation) error {
 	if m.saveErr != nil {
 		return m.saveErr
 	}
-	m.observations = append(m.observations, obs)
+	if obs.ID == "" {
+		obs.ID = fmt.Sprintf("mock-%d", len(m.observations))
+	}
+	m.observations = append(m.observations, *obs)
 	hashKey := fmt.Sprintf("%d:%s", obs.UserID, obs.ContentHash)
 	m.hashes[hashKey] = true
 	return nil

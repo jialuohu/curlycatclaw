@@ -29,7 +29,7 @@ func TestSaveObservation(t *testing.T) {
 		ContentHash:    "abc123",
 	}
 
-	if err := s.SaveObservation(obs); err != nil {
+	if err := s.SaveObservation(&obs); err != nil {
 		t.Fatalf("SaveObservation: %v", err)
 	}
 
@@ -82,7 +82,7 @@ func TestSaveObservation_DuplicateHash(t *testing.T) {
 		ContentHash:    "same_hash",
 	}
 
-	if err := s.SaveObservation(obs); err != nil {
+	if err := s.SaveObservation(&obs); err != nil {
 		t.Fatalf("SaveObservation first: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestDeleteObservation(t *testing.T) {
 		ContentHash:    "del_hash",
 	}
 
-	if err := s.SaveObservation(obs); err != nil {
+	if err := s.SaveObservation(&obs); err != nil {
 		t.Fatalf("SaveObservation: %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestDeleteObservation_IDORProtection(t *testing.T) {
 		ContentHash:    "idor_hash",
 	}
 
-	if err := s.SaveObservation(obs); err != nil {
+	if err := s.SaveObservation(&obs); err != nil {
 		t.Fatalf("SaveObservation: %v", err)
 	}
 
@@ -318,10 +318,10 @@ func TestGetObservationFactsByIDs(t *testing.T) {
 		ContentHash:    "hash2",
 	}
 
-	if err := s.SaveObservation(obs1); err != nil {
+	if err := s.SaveObservation(&obs1); err != nil {
 		t.Fatalf("SaveObservation obs1: %v", err)
 	}
-	if err := s.SaveObservation(obs2); err != nil {
+	if err := s.SaveObservation(&obs2); err != nil {
 		t.Fatalf("SaveObservation obs2: %v", err)
 	}
 
@@ -400,7 +400,7 @@ func TestCountObservations(t *testing.T) {
 			Importance:     5,
 			ContentHash:    title + "_hash",
 		}
-		if err := s.SaveObservation(obs); err != nil {
+		if err := s.SaveObservation(&obs); err != nil {
 			t.Fatalf("SaveObservation %d: %v", i, err)
 		}
 	}
@@ -516,7 +516,7 @@ func TestGetRecentObservationTitles(t *testing.T) {
 			Importance:     5,
 			ContentHash:    title + "_hash",
 		}
-		if err := s.SaveObservation(obs); err != nil {
+		if err := s.SaveObservation(&obs); err != nil {
 			t.Fatalf("SaveObservation %s: %v", title, err)
 		}
 	}

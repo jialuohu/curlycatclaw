@@ -884,7 +884,7 @@ func (s *Store) SummaryTextsAfter(afterID int64, limit int) ([]MigrationText, in
 
 // SaveObservation inserts an observation and its facts in a transaction.
 // If obs.ID is empty, a new UUID is generated.
-func (s *Store) SaveObservation(obs Observation) error {
+func (s *Store) SaveObservation(obs *Observation) error {
 	if obs.ID == "" {
 		id, err := newUUID()
 		if err != nil {
