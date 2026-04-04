@@ -43,7 +43,7 @@ type Summarizer interface {
 
 // ContextProvider abstracts conversation context building.
 type ContextProvider interface {
-	BuildContextWithBudget(ctx context.Context, convID, currentMsg string) ([]memory.Message, error)
+	BuildContext(convID string) ([]memory.Message, error)
 }
 
 // ToolRouter abstracts MCP tool discovery and invocation.

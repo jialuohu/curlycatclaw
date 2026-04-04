@@ -73,11 +73,6 @@ db_path = "/data/curlycatclaw.db"
 # GWS_SKILLS_DIR = ""           # optional: pre-generated skills dir (skip gws generate-skills)
 # GWS_FILTER = "gmail_*,calendar_*,drive_*,sheets_*,docs_*,slides_*,tasks_*"  # optional: glob filter
 
-# Prompt budget manager (Haiku-powered context classification).
-# [budget]
-# enabled = true
-# model   = "claude-haiku-4-5-20251001"
-
 # Health check endpoint (Docker/monitoring). Enabled by default.
 [health]
 enabled = true

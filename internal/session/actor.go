@@ -90,7 +90,6 @@ func New(
 	mcpMgr *mcp.Manager,
 	store *memory.Store,
 	skillReg *skills.Registry,
-	budget *memory.BudgetManager,
 	vectorStore *memory.VectorStore,
 	factStore FactProvider,
 	summarizer Summarizer,
@@ -98,9 +97,6 @@ func New(
 	extReg *extension.Registry,
 ) *Actor {
 	ctxb := memory.NewContextBuilder(store)
-	if budget != nil {
-		ctxb.SetBudget(budget)
-	}
 	var vi VectorIndexer
 	if vectorStore != nil {
 		vi = vectorStore
@@ -235,7 +231,7 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	}
 
 	// Direct API mode: build context and run the tool_use loop.
-	history, err := a.ctxb.BuildContextWithBudget(ctx, convID, msg.Text)
+	history, err := a.ctxb.BuildContext(convID)
 	if err != nil {
 		return fmt.Errorf("build context: %w", err)
 	}

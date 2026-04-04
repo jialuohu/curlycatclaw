@@ -144,7 +144,7 @@ type mockContextProvider struct {
 	history []memory.Message
 }
 
-func (m *mockContextProvider) BuildContextWithBudget(_ context.Context, _, _ string) ([]memory.Message, error) {
+func (m *mockContextProvider) BuildContext(_ string) ([]memory.Message, error) {
 	return m.history, nil
 }
 

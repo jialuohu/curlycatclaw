@@ -303,7 +303,6 @@ func TestUserScopedTableAccessed(t *testing.T) {
 		{"SELECT * FROM reminders WHERE user_id = ?", true},
 		{"SELECT * FROM conversation_summaries", true},
 		{"SELECT * FROM tool_calls", true},
-		{"SELECT * FROM budget_cache WHERE hash = ?", false},
 		{"SELECT 1", false},
 		{"SELECT count(*) FROM sqlite_master", false},
 		// Table name in comment should NOT trigger detection.
@@ -839,8 +838,6 @@ func TestDBRead_UnscopedUserTable(t *testing.T) {
 		{"SELECT * FROM messages WHERE conversation_id = 42", true},
 		// Properly scoped query: allowed.
 		{"SELECT * FROM user_facts WHERE user_id = :user_id", false},
-		// Non-user-scoped table: allowed.
-		{"SELECT * FROM budget_cache WHERE hash = 'abc'", false},
 		// :user_id inside quotes only (bypass attempt): must be rejected.
 		{"SELECT * FROM user_facts WHERE note LIKE '%:user_id%'", true},
 	}
