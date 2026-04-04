@@ -22,7 +22,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 💬 **Telegram-native** -- text, photos, documents, voice, audio, typing indicators, streaming responses with tool previews
 
-🧠 **Smart memory** -- three-tier context (user facts, conversation summaries via Qdrant, sliding window), pluggable embeddings, voice messages transcribed via OpenAI Whisper
+🧠 **Smart memory** -- four-tier context (user facts, auto-extracted observations, conversation summaries via Qdrant, sliding window), pluggable embeddings, voice messages transcribed via OpenAI Whisper
 
 🔌 **Extensible** -- Google Workspace, GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, all manageable from chat
 
@@ -96,7 +96,7 @@ Everything runs as goroutine-based actors under supervision. The Channel Actor h
 |----------|-------------|
 | [Architecture](docs/architecture.md) | System overview, streaming pipeline, memory, tool execution, vector search |
 | [Configuration](docs/configuration.md) | Config reference, Google Workspace, GitHub, encrypted credentials |
-| [Built-in Skills](docs/skills.md) | All 24 skills and the 5 skill types |
+| [Built-in Skills](docs/skills.md) | All 28 skills and the 5 skill types |
 | [Docker Deployment](docs/docker.md) | Services, data layout, backups, plugin runtimes |
 
 ## Testing

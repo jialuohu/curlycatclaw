@@ -14,6 +14,10 @@
 | `list_facts` | List all persistent facts Claude remembers about you |
 | `list_summaries` | View all stored conversation summaries with IDs and previews |
 | `delete_summary` | Remove an incorrect or unwanted conversation summary by ID |
+| `search_observations` | Search extracted observations by meaning (requires Qdrant) |
+| `list_observations` | List all observations Claude has extracted about you |
+| `get_observation` | Get full details of a specific observation by ID |
+| `forget_observation` | Remove an extracted observation by ID |
 | `install_plugin` | Install a Claude Code plugin (auto-searches for marketplace) |
 | `uninstall_plugin` | Uninstall a Claude Code plugin |
 | `list_plugins` | List installed Claude Code plugins |
