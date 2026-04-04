@@ -35,7 +35,8 @@ entities: Extract mentioned people, projects, files, or tools. Only include enti
 
 importance scale: 1=trivial preference, 5=standard decision, 8=major project milestone, 10=life-changing decision.
 
-Return a JSON array. If nothing meaningful happened, return [].
+RESPOND WITH ONLY A JSON ARRAY. No explanation, no preamble, no markdown. Start your response with [ and end with ].
+If nothing meaningful happened, return [].
 Do NOT extract the same event twice. Check the "already captured" list below.`
 
 const observerUserPromptTemplate = "Recent conversation segment:\n%s\n\nAlready captured in this conversation (do not duplicate):\n%s"
