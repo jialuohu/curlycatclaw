@@ -2,7 +2,7 @@
 
 ## [0.23.0] - 2026-04-04
 
-Observation memory Phase 2. Hybrid search, entity tracking, progressive retrieval, and observation lifecycle management.
+Observation memory Phase 2. Your bot can now find memories by keyword, track who and what was discussed, show a compact memory index instead of dumping everything, and detect when newer observations supersede older ones.
 
 ### Added
 - **FTS5 hybrid search**: keyword search via SQLite FTS5 virtual tables alongside vector search, merged with Reciprocal Rank Fusion (RRF, k=60). Includes `EscapeFTS5Query` for input safety and `RebuildFTS` for index maintenance

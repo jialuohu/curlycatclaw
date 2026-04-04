@@ -64,7 +64,7 @@ Four-tier hierarchical memory:
 Context Assembly (per request)
 ┌──────────────────────────────────────────────────────────┐
 │  Tier 1 (always)    │ User Facts (SQLite)                │  system prompt
-│  Tier 2 (semantic)  │ Observations (Qdrant)              │  decisions, preferences, project state
+│  Tier 2 (semantic)  │ Observations (Qdrant + FTS5)        │  decisions, preferences, project state, commitments, discoveries, references
 │  Tier 3 (semantic)  │ Relevant Summaries (Qdrant)        │  cosine similarity
 │  Tier 4 (window)    │ Recent Messages (SQLite)           │  25 turns, ~150K tokens
 └──────────────────────────────────────────────────────────┘
@@ -73,8 +73,13 @@ Observation Extraction (idle detection, in-memory turn counter):
   Conversation turns ──► Turn threshold ──► ObservationExtractor
                                                    │
                               SQLite (structured) ◄─┤
-                              Qdrant (embed) ◄──────┘
-  Categories: decisions, preferences, project_state
+                              Qdrant (embed) ◄──────┤
+                              Entities (FTS5) ◄─────┘
+  Types: decision, preference, project_state, commitment, discovery, reference
+  Entities: person, project, file, tool (extracted alongside observations)
+  Search: hybrid (RRF of FTS5 keyword + vector similarity), multi-vector (per-fact points)
+  Retrieval: progressive 3-layer (compact index → expanded → full detail)
+  Relations: supersedes/refines/contradicts (advisory, ranking boost not hiding)
   System prompt: "What I remember" section with dedup against facts
 
 Conversation Archival (>4h idle, both API and CLI modes):
@@ -131,7 +136,7 @@ Qdrant (gRPC, cosine similarity, user_id tenant isolation):
   ├─ curlycatclaw_messages      ◄── user messages
   ├─ curlycatclaw_notes         ◄── saved notes
   ├─ curlycatclaw_summaries     ◄── archived conversations
-  └─ curlycatclaw_observations  ◄── extracted observations (decisions, preferences, project state)
+  └─ curlycatclaw_observations  ◄── extracted observations (6 types) + per-fact vectors
 
 query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked results
 ```

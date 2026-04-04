@@ -30,9 +30,13 @@ ollama_dim   = 1024
 enabled = true
 
 [memory.observations]
-enabled = true                # enable automatic observation extraction
-# extraction_interval = 300  # seconds between extraction runs (default: 300)
-# max_observations = 50      # max observations per user (default: 50)
+enabled = true                 # enable automatic observation extraction
+# extraction_interval = 3     # extract every N user turns (default: 3)
+# cooldown_seconds = 60       # min seconds between extractions (default: 60)
+# retrieval_limit = 8         # max observations in system prompt (default: 8)
+# hybrid_search = false       # enable FTS5 + vector hybrid search (default: false)
+# progressive_retrieval = false # enable 3-layer compact/expanded/detail retrieval (default: false)
+# supersession_threshold = 0.85 # cosine similarity for observation relation detection (default: 0.85)
 
 [health]
 enabled = true

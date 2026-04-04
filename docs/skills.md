@@ -18,6 +18,7 @@
 | `list_observations` | List all observations Claude has extracted about you |
 | `get_observation` | Get full details of a specific observation by ID |
 | `forget_observation` | Remove an extracted observation by ID |
+| `search_entities` | Search for people, projects, files, or tools mentioned in observations |
 | `install_plugin` | Install a Claude Code plugin (auto-searches for marketplace) |
 | `uninstall_plugin` | Uninstall a Claude Code plugin |
 | `list_plugins` | List installed Claude Code plugins |
