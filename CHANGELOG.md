@@ -18,6 +18,18 @@ Thinking effort control. Configure Claude's reasoning depth via config or Telegr
 - **`NewCLIManager`**: now accepts an `effort` parameter for default effort level
 - **`SendParams`**: includes `ThinkingEffort` field for per-request effort control
 - **`toolUseLoop`**: threads effort through all iterations of the tool use loop
+- **Smart message splitting**: long responses now split at paragraph boundaries instead of mid-text, and code blocks are closed/reopened across splits so both messages render correctly
+- **Telegram bot commands**: `/effort`, `/retry`, `/project` registered via `setMyCommands` for autocomplete
+
+### Fixed
+- **Thinking blocks in tool loop**: thinking block signatures now included in conversation history during multi-turn tool calls (without this, extended thinking + tools would fail)
+- **Redacted thinking blocks**: `redacted_thinking` content blocks handled for conversation continuity when model reasoning is filtered
+- **Rate-limited HTML edits**: final HTML-formatted message edit retries once after Telegram 429, preventing raw markdown display
+- **`/effort` and `/retry` prefix matching**: tightened to exact match + space, preventing interception of messages like "/effortlessly"
+- **`/retry` override restore**: one-shot effort override now properly restores previous session effort instead of deleting it
+- **Voice STT response limit**: capped at 1 MiB to prevent memory exhaustion from malicious API responses
+- **Missing `rows.Err()` checks**: added to observation fact iteration and reminder polling to catch silent database errors
+- **Reminder input limits**: message capped at 2000 characters, prompt at 5000 characters
 
 ## [0.24.0] - 2026-04-04
 
