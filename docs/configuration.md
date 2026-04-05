@@ -28,6 +28,7 @@ ollama_dim   = 1024
 
 [memory]
 enabled = true
+# summarize_model = "claude-haiku-4-5"  # cheaper model for conversation summarization (CLI mode)
 
 [memory.observations]
 enabled = true                 # enable automatic observation extraction
