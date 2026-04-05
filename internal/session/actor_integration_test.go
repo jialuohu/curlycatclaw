@@ -144,6 +144,13 @@ func (m *mockStore) CompleteToolCall(callID string, _ json.RawMessage, isError b
 	return nil
 }
 
+func (m *mockStore) LogInteractionEvent(_ string, _, _ int64, _, _ string) error { return nil }
+func (m *mockStore) MapTelegramMessage(_ int64, _ int, _ string) error           { return nil }
+func (m *mockStore) LookupConversationByTelegramMessage(_ int64, _ int) (string, error) {
+	return "", nil
+}
+func (m *mockStore) LogEvalReaction(_ string, _, _ int64, _ int, _ string) error { return nil }
+
 type mockContextProvider struct {
 	history []memory.Message
 }
@@ -199,6 +206,9 @@ func newMockTelegram() *mockTelegram {
 
 func (m *mockTelegram) Inbox() chan<- telegram.OutgoingMessage  { return m.inbox }
 func (m *mockTelegram) Updates() <-chan telegram.IncomingMessage { return m.updates }
+func (m *mockTelegram) Reactions() <-chan telegram.ReactionEvent {
+	return make(chan telegram.ReactionEvent)
+}
 func (m *mockTelegram) SendTyping(_ int64)                       {}
 func (m *mockTelegram) SendDocument(_ int64, _ string, _ []byte, _ string) error { return nil }
 

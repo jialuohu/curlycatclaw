@@ -94,6 +94,9 @@ func (m *mockTelegramTransport) Updates() <-chan telegram.IncomingMessage {
 }
 
 func (m *mockTelegramTransport) SendTyping(_ int64) {}
+func (m *mockTelegramTransport) Reactions() <-chan telegram.ReactionEvent {
+	return make(chan telegram.ReactionEvent)
+}
 
 // typingRecorder is a TelegramTransport mock that records SendTyping calls.
 type typingRecorder struct {
@@ -279,6 +282,16 @@ func (f *fakeMessageStore) ConversationMeta(_ string) (int64, int64, string, int
 func (f *fakeMessageStore) RecoverableSummarizations() ([]string, error) { return nil, nil }
 func (f *fakeMessageStore) GetSummaryText(_ string) (string, error)      { return "", nil }
 func (f *fakeMessageStore) GetMaxMessageRowid(_ string) (int64, error)   { return 0, nil }
+func (f *fakeMessageStore) LogInteractionEvent(_ string, _, _ int64, _, _ string) error {
+	return nil
+}
+func (f *fakeMessageStore) MapTelegramMessage(_ int64, _ int, _ string) error   { return nil }
+func (f *fakeMessageStore) LookupConversationByTelegramMessage(_ int64, _ int) (string, error) {
+	return "", nil
+}
+func (f *fakeMessageStore) LogEvalReaction(_ string, _, _ int64, _ int, _ string) error {
+	return nil
+}
 
 // fakeContextProvider returns empty history.
 type fakeContextProvider struct{}
