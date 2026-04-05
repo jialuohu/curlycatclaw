@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.25.0] - 2026-04-05
+
+Thinking effort control. Configure Claude's reasoning depth via config or Telegram commands. Higher effort means deeper thinking on complex tasks.
+
+### Added
+- **`thinking_effort` config field**: set reasoning depth globally (`low`, `medium`, `high`, `max`) in `[claude]` section
+- **`/effort` Telegram command**: override thinking effort per session (`/effort max`, `/effort reset`)
+- **`/retry` Telegram command**: replay the last message at a specified effort level (`/retry high`)
+- **Extended thinking support (direct API)**: maps effort levels to `ThinkingConfigParamOfEnabled` with budget token presets (10K for high, 32K for max) and model-aware MaxTokens cap (128K)
+- **CLI subprocess effort**: passes `--effort` flag to spawned `claude` CLI processes
+- **CLI respawn on effort change**: `/effort` kills and respawns the CLI subprocess so the new effort takes effect immediately
+- **Environment variable override**: `CURLYCATCLAW_THINKING_EFFORT` overrides the config value
+- **Thinking block signatures**: captured from API responses for conversation history continuity (signatures only, not full thinking text)
+
+### Changed
+- **`NewCLIManager`**: now accepts an `effort` parameter for default effort level
+- **`SendParams`**: includes `ThinkingEffort` field for per-request effort control
+- **`toolUseLoop`**: threads effort through all iterations of the tool use loop
+
 ## [0.24.0] - 2026-04-04
 
 Self-healing memory Phase 3. Observations can now be superseded, archived, restored, and updated. Stale project_state observations are automatically detected during extraction and filtered from future conversations. Users get inline notifications when memory changes and can undo with simple commands.
