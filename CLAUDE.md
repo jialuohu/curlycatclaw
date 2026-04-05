@@ -73,6 +73,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - `redacted_thinking` blocks need separate handling (`NewRedactedThinkingBlock`).
 - `lastUserMsg` map stores full `IncomingMessage` including attachment bytes. Bounded by user count.
 - `splitAtBoundary()` in actor.go handles message overflow. Searches backward for `\n\n`, detects unclosed code fences.
+- Actor struct maps (`effortOverride`, `lastUserMsg`, `debugOverride`, `obsState`) do NOT need mutexes. `handleMessage` runs in a single goroutine from the actor's `Run()` loop. Only `activeProjects` has a mutex (defense-in-depth, not required).
 
 ## Key Files
 
