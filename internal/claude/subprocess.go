@@ -759,6 +759,8 @@ var spawnEnvAllowlist = map[string]struct{}{
 	"NODE_PATH": {}, "NODE_OPTIONS": {}, "NODE_EXTRA_CA_CERTS": {},
 	// Terminal (needed for Claude CLI output formatting).
 	"TERM": {}, "COLORTERM": {},
+	// Playwright (needed by scrapling-mcp browser tools).
+	"PLAYWRIGHT_BROWSERS_PATH": {},
 }
 
 // filteredSpawnEnv returns a copy of the current process environment filtered
