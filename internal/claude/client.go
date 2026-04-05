@@ -38,9 +38,11 @@ type ToolCall struct {
 
 // ThinkingBlock stores a thinking block's signature for conversation history continuity.
 // Only the signature is persisted; the full thinking text is NOT stored to avoid
-// blowing the context window.
+// blowing the context window. Redacted thinking blocks carry opaque Data instead.
 type ThinkingBlock struct {
-	Signature string `json:"signature"`
+	Signature    string `json:"signature"`
+	RedactedData string `json:"redacted_data,omitempty"` // opaque data for redacted_thinking blocks
+	IsRedacted   bool   `json:"is_redacted,omitempty"`
 }
 
 // Response holds the result of one streaming request-response cycle.
@@ -236,6 +238,12 @@ func buildResponse(msg *anthropic.Message) *Response {
 		case "thinking":
 			resp.ThinkingBlocks = append(resp.ThinkingBlocks, ThinkingBlock{
 				Signature: block.Signature,
+			})
+		case "redacted_thinking":
+			resp.ThinkingBlocks = append(resp.ThinkingBlocks, ThinkingBlock{
+				Signature:        block.Signature,
+				RedactedData:     block.Data,
+				IsRedacted:       true,
 			})
 		}
 	}

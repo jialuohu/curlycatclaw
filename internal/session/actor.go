@@ -221,13 +221,13 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	}
 
 	// Handle /effort command (session-level thinking effort override).
-	if strings.HasPrefix(msg.Text, "/effort") {
+	if msg.Text == "/effort" || strings.HasPrefix(msg.Text, "/effort ") {
 		a.handleEffortCommand(msg)
 		return nil
 	}
 
 	// Handle /retry command (replay last message at specified effort).
-	if strings.HasPrefix(msg.Text, "/retry") {
+	if msg.Text == "/retry" || strings.HasPrefix(msg.Text, "/retry ") {
 		return a.handleRetryCommand(ctx, msg)
 	}
 
@@ -1080,7 +1080,11 @@ func (a *Actor) toolUseLoop(
 		// Thinking blocks must come first for API history continuity.
 		assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, len(resp.ThinkingBlocks)+1+len(resp.ToolCalls))
 		for _, tb := range resp.ThinkingBlocks {
-			assistantBlocks = append(assistantBlocks, anthropic.NewThinkingBlock(tb.Signature, ""))
+			if tb.IsRedacted {
+				assistantBlocks = append(assistantBlocks, anthropic.NewRedactedThinkingBlock(tb.RedactedData))
+			} else {
+				assistantBlocks = append(assistantBlocks, anthropic.NewThinkingBlock(tb.Signature, ""))
+			}
 		}
 		if resp.TextContent != "" {
 			assistantBlocks = append(assistantBlocks, anthropic.NewTextBlock(resp.TextContent))
