@@ -21,6 +21,15 @@ Observation memory Phase 2. Your bot can now find memories by keyword, track who
 - **Extraction prompt**: expanded with entity extraction guidance and examples for all 6 observation types
 - **Fact dedup**: reuses facts fetched for Tier 1 injection instead of redundant DB query
 
+### Fixed
+- **MCP skill registration**: observation skills (search, list, get, forget, search_entities) now registered in MCP server subprocess so Claude CLI can discover and call them
+- **Extraction prompt**: strengthened JSON-only instruction for reliable parsing with smaller models (Haiku)
+- **search_entities output**: now returns full observation UUIDs instead of truncated 8-char IDs that get_observation rejected
+- **search_observations output**: now includes observation ID so the bot can follow up with get_observation
+- **Qdrant dimension auto-fix**: detects collection dimension mismatch on startup, deletes stale collection, and reindexes all observations from SQLite with correct embedder
+- **Observation reindex**: loads full observations (with importance, type, facts) from SQLite instead of migration-text format that lost metadata
+- **Per-spawn model override**: SpawnParams.Model allows extraction, summarization, and per-reminder model selection in CLI mode
+
 ## [0.22.0] - 2026-04-04
 
 Observation memory system (Phase 1). The bot now automatically captures decisions, preferences, and project state from conversations and injects them into future sessions. No manual `/remember` needed.
