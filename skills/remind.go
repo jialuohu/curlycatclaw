@@ -94,6 +94,12 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 		if params.Message == "" {
 			return "", fmt.Errorf("message is required")
 		}
+		if len([]rune(params.Message)) > 2000 {
+			return "", fmt.Errorf("message too long (max 2000 characters)")
+		}
+		if params.Prompt != "" && len([]rune(params.Prompt)) > 5000 {
+			return "", fmt.Errorf("prompt too long (max 5000 characters)")
+		}
 		if params.FireAt == "" {
 			return "", fmt.Errorf("fire_at is required")
 		}
