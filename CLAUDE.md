@@ -74,6 +74,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - `lastUserMsg` map stores full `IncomingMessage` including attachment bytes. Bounded by user count.
 - `splitAtBoundary()` in actor.go handles message overflow. Searches backward for `\n\n`, detects unclosed code fences.
 - Actor struct maps (`effortOverride`, `lastUserMsg`, `debugOverride`, `obsState`) do NOT need mutexes. `handleMessage` runs in a single goroutine from the actor's `Run()` loop. Only `activeProjects` has a mutex (defense-in-depth, not required).
+- GWS multi-account: `GWS_ACCOUNT_<NAME>_SERVICES` env vars must not collide with account names. `parseAccountsFromEnv()` skips keys ending in `_SERVICES`. Account names validated as `[a-zA-Z0-9_-]+`. `"account"` is in `reservedFlags` to prevent LLM injection as a gws CLI flag. Credential paths must be absolute and exist at startup (fatal otherwise).
 
 ## Key Files
 
@@ -99,6 +100,9 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | `internal/session/cron.go` | CronExecutor for scheduled Claude-powered tasks |
 | `skills/` | Built-in skill implementations |
+| `skills/fact.go` | User facts skills (remember, forget, list) |
+| `skills/search.go` | Web search skill (DuckDuckGo) |
+| `skills/semantic_search.go` | Semantic search skill (Qdrant vector search) |
 | `skills/summary.go` | Summary management skills (list_summaries, delete_summary) |
 | `skills/plugin.go` | Plugin management skills (install, uninstall, enable, disable, list) |
 | `internal/extension/extension.go` | Runtime extension registry (MCP servers + exec skills) |
@@ -108,7 +112,9 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/memory/migration.go` | Background embedding migration manager (backfill, catch-up, alias swap) |
 | `cmd/curlycatclaw/migrate.go` | CLI embedder migration tool (manual fallback, versioned collections + aliases) |
 | `skills/send_file.go` | Send file skill (Telegram document delivery) |
-| `cmd/curlycatclaw-gws-mcp/` | Standalone MCP server for Google Workspace via gws CLI (multi-account, per-account service filtering) |
+| `cmd/curlycatclaw-gws-mcp/main.go` | GWS MCP server entrypoint, multi-account env parsing (`GWS_ACCOUNT_*`, `_SERVICES`) |
+| `cmd/curlycatclaw-gws-mcp/executor.go` | GWS CLI subprocess runner, account resolution, service validation, per-call env overrides |
+| `cmd/curlycatclaw-gws-mcp/discovery.go` | GWS skill discovery, tool registration, account field injection, `gws_list_accounts` |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
 | `docker-compose.yml` | curlycatclaw + Qdrant + Ollama orchestration |
 | `.goreleaser.yml` | Release automation (binaries, checksums, Docker images) |
