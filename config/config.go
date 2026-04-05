@@ -22,7 +22,6 @@ type Config struct {
 	Wasm     WasmConfig    `toml:"wasm"`
 	Memory           MemoryConfig           `toml:"memory"`
 	Logging          LoggingConfig          `toml:"logging"`
-	Sandbox          SandboxConfig          `toml:"sandbox"`
 	Health           HealthConfig           `toml:"health"`
 	Voice            VoiceConfig            `toml:"voice"`
 	ConfirmTools     []string               `toml:"confirm_tools"`
@@ -159,12 +158,6 @@ type ObservationsConfig struct {
 	ExpandedLimit         int     `toml:"expanded_limit"`
 }
 
-type SandboxConfig struct {
-	Enabled      bool     `toml:"enabled"`
-	ExtraPaths   []string `toml:"extra_paths"`
-	ExtraPathsRW []string `toml:"extra_paths_rw"`
-}
-
 type HealthConfig struct {
 	Enabled bool `toml:"enabled"`
 	Port    int  `toml:"port"`
@@ -242,9 +235,6 @@ func Load(path string) (*Config, error) {
 				CompactLimit:          15,
 				ExpandedLimit:         3,
 			},
-		},
-		Sandbox: SandboxConfig{
-			Enabled: false,
 		},
 		Health: HealthConfig{
 			Enabled: true,

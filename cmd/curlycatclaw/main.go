@@ -369,23 +369,6 @@ func run(configPath string) error {
 		}
 	}
 
-	// Apply filesystem sandbox (Linux-only, no-op on other platforms).
-	if cfg.Sandbox.Enabled {
-		var logDir string
-		if cfg.Logging.File != "" {
-			logDir = filepath.Dir(cfg.Logging.File)
-		}
-		if err := security.ApplySandbox(security.SandboxParams{
-			DataDir:      dataDir,
-			ConfigPath:   configPath,
-			LogDir:       logDir,
-			ExtraPaths:   cfg.Sandbox.ExtraPaths,
-			ExtraPathsRW: cfg.Sandbox.ExtraPathsRW,
-		}); err != nil {
-			slog.Warn("sandbox: failed to apply", "err", err)
-		}
-	}
-
 	// Initialize hierarchical memory (optional).
 	var factStore *memory.FactStore
 	var summarizer *memory.ConversationSummarizer

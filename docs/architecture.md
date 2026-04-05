@@ -15,7 +15,7 @@
 │       │               ├──► Claude     │                    │
 │       │               │    Direct API (stream+tools)       │
 │       │               │    OR CLI subprocess               │
-│       │               │    + /effort /retry /debug          │
+│       │               │    + /effort /retry /debug         │
 │       │               │               │                    │
 │       │               ├──► MCP Manager                     │
 │       │               │    ├─ Config servers (gws, github) │
@@ -23,14 +23,14 @@
 │       │               │    └─ Skills (built-in + Wasm)     │
 │       │               │               │                    │
 │       │               └──► Memory ◄───┘                    │
-│       │                    SQLite / Qdrant / Ollama         │
+│       │                    SQLite / Qdrant / Ollama        │
 │       │                                                    │
 │       │◄── [tool] lines (/debug toggles visibility)        │
 │       │                                                    │
 └───────┼────────────────────────────────────────────────────┘
-        │                  │
-   Telegram            Landlock
-   Bot API          (Linux sandbox)
+        │
+   Telegram
+   Bot API
 ```
 
 Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s -> 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit.
@@ -71,14 +71,14 @@ Four-tier hierarchical memory:
 Context Assembly (per request)
 ┌──────────────────────────────────────────────────────────┐
 │  Tier 1 (always)    │ User Facts (SQLite)                │  system prompt
-│  Tier 2 (semantic)  │ Observations (Qdrant + FTS5)        │  decisions, preferences, project state, commitments, discoveries, references
+│  Tier 2 (semantic)  │ Observations (Qdrant + FTS5)       │  decisions, preferences, project state, commitments, discoveries, references
 │  Tier 3 (semantic)  │ Relevant Summaries (Qdrant)        │  cosine similarity
 │  Tier 4 (window)    │ Recent Messages (SQLite)           │  25 turns, ~150K tokens
 └──────────────────────────────────────────────────────────┘
 
 Observation Extraction (idle detection, in-memory turn counter):
   Conversation turns ──► Turn threshold ──► ObservationExtractor
-                                                   │
+                                                    │
                               SQLite (structured) ◄─┤
                               Qdrant (embed) ◄──────┤
                               Entities (FTS5) ◄─────┘

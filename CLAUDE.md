@@ -80,7 +80,6 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 - **Tool transparency**: `[tool]` lines sent to user in Telegram, opt-out via `show_tool_calls`
 - **Tool confirmation**: `confirm_tools` prefix list for sensitive operations, stateless via Claude re-ask
 - **Logging**: configurable level/format/file via `[logging]` config, lumberjack rotation
-- **Sandbox**: Landlock filesystem restriction (Linux-only, `//go:build linux`), opt-in via `[sandbox]` config
 - **Google Workspace MCP**: standalone `curlycatclaw-gws-mcp` binary bridges Claude to Google Workspace via the `gws` CLI; discovers tools dynamically from `gws generate-skills`; concurrent boolean flag detection from `--help` output; argument injection prevention (`validArg` regex + expanded reserved flags + server-side flag allowlist per helper tool); `_user_context` stripped; `generateSkills` uses `os.TempDir()` for Docker compatibility
 - **Config MCP server proxy**: in CLI mode, config-based MCP servers (`[[mcp.servers]]`) are proxied through curlycatclaw-skills subprocess (same pattern as runtime extensions); system prompt lists discovered tools so Claude uses them proactively
 - **GitHub MCP**: external `github-mcp-server` binary (maintained by github/github-mcp-server), configured via `[[mcp.servers]]`, default toolsets: repos/issues/pull_requests/actions/users with `--read-only`, system prompt includes workflow-specific guidance for CI status, PR review, issue creation, release tracking, code search when GitHub tools are detected
@@ -119,7 +118,6 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 | `internal/skillloader/loader.go` | External skill collection loader (exec adapter) |
 | `internal/memory/migration.go` | Background embedding migration manager (backfill, catch-up, alias swap) |
 | `cmd/curlycatclaw/migrate.go` | CLI embedder migration tool (manual fallback, versioned collections + aliases) |
-| `internal/security/sandbox_linux.go` | Landlock filesystem sandbox (Linux) |
 | `cmd/curlycatclaw-gws-mcp/` | Standalone MCP server for Google Workspace via gws CLI |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
 | `docker-compose.yml` | curlycatclaw + Qdrant + Ollama orchestration |

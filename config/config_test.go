@@ -347,22 +347,6 @@ func TestLoad_LoggingDefaults(t *testing.T) {
 	}
 }
 
-func TestLoad_SandboxDefaults(t *testing.T) {
-	path := writeConfig(t, validTOML)
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if cfg.Sandbox.Enabled {
-		t.Error("Sandbox.Enabled should default to false")
-	}
-	if len(cfg.Sandbox.ExtraPaths) != 0 {
-		t.Errorf("Sandbox.ExtraPaths = %v, want empty", cfg.Sandbox.ExtraPaths)
-	}
-}
-
 func TestLoad_LoggingFromTOML(t *testing.T) {
 	content := validTOML + `
 [logging]

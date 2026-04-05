@@ -123,10 +123,6 @@ port    = 8080
 # enabled    = true
 # skills_dir = "/data/skills"
 
-# Filesystem sandbox (Linux only, kernel 5.13+).
-# [sandbox]
-# enabled = false
-
 # Voice transcription via OpenAI Whisper (speech-to-text).
 # [voice]
 # enabled = false
