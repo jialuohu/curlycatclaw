@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.24.0] - 2026-04-04
+
+Self-healing memory Phase 3. Observations can now be superseded, archived, restored, and updated. Stale project_state observations are automatically detected during extraction and filtered from future conversations. Users get inline notifications when memory changes and can undo with simple commands.
+
+### Added
+- **Supersession wiring**: extraction pipeline now detects when new observations supersede existing project_state observations, creating relations with confidence scores
+- **Superseded observation filtering**: search results exclude observations that have been superseded with confidence >= configured threshold (default 0.8)
+- **`supersede_observation` skill**: Claude calls this when it detects a user correcting outdated information in conversation, creating a replacement observation and archiving the old one
+- **`restore_observation` skill**: un-archives a soft-deleted observation
+- **`update_observation` skill**: edit title, summary, type, or importance of an existing observation with Qdrant reindex
+- **Soft delete**: `forget_observation` now archives instead of permanently deleting, with restore capability
+- **Inline memory notifications**: Telegram notification when extraction creates supersession relations, with `/keep_both`, `/revert`, `/forget_old` commands
+- **System prompt instruction**: Claude is instructed to call `supersede_observation` when user corrections match injected observations
+- **FTS5 UPDATE trigger**: observations_fts index stays in sync when observations are updated
+
+### Changed
+- **`GetSupersededObservationIDs`**: uses `confidence >= threshold` instead of `confirmed = 1` (which was never set), with graceful degradation on DB error
+- **`AddObservationRelation`**: uses `INSERT OR IGNORE` for concurrency safety, clamps confidence to [0.0, 1.0]
+- **`SupersessionThreshold` default**: changed from 0.85 to 0.8
+- **`get_observation` skill**: now returns backing facts alongside title and summary
+- **Observation queries**: 8 queries updated with `archived_at IS NULL` filter to exclude soft-deleted observations
+- **`Extract()` return type**: now returns `([]Observation, []ExtractedRelation, error)` with relation collection
+
+### Fixed
+- **`GetSupersededObservationIDs` was a no-op**: the `confirmed = 1` filter never matched because `confirmed` was never set to 1. Now uses configurable confidence threshold.
+
 ## [0.23.0] - 2026-04-04
 
 Observation memory Phase 2. Your bot can now find memories by keyword, track who and what was discussed, show a compact memory index instead of dumping everything, and detect when newer observations supersede older ones.

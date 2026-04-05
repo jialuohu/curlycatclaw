@@ -52,6 +52,14 @@ db_path = "/data/curlycatclaw.db"
 # min_messages_to_summarize = 4
 # vector_search_timeout_seconds = 5
 
+# Observation memory (auto-extraction from conversations).
+# [memory.observations]
+# enabled = true
+# extraction_interval = 3     # extract every N turns
+# supersession_threshold = 0.8 # confidence threshold for auto-filtering superseded observations
+# hybrid_search = false        # combine vector + FTS5 keyword search
+# progressive_retrieval = false # 3-layer display (compact index + expanded + on-demand)
+
 # MCP servers for extra tools.
 # [[mcp.servers]]
 # name    = "search"
