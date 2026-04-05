@@ -24,7 +24,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - 🧠 **Smart memory** -- four-tier context (user facts, auto-extracted observations with entity tracking and self-healing supersession, conversation summaries via Qdrant, sliding window), FTS5 hybrid search, progressive retrieval, pluggable embeddings, voice messages transcribed via OpenAI Whisper
 
-- 🔌 **Extensible** -- Google Workspace, GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, all manageable from chat
+- 🔌 **Extensible** -- Google Workspace (multi-account with per-account service filtering), GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, file delivery, all manageable from chat
 
 - 🧪 **Thinking effort control** -- configure Claude's reasoning depth (`/effort low|medium|high|max`), replay messages at higher effort (`/retry`), extended thinking with budget presets, per-session override via Telegram
 

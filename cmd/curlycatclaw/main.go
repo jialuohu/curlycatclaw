@@ -214,6 +214,7 @@ func run(configPath string) error {
 			skillReg.Register(s)
 		}
 	}
+	skillReg.Register(skills.NewSendFileSkill(tg))
 	slog.Info("skills registered", "count", len(skillReg.All()))
 
 	// Load external skill collections (exec-based skills from disk).

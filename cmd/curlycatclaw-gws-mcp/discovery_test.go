@@ -472,3 +472,116 @@ func TestParseFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestInjectAccountField(t *testing.T) {
+	accounts := map[string]string{"personal": "/data/p.json", "work": "/data/w.json"}
+	schema := json.RawMessage(`{"type":"object","properties":{"to":{"type":"string"}}}`)
+
+	result := injectAccountField(schema, accounts, "personal")
+
+	var s map[string]any
+	if err := json.Unmarshal(result, &s); err != nil {
+		t.Fatal(err)
+	}
+	props := s["properties"].(map[string]any)
+	acct, ok := props["account"]
+	if !ok {
+		t.Fatal("account field not injected")
+	}
+	acctMap := acct.(map[string]any)
+	desc := acctMap["description"].(string)
+	if !strings.Contains(desc, "personal") || !strings.Contains(desc, "work") {
+		t.Errorf("description should list accounts, got: %s", desc)
+	}
+	if !strings.Contains(desc, "Default: personal") {
+		t.Errorf("description should show default, got: %s", desc)
+	}
+	if _, ok := props["to"]; !ok {
+		t.Error("original 'to' field should be preserved")
+	}
+}
+
+func TestInjectAccountField_NoAccounts(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"to":{"type":"string"}}}`)
+	result := injectAccountField(schema, nil, "")
+	if string(result) != string(schema) {
+		t.Errorf("schema should be unchanged, got: %s", result)
+	}
+}
+
+func TestParseAccountsFromEnv(t *testing.T) {
+	t.Setenv("GWS_ACCOUNT_PERSONAL", "/data/p.json")
+	t.Setenv("GWS_ACCOUNT_WORK", "/data/w.json")
+
+	accounts := parseAccountsFromEnv()
+	if len(accounts) != 2 {
+		t.Fatalf("expected 2 accounts, got %d", len(accounts))
+	}
+	if accounts["personal"] != "/data/p.json" {
+		t.Errorf("personal = %q", accounts["personal"])
+	}
+	if accounts["work"] != "/data/w.json" {
+		t.Errorf("work = %q", accounts["work"])
+	}
+}
+
+func TestParseAccountsFromEnv_Empty(t *testing.T) {
+	accounts := parseAccountsFromEnv()
+	if accounts != nil {
+		t.Errorf("expected nil, got %v", accounts)
+	}
+}
+
+func TestParseAccountsFromEnv_Lowercase(t *testing.T) {
+	t.Setenv("GWS_ACCOUNT_MyWork", "/data/w.json")
+	accounts := parseAccountsFromEnv()
+	if _, ok := accounts["mywork"]; !ok {
+		t.Errorf("account name should be lowercased, got keys: %v", accounts)
+	}
+}
+
+func TestParseAccountsFromEnv_SkipsServicesVars(t *testing.T) {
+	t.Setenv("GWS_ACCOUNT_TESTACCT", "/data/t.json")
+	t.Setenv("GWS_ACCOUNT_TESTACCT_SERVICES", "gmail,calendar")
+	accounts := parseAccountsFromEnv()
+	if len(accounts) != 1 {
+		t.Fatalf("expected 1 account, got %d: %v", len(accounts), accounts)
+	}
+	if _, ok := accounts["testacct"]; !ok {
+		t.Errorf("expected testacct, got keys: %v", accounts)
+	}
+	if _, ok := accounts["testacct_services"]; ok {
+		t.Error("_SERVICES var should not be parsed as account")
+	}
+}
+
+func TestParseServicesFromEnv(t *testing.T) {
+	t.Setenv("GWS_ACCOUNT_ALICE", "/data/a.json")
+	t.Setenv("GWS_ACCOUNT_ALICE_SERVICES", "gmail, calendar")
+	t.Setenv("GWS_ACCOUNT_BOB", "/data/b.json")
+	t.Setenv("GWS_ACCOUNT_BOB_SERVICES", "gmail")
+
+	accounts := parseAccountsFromEnv()
+	services := parseServicesFromEnv(accounts)
+
+	if len(services) != 2 {
+		t.Fatalf("expected 2 service entries, got %d", len(services))
+	}
+	alice := services["alice"]
+	if len(alice) != 2 || alice[0] != "gmail" || alice[1] != "calendar" {
+		t.Errorf("alice services = %v, want [gmail, calendar]", alice)
+	}
+	bob := services["bob"]
+	if len(bob) != 1 || bob[0] != "gmail" {
+		t.Errorf("bob services = %v, want [gmail]", bob)
+	}
+}
+
+func TestParseServicesFromEnv_Empty(t *testing.T) {
+	t.Setenv("GWS_ACCOUNT_SOLO", "/data/s.json")
+	accounts := parseAccountsFromEnv()
+	services := parseServicesFromEnv(accounts)
+	if services != nil {
+		t.Errorf("expected nil, got %v", services)
+	}
+}

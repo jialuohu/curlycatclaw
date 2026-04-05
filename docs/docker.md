@@ -57,6 +57,22 @@ To add Gmail, Calendar, Drive, Sheets, Docs, Tasks access:
    docker compose build curlycatclaw && docker compose up -d
    ```
 
+### Multi-account GWS
+
+For multiple Google accounts, replace `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` with `GWS_ACCOUNT_*` env vars. Export credentials for each account separately, then configure:
+
+```toml
+[mcp.servers.env]
+GWS_PATH = "gws"
+GWS_ACCOUNT_PERSONAL          = "/data/gws-credentials.json"
+GWS_ACCOUNT_PERSONAL_SERVICES = "gmail,calendar,drive,sheets,docs,slides,tasks"
+GWS_ACCOUNT_WORK              = "/data/gws-work-credentials.json"
+GWS_ACCOUNT_WORK_SERVICES     = "gmail"
+GWS_DEFAULT_ACCOUNT           = "personal"
+```
+
+See [configuration.md](configuration.md) for full details.
+
 ## MCP Servers & Plugin Runtimes
 
 MCP servers are launched via `exec.Command` (stdio transport). The Docker image
