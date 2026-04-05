@@ -187,6 +187,8 @@ func TestHandleMessage_SendsTypingBeforeClaude(t *testing.T) {
 		indexSem:       make(chan struct{}, 10),
 		sumSem:         make(chan struct{}, 2),
 		activeProjects: make(map[userKey]string),
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
 	}
 
 	// Drain inbox so streamState.flush doesn't block waiting for message IDs.
@@ -1122,4 +1124,113 @@ func TestBuildSystemPrompt_GitHubWorkflowGuidance(t *testing.T) {
 	}
 }
 
+func TestHandleEffortCommand_ShowCurrent(t *testing.T) {
+	tg := newMockTG()
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: config.EffortHigh}},
+		tg:             tg,
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
 
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort"})
+
+	select {
+	case msg := <-tg.inbox:
+		if !strings.Contains(msg.Text, "high") {
+			t.Errorf("expected 'high' in response, got: %s", msg.Text)
+		}
+	default:
+		t.Error("expected a message to be sent")
+	}
+}
+
+func TestHandleEffortCommand_SetOverride(t *testing.T) {
+	tg := newMockTG()
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: ""}},
+		tg:             tg,
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
+
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort max"})
+
+	key := userKey{UserID: 42, ChatID: 100}
+	if a.effortOverride[key] != config.EffortMax {
+		t.Errorf("effortOverride = %q, want %q", a.effortOverride[key], config.EffortMax)
+	}
+
+	select {
+	case msg := <-tg.inbox:
+		if !strings.Contains(msg.Text, "max") {
+			t.Errorf("expected 'max' in response, got: %s", msg.Text)
+		}
+	default:
+		t.Error("expected a message to be sent")
+	}
+}
+
+func TestHandleEffortCommand_Reset(t *testing.T) {
+	tg := newMockTG()
+	key := userKey{UserID: 42, ChatID: 100}
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: config.EffortLow}},
+		tg:             tg,
+		effortOverride: map[userKey]config.Effort{key: config.EffortMax},
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
+
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort reset"})
+
+	if _, ok := a.effortOverride[key]; ok {
+		t.Error("expected effortOverride to be cleared after /effort reset")
+	}
+}
+
+func TestHandleEffortCommand_InvalidLevel(t *testing.T) {
+	tg := newMockTG()
+	a := &Actor{
+		cfg:            &config.Config{},
+		tg:             tg,
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
+
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort turbo"})
+
+	select {
+	case msg := <-tg.inbox:
+		if !strings.Contains(msg.Text, "Unknown") {
+			t.Errorf("expected error message, got: %s", msg.Text)
+		}
+	default:
+		t.Error("expected a message to be sent")
+	}
+}
+
+func TestGetEffectiveEffort_OverrideTakesPrecedence(t *testing.T) {
+	key := userKey{UserID: 42, ChatID: 100}
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: config.EffortLow}},
+		effortOverride: map[userKey]config.Effort{key: config.EffortMax},
+	}
+
+	got := a.getEffectiveEffort(key)
+	if got != config.EffortMax {
+		t.Errorf("getEffectiveEffort = %q, want %q (override)", got, config.EffortMax)
+	}
+}
+
+func TestGetEffectiveEffort_FallsBackToConfig(t *testing.T) {
+	key := userKey{UserID: 42, ChatID: 100}
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: config.EffortHigh}},
+		effortOverride: make(map[userKey]config.Effort),
+	}
+
+	got := a.getEffectiveEffort(key)
+	if got != config.EffortHigh {
+		t.Errorf("getEffectiveEffort = %q, want %q (config)", got, config.EffortHigh)
+	}
+}

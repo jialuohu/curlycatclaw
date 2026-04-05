@@ -236,17 +236,20 @@ func defaultCfg() *config.Config {
 
 func newTestActor(llm LLMClient, store MessageStore, ctxb ContextProvider, router ToolRouter, vector VectorIndexer, tg TelegramTransport) *Actor {
 	return &Actor{
-		cfg:      defaultCfg(),
-		claude:   llm,
-		tg:       tg,
-		mcp:      router,
-		store:    store,
-		ctxb:     ctxb,
-		skills:   skills.NewRegistry(),
-		vector:   vector,
-		indexSem: make(chan struct{}, 10),
-		obsSem:   make(chan struct{}, 3),
-		obsState: make(map[string]*obsConvState),
+		cfg:            defaultCfg(),
+		claude:         llm,
+		tg:             tg,
+		mcp:            router,
+		store:          store,
+		ctxb:           ctxb,
+		skills:         skills.NewRegistry(),
+		vector:         vector,
+		indexSem:       make(chan struct{}, 10),
+		obsSem:         make(chan struct{}, 3),
+		obsState:       make(map[string]*obsConvState),
+		activeProjects: make(map[userKey]string),
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
 	}
 }
 

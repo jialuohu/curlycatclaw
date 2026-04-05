@@ -92,6 +92,11 @@ type Actor struct {
 	// activeProjects tracks the currently active project per user.
 	activeProjects map[userKey]string
 	projectsMu     sync.RWMutex
+
+	// effortOverride stores per-user session-level effort overrides set via /effort.
+	effortOverride map[userKey]config.Effort
+	// lastUserMsg stores the last non-command user message per user for /retry.
+	lastUserMsg map[userKey]telegram.IncomingMessage
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -141,6 +146,8 @@ func New(
 		configPath:     configPath,
 		extRegistry:    extReg,
 		activeProjects: make(map[userKey]string),
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
 	}
 }
 
@@ -211,6 +218,23 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// Handle memory management commands.
 	if a.handleMemoryCommand(msg) {
 		return nil
+	}
+
+	// Handle /effort command (session-level thinking effort override).
+	if strings.HasPrefix(msg.Text, "/effort") {
+		a.handleEffortCommand(msg)
+		return nil
+	}
+
+	// Handle /retry command (replay last message at specified effort).
+	if strings.HasPrefix(msg.Text, "/retry") {
+		return a.handleRetryCommand(ctx, msg)
+	}
+
+	// Store last non-command user message for /retry.
+	if a.lastUserMsg != nil {
+		key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+		a.lastUserMsg[key] = msg
 	}
 
 	// Get or create conversation for this user.
@@ -291,7 +315,8 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// CLI subprocess mode: delegate to claude CLI which handles the agent loop.
 	if a.cliMgr != nil {
-		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos(), systemPrompt)
+		effKey := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos(), systemPrompt, string(a.getEffectiveEffort(effKey)))
 	}
 
 	// Direct API mode: build context and run the tool_use loop.
@@ -331,8 +356,12 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	copy(tools, a.cachedAnthropicTools)
 	tools = append(tools, toSkillTools(a.skills)...)
 
+	// Resolve effective effort for this request.
+	effKey := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+	effort := a.getEffectiveEffort(effKey)
+
 	// Run the tool_use loop.
-	return a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools)
+	return a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools, effort)
 }
 
 // typingRefreshInterval is the interval between "typing..." indicator refreshes.
@@ -978,6 +1007,7 @@ func (a *Actor) toolUseLoop(
 	messages []anthropic.MessageParam,
 	systemPrompt string,
 	tools []anthropic.ToolUnionParam,
+	effort config.Effort,
 ) error {
 	ss := &streamState{chatID: chatID, tg: a.tg}
 
@@ -987,9 +1017,10 @@ func (a *Actor) toolUseLoop(
 
 		claudeCtx, claudeCancel := context.WithTimeout(ctx, claudeTimeout)
 		resp, err := a.claude.SendStreaming(claudeCtx, claude.SendParams{
-			Messages:     messages,
-			SystemPrompt: systemPrompt,
-			Tools:        tools,
+			Messages:       messages,
+			SystemPrompt:   systemPrompt,
+			Tools:          tools,
+			ThinkingEffort: effort,
 			OnPartialText: func(delta string) {
 				ss.onDelta(delta)
 			},
@@ -1172,6 +1203,7 @@ func (a *Actor) handleWithCLI(
 	userMsg string,
 	photos []telegram.Attachment,
 	systemPrompt string,
+	effort string,
 ) error {
 	ss := &streamState{chatID: chatID, tg: a.tg}
 
@@ -1228,6 +1260,7 @@ func (a *Actor) handleWithCLI(
 		SystemPrompt: systemPrompt,
 		MCPConfig:    mcpConfig,
 		InitialMsg:   userJSON,
+		Effort:       effort,
 	}
 
 	// Set working directory and isolated home for project work.
@@ -1483,6 +1516,125 @@ func (a *Actor) handleProjectCommand(msg telegram.IncomingMessage) error {
 		Text:   fmt.Sprintf("Switched to project %q at %s.", found.Name, found.Path),
 	})
 	return nil
+}
+
+// handleEffortCommand processes /effort commands for thinking effort override.
+func (a *Actor) handleEffortCommand(msg telegram.IncomingMessage) {
+	text := strings.TrimSpace(msg.Text)
+	key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+
+	// /effort with no args: show current effective effort.
+	if text == "/effort" {
+		current := a.getEffectiveEffort(key)
+		label := string(current)
+		if label == "" {
+			label = "(default, no extended thinking)"
+		}
+		override := a.effortOverride[key]
+		if override != "" {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   fmt.Sprintf("Effort: %s (session override). Config default: %s.\nUse /effort reset to clear override.", label, a.cfg.Claude.ThinkingEffort),
+			})
+		} else {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   fmt.Sprintf("Effort: %s (from config). Use /effort <low|medium|high|max> to override.", label),
+			})
+		}
+		return
+	}
+
+	arg := strings.TrimSpace(strings.TrimPrefix(text, "/effort"))
+
+	// /effort reset: clear override.
+	if arg == "reset" || arg == "off" {
+		delete(a.effortOverride, key)
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Effort override cleared. Using config default: %s.", a.cfg.Claude.ThinkingEffort),
+		})
+		return
+	}
+
+	// /effort <level>: validate and set.
+	effort := config.Effort(arg)
+	if !config.ValidEffort(effort) || effort == "" {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Unknown effort level %q. Valid: low, medium, high, max.", arg),
+		})
+		return
+	}
+
+	a.effortOverride[key] = effort
+
+	// In CLI mode, kill+respawn so the new effort takes effect (--effort is spawn-time).
+	if a.cliMgr != nil {
+		a.cliMgr.Remove(msg.UserID, msg.ChatID)
+		slog.Info("cli: respawning for effort change", "user_id", msg.UserID, "effort", effort)
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   fmt.Sprintf("Effort set to %s for this session.", effort),
+	})
+}
+
+// handleRetryCommand replays the last user message at the current (or specified) effort level.
+func (a *Actor) handleRetryCommand(ctx context.Context, msg telegram.IncomingMessage) error {
+	key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+
+	last, ok := a.lastUserMsg[key]
+	if !ok {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   "No previous message to retry.",
+		})
+		return nil
+	}
+
+	// Parse optional effort level: /retry high
+	arg := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Text), "/retry"))
+	if arg != "" {
+		effort := config.Effort(arg)
+		if !config.ValidEffort(effort) || effort == "" {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   fmt.Sprintf("Unknown effort level %q. Valid: low, medium, high, max. Or just /retry to replay at current effort.", arg),
+			})
+			return nil
+		}
+		// One-shot override: set temporarily, restore previous value after.
+		prev, hadPrev := a.effortOverride[key]
+		a.effortOverride[key] = effort
+		defer func() {
+			if hadPrev {
+				a.effortOverride[key] = prev
+			} else {
+				delete(a.effortOverride, key)
+			}
+		}()
+		if a.cliMgr != nil {
+			a.cliMgr.Remove(msg.UserID, msg.ChatID)
+		}
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   fmt.Sprintf("Retrying at effort: %s...", a.getEffectiveEffort(key)),
+	})
+
+	// Replay the last message through normal handling (creates a new conversation turn).
+	return a.handleMessage(ctx, last)
+}
+
+// getEffectiveEffort returns the effort level for a user, checking session override first.
+func (a *Actor) getEffectiveEffort(key userKey) config.Effort {
+	if override, ok := a.effortOverride[key]; ok {
+		return override
+	}
+	return a.cfg.Claude.ThinkingEffort
 }
 
 // getActiveProject returns the active project config for the given user, or nil.
