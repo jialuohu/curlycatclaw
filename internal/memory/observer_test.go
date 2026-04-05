@@ -13,6 +13,7 @@ type mockObserverStore struct {
 	messages     []Message
 	observations []Observation
 	titles       []string
+	existingObs  []Observation // returned by GetRecentObservationsByType
 	hashes       map[string]bool // userID:hash -> exists
 
 	saveErr      error
@@ -70,6 +71,10 @@ func (m *mockObserverStore) CountObservations(convID string) (int, error) {
 	return len(m.observations), nil
 }
 
+func (m *mockObserverStore) GetRecentObservationsByType(_ int64, _ string, _ int) ([]Observation, error) {
+	return m.existingObs, nil
+}
+
 // makeMessages creates a list of user/assistant message pairs long enough to
 // exceed the minTranscriptChars threshold.
 func makeMessages(pairs int) []Message {
@@ -110,7 +115,7 @@ func TestExtract_Success(t *testing.T) {
 	}
 
 	ext := NewObservationExtractor(sendFn, store)
-	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	obs, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -167,7 +172,7 @@ func TestExtract_EmptyTranscript(t *testing.T) {
 	}
 
 	ext := NewObservationExtractor(sendFn, store)
-	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 10, 20, 10000)
+	obs, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 10, 20, 10000)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -188,7 +193,7 @@ func TestExtract_InvalidJSON(t *testing.T) {
 	}
 
 	ext := NewObservationExtractor(sendFn, store)
-	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	obs, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
 	if err != nil {
 		t.Fatalf("Extract should not return error for bad JSON, got: %v", err)
 	}
@@ -216,7 +221,7 @@ func TestExtract_MarkdownWrappedJSON(t *testing.T) {
 	}
 
 	ext := NewObservationExtractor(sendFn, store)
-	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	obs, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -255,7 +260,7 @@ func TestExtract_ValidationClamping(t *testing.T) {
 	}
 
 	ext := NewObservationExtractor(sendFn, store)
-	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	obs, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -308,7 +313,7 @@ func TestExtract_InvalidTypeSkipped(t *testing.T) {
 	}
 
 	ext := NewObservationExtractor(sendFn, store)
-	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	obs, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -341,7 +346,7 @@ func TestExtract_DuplicateHash(t *testing.T) {
 	ext := NewObservationExtractor(sendFn, store)
 
 	// First extraction should succeed.
-	obs1, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	obs1, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
 	if err != nil {
 		t.Fatalf("Extract 1: %v", err)
 	}
@@ -350,7 +355,7 @@ func TestExtract_DuplicateHash(t *testing.T) {
 	}
 
 	// Second extraction with the same content should skip the duplicate.
-	obs2, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	obs2, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
 	if err != nil {
 		t.Fatalf("Extract 2: %v", err)
 	}
@@ -391,7 +396,7 @@ func TestExtract_MaxPerConversation(t *testing.T) {
 	}
 
 	ext := NewObservationExtractor(sendFn, store)
-	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 3, 10000)
+	obs, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 3, 10000)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -430,7 +435,7 @@ func TestExtract_WithEntities(t *testing.T) {
 	}
 
 	ext := NewObservationExtractor(sendFn, store)
-	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 50, 10000)
+	obs, _, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 50, 10000)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -654,5 +659,132 @@ func TestTruncateRunes(t *testing.T) {
 	emojis := strings.Repeat("\U0001f680", 5)
 	if got := truncateRunes(emojis, 3); got != "\U0001f680\U0001f680\U0001f680" {
 		t.Errorf("truncateRunes(emojis, 3) = %q, want 3 rockets", got)
+	}
+}
+
+func TestExtract_WithRelations(t *testing.T) {
+	store := newMockObserverStore()
+	store.messages = makeMessages(5)
+	store.existingObs = []Observation{
+		{ID: "existing-1", Title: "Working on Phase 2", Summary: "Phase 2 in progress."},
+		{ID: "existing-2", Title: "Using Redis for cache", Summary: "Redis is the caching layer."},
+	}
+
+	claudeResp, _ := json.Marshal([]rawObservation{
+		{
+			Type:       "project_state",
+			Title:      "Phase 2 shipped",
+			Summary:    "Phase 2 memory system has been deployed to production.",
+			Facts:      []string{"Phase 2 complete", "Deployed to production"},
+			Importance: 8,
+			Relations: []rawRelation{
+				{TargetID: "existing-1", Type: "supersedes", Confidence: 0.95},
+			},
+		},
+	})
+
+	ext := NewObservationExtractor(
+		func(_ context.Context, _, _ string) (string, error) {
+			return string(claudeResp), nil
+		},
+		store,
+	)
+
+	obs, rels, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(obs) != 1 {
+		t.Fatalf("expected 1 observation, got %d", len(obs))
+	}
+	if len(rels) != 1 {
+		t.Fatalf("expected 1 relation, got %d", len(rels))
+	}
+	if rels[0].TargetID != "existing-1" {
+		t.Errorf("expected target existing-1, got %s", rels[0].TargetID)
+	}
+	if rels[0].Type != "supersedes" {
+		t.Errorf("expected type supersedes, got %s", rels[0].Type)
+	}
+	if rels[0].Confidence != 0.95 {
+		t.Errorf("expected confidence 0.95, got %f", rels[0].Confidence)
+	}
+}
+
+func TestExtract_InvalidRelationTarget(t *testing.T) {
+	store := newMockObserverStore()
+	store.messages = makeMessages(5)
+	store.existingObs = []Observation{
+		{ID: "existing-1", Title: "Valid target", Summary: "Exists."},
+	}
+
+	claudeResp, _ := json.Marshal([]rawObservation{
+		{
+			Type:       "project_state",
+			Title:      "New state",
+			Summary:    "Some update.",
+			Facts:      []string{"updated"},
+			Importance: 5,
+			Relations: []rawRelation{
+				{TargetID: "nonexistent-id", Type: "supersedes", Confidence: 0.9},
+			},
+		},
+	})
+
+	ext := NewObservationExtractor(
+		func(_ context.Context, _, _ string) (string, error) {
+			return string(claudeResp), nil
+		},
+		store,
+	)
+
+	obs, rels, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(obs) != 1 {
+		t.Fatalf("expected 1 observation, got %d", len(obs))
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected 0 relations (invalid target filtered), got %d", len(rels))
+	}
+}
+
+func TestExtract_RelationConfidenceClamping(t *testing.T) {
+	store := newMockObserverStore()
+	store.messages = makeMessages(5)
+	store.existingObs = []Observation{
+		{ID: "existing-1", Title: "Target", Summary: "Target obs."},
+	}
+
+	claudeResp, _ := json.Marshal([]rawObservation{
+		{
+			Type:       "project_state",
+			Title:      "Update",
+			Summary:    "Updated state.",
+			Facts:      []string{"updated"},
+			Importance: 5,
+			Relations: []rawRelation{
+				{TargetID: "existing-1", Type: "supersedes", Confidence: 1.5},
+			},
+		},
+	})
+
+	ext := NewObservationExtractor(
+		func(_ context.Context, _, _ string) (string, error) {
+			return string(claudeResp), nil
+		},
+		store,
+	)
+
+	_, rels, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 20, 10000)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(rels) != 1 {
+		t.Fatalf("expected 1 relation, got %d", len(rels))
+	}
+	if rels[0].Confidence != 1.0 {
+		t.Errorf("expected confidence clamped to 1.0, got %f", rels[0].Confidence)
 	}
 }

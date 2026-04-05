@@ -79,10 +79,13 @@ Observation Extraction (idle detection, in-memory turn counter):
   Entities: person, project, file, tool (extracted alongside observations)
   Search: hybrid (RRF of FTS5 keyword + vector similarity), multi-vector (per-fact points)
   Retrieval: progressive 3-layer (compact index → expanded → full detail)
-  Relations: supersedes/refines/contradicts (advisory, ranking boost not hiding)
+  Relations: supersedes/refines/contradicts, active filtering (confidence >= threshold hides superseded obs from search)
+  Self-healing: extraction detects project_state supersession, supersede_observation skill for real-time correction
+  Soft delete: archived_at column, forget archives instead of deletes, restore_observation to undo
+  Notifications: inline Telegram messages on supersession with /keep_both, /revert, /forget_old commands
   Model: extraction uses per-spawn model override (extraction_model config, e.g., haiku)
   Startup: FixObservationCollectionDimension + reindexMissingObservations (auto-heal)
-  System prompt: "What I remember" section with dedup against facts
+  System prompt: "What I remember" section with dedup against facts, supersede_observation instruction
 
 Conversation Archival (>4h idle, both API and CLI modes):
   Expired conv ──► Load messages ──► Format (head+tail 12K) ──► Claude summarize

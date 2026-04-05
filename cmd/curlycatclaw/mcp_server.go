@@ -138,6 +138,7 @@ func runMCPServer() error {
 				reg.Register(s)
 			}
 		}
+		reg.Register(skills.InitSupersedeSkill(mcpObsAdapter))
 	}
 
 	// Plugin management skills (optional, requires CLI + isolated home).

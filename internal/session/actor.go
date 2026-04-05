@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -205,6 +206,11 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// Handle /project command before any LLM interaction.
 	if strings.HasPrefix(msg.Text, "/project") {
 		return a.handleProjectCommand(msg)
+	}
+
+	// Handle memory management commands.
+	if a.handleMemoryCommand(msg) {
+		return nil
 	}
 
 	// Get or create conversation for this user.
@@ -682,7 +688,7 @@ func (a *Actor) asyncExtractObservations(convID string, userID, chatID int64, ch
 			maxChars = 4000
 		}
 
-		observations, err := a.observer.Extract(
+		observations, relations, err := a.observer.Extract(
 			extractCtx, convID, userID, chatID, chatType,
 			afterRowid, maxRowid, maxPerConv, maxChars,
 		)
@@ -709,6 +715,20 @@ func (a *Actor) asyncExtractObservations(convID string, userID, chatID int64, ch
 					slog.Warn("observation: save entities", "err", err, "obs", obs.ID)
 				}
 			}
+		}
+
+		// Persist supersession/contradiction relations (best-effort).
+		for _, rel := range relations {
+			if err := a.obsStore.AddObservationRelation(
+				rel.SourceObsID, rel.TargetID, rel.Type, rel.Confidence, userID,
+			); err != nil {
+				slog.Warn("observation: add relation", "err", err,
+					"source", rel.SourceObsID, "target", rel.TargetID, "type", rel.Type)
+			}
+		}
+		if len(relations) > 0 {
+			slog.Info("observation_relations_created", "conv", convID, "count", len(relations))
+			a.sendMemoryNotification(chatID, relations, observations)
 		}
 
 		// Update extraction cursor.
@@ -1659,6 +1679,115 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	return string(data)
 }
 
+// sendMemoryNotification sends a Telegram notification when observation supersession
+// relations are created during extraction.
+func (a *Actor) sendMemoryNotification(chatID int64, relations []memory.ExtractedRelation, observations []memory.Observation) {
+	if len(relations) == 0 {
+		return
+	}
+
+	// Build observation ID → title map for readable notifications.
+	titles := make(map[string]string, len(observations))
+	for _, o := range observations {
+		titles[o.ID] = o.Title
+	}
+
+	var sb strings.Builder
+	if len(relations) > 5 {
+		fmt.Fprintf(&sb, "[memory] Updated %d observations. Use list_observations to review.", len(relations))
+	} else {
+		fmt.Fprintf(&sb, "[memory] Updated %d observation(s):\n", len(relations))
+		for _, rel := range relations {
+			sourceTitle := titles[rel.SourceObsID]
+			if sourceTitle == "" {
+				sourceTitle = rel.SourceObsID
+				if len(sourceTitle) > 8 {
+					sourceTitle = sourceTitle[:8]
+				}
+			}
+			fmt.Fprintf(&sb, "  - \"%s\" %s %s\n", sourceTitle, rel.Type, rel.TargetID)
+		}
+		sb.WriteString("Reply: /keep_both <id> | /revert <id> | /forget_old <id>")
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: chatID,
+		Text:   sb.String(),
+	})
+}
+
+// uuidRe matches standard UUID v4 format.
+var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// handleMemoryCommand processes /keep_both, /revert, and /forget_old commands.
+// Returns true if the message was a memory command and was handled.
+func (a *Actor) handleMemoryCommand(msg telegram.IncomingMessage) bool {
+	text := strings.TrimSpace(msg.Text)
+	var cmd, obsID string
+
+	switch {
+	case strings.HasPrefix(text, "/keep_both "):
+		cmd = "keep_both"
+		obsID = strings.TrimSpace(strings.TrimPrefix(text, "/keep_both "))
+	case strings.HasPrefix(text, "/revert "):
+		cmd = "revert"
+		obsID = strings.TrimSpace(strings.TrimPrefix(text, "/revert "))
+	case strings.HasPrefix(text, "/forget_old "):
+		cmd = "forget_old"
+		obsID = strings.TrimSpace(strings.TrimPrefix(text, "/forget_old "))
+	default:
+		return false
+	}
+
+	if a.obsStore == nil {
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Memory system not configured."})
+		return true
+	}
+
+	if !uuidRe.MatchString(obsID) {
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Invalid observation ID format."})
+		return true
+	}
+
+	var result string
+	switch cmd {
+	case "keep_both":
+		// Remove the supersession relation so the target is no longer filtered from search.
+		// Restore is best-effort: extraction-created supersessions don't archive the target.
+		if err := a.obsStore.DeleteSupersessionRelation(obsID, msg.UserID); err != nil {
+			slog.Warn("memory: delete relation for keep_both", "err", err)
+		}
+		_ = a.obsStore.RestoreObservation(obsID, msg.UserID) // no-op if not archived
+		result = fmt.Sprintf("Kept both observations. Relation removed for %s.", obsID)
+	case "revert":
+		// Archive the replacement (source), remove the relation, restore the original (target).
+		sourceID, _ := a.obsStore.GetSupersessionSourceID(obsID, msg.UserID)
+		if sourceID != "" {
+			_ = a.obsStore.ArchiveObservation(sourceID, msg.UserID)
+		}
+		if err := a.obsStore.DeleteSupersessionRelation(obsID, msg.UserID); err != nil {
+			slog.Warn("memory: delete relation for revert", "err", err)
+		}
+		_ = a.obsStore.RestoreObservation(obsID, msg.UserID) // no-op if not archived
+		result = fmt.Sprintf("Reverted. Relation removed for %s.", obsID)
+	case "forget_old":
+		// Hard-delete the superseded observation permanently + clean up Qdrant vector.
+		if err := a.obsStore.DeleteObservation(obsID, msg.UserID); err != nil {
+			result = fmt.Sprintf("Could not delete: %v", err)
+		} else {
+			if a.vectorStore != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = a.vectorStore.DeleteObservationVector(ctx, obsID)
+				cancel()
+			}
+			result = fmt.Sprintf("Permanently deleted observation %s.", obsID)
+		}
+	}
+
+	a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: result})
+	return true
+}
+
 func (a *Actor) trySend(msg telegram.OutgoingMessage) {
 	select {
 	case a.tg.Inbox() <- msg:
@@ -1898,6 +2027,20 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 								results[i].Facts = factsMap[results[i].ID]
 							}
 						}
+
+						// Filter out superseded observations.
+						superseded, _ := a.obsStore.GetSupersededObservationIDs(
+							userID, a.cfg.Memory.Observations.SupersessionThreshold,
+						)
+						if len(superseded) > 0 {
+							filtered := results[:0]
+							for _, r := range results {
+								if !superseded[r.ID] {
+									filtered = append(filtered, r)
+								}
+							}
+							results = filtered
+						}
 					}
 					obsResults = results
 				}
@@ -2050,6 +2193,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 			}
 
 			sb.WriteString("</observations>\n")
+			sb.WriteString("\nWhen a user corrects outdated information that matches an observation above, call supersede_observation to update the memory. Don't ask for permission — just update it and the user will be notified. Only call this when you're confident the user is correcting a specific observation, not when they're adding new information.\n")
 		}
 
 		// Inject summaries (Tier 2).

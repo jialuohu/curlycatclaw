@@ -21,6 +21,9 @@ type mockObservationStore struct {
 	deleteErr     error
 	vectorDeleted string
 	vectorDelErr  error
+	archiveErr    error
+	archivedID    string
+	archivedUID   int64
 }
 
 func (m *mockObservationStore) SearchObservations(_ context.Context, _ string, _ int64, _ string, _ int) ([]ObservationSearchResult, error) {
@@ -36,6 +39,20 @@ func (m *mockObservationStore) DeleteObservation(id string, userID int64) error 
 func (m *mockObservationStore) DeleteObservationVector(_ context.Context, id string) error {
 	m.vectorDeleted = id
 	return m.vectorDelErr
+}
+
+func (m *mockObservationStore) ArchiveObservation(id string, userID int64) error {
+	m.archivedID = id
+	m.archivedUID = userID
+	return m.archiveErr
+}
+
+func (m *mockObservationStore) RestoreObservation(_ string, _ int64) error {
+	return nil
+}
+
+func (m *mockObservationStore) UpdateObservation(_ string, _ int64, _, _, _ string, _ int) error {
+	return nil
 }
 
 // newTestObservationDB creates a temp SQLite DB with the observations table.
@@ -142,10 +159,10 @@ func TestSearchObservations_ValidType(t *testing.T) {
 }
 
 func TestForgetObservation_IDOR(t *testing.T) {
-	// The store's DeleteObservation should receive the caller's userID,
+	// The store's ArchiveObservation should receive the caller's userID,
 	// not any other user's. When it returns "not found", that prevents IDOR.
 	store := &mockObservationStore{
-		deleteErr: fmt.Errorf("observation not found"),
+		archiveErr: fmt.Errorf("observation not found or already archived"),
 	}
 	db := newTestObservationDB(t)
 	skills, err := InitObservationSkills(db.DB(), store, nil)
@@ -164,20 +181,20 @@ func TestForgetObservation_IDOR(t *testing.T) {
 		t.Fatal("forget_observation skill not found")
 	}
 
-	// User 99 tries to delete an observation that belongs to user 1.
+	// User 99 tries to archive an observation that belongs to user 1.
 	ctx := WithUser(context.Background(), UserInfo{UserID: 99, ChatID: 10})
 	validUUID := "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
 	input, _ := json.Marshal(forgetObservationInput{ID: validUUID})
 	_, err = forgetSkill.Execute(ctx, input)
 	if err == nil {
-		t.Fatal("expected error when deleting another user's observation")
+		t.Fatal("expected error when archiving another user's observation")
 	}
 	// Verify the store received the caller's userID for IDOR enforcement.
-	if store.deletedUserID != 99 {
-		t.Errorf("DeleteObservation called with userID=%d, want 99", store.deletedUserID)
+	if store.archivedUID != 99 {
+		t.Errorf("ArchiveObservation called with userID=%d, want 99", store.archivedUID)
 	}
-	if store.deletedID != validUUID {
-		t.Errorf("DeleteObservation called with id=%q, want %q", store.deletedID, validUUID)
+	if store.archivedID != validUUID {
+		t.Errorf("ArchiveObservation called with id=%q, want %q", store.archivedID, validUUID)
 	}
 }
 
@@ -575,39 +592,6 @@ func TestForgetObservation_EmptyID(t *testing.T) {
 	}
 }
 
-func TestForgetObservation_VectorCleanupFailure(t *testing.T) {
-	store := &mockObservationStore{
-		vectorDelErr: fmt.Errorf("qdrant unreachable"),
-	}
-	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store, nil)
-	if err != nil {
-		t.Fatalf("InitObservationSkills: %v", err)
-	}
-
-	var forgetSkill *Skill
-	for _, s := range skills {
-		if s.Name == "forget_observation" {
-			forgetSkill = s
-			break
-		}
-	}
-
-	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
-	validUUID := "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
-	input, _ := json.Marshal(forgetObservationInput{ID: validUUID})
-	result, err := forgetSkill.Execute(ctx, input)
-	if err != nil {
-		t.Fatalf("expected success (vector cleanup is best-effort), got error: %v", err)
-	}
-	if !strings.Contains(result, "vector cleanup failed") {
-		t.Errorf("result = %q, want it to mention vector cleanup failure", result)
-	}
-	if !strings.Contains(result, "Deleted") {
-		t.Errorf("result = %q, want it to confirm deletion", result)
-	}
-}
-
 func TestForgetObservation_Success(t *testing.T) {
 	store := &mockObservationStore{}
 	db := newTestObservationDB(t)
@@ -631,14 +615,11 @@ func TestForgetObservation_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(result, "Deleted observation") {
-		t.Errorf("result = %q, want 'Deleted observation'", result)
+	if !strings.Contains(result, "Archived observation") {
+		t.Errorf("result = %q, want 'Archived observation'", result)
 	}
-	if store.deletedID != validUUID {
-		t.Errorf("deletedID = %q, want %q", store.deletedID, validUUID)
-	}
-	if store.vectorDeleted != validUUID {
-		t.Errorf("vectorDeleted = %q, want %q", store.vectorDeleted, validUUID)
+	if !strings.Contains(result, "restore_observation") {
+		t.Errorf("result = %q, want it to mention restore_observation", result)
 	}
 }
 

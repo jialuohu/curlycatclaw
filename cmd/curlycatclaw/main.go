@@ -551,6 +551,8 @@ func run(configPath string) error {
 					skillReg.Register(s)
 				}
 			}
+			// Register supersede_observation skill (requires richer store interface).
+			skillReg.Register(skills.InitSupersedeSkill(skillObsStore))
 		}
 	}
 	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber, observer, obsStore)
@@ -863,6 +865,52 @@ func (a *obsSkillAdapter) DeleteObservationVector(ctx context.Context, id string
 		return nil
 	}
 	return a.vs.DeleteObservationVector(ctx, id)
+}
+
+func (a *obsSkillAdapter) ArchiveObservation(id string, userID int64) error {
+	return a.store.ArchiveObservation(id, userID)
+}
+
+func (a *obsSkillAdapter) RestoreObservation(id string, userID int64) error {
+	return a.store.RestoreObservation(id, userID)
+}
+
+func (a *obsSkillAdapter) UpdateObservation(id string, userID int64, title, summary, obsType string, importance int) error {
+	return a.store.UpdateObservation(id, userID, title, summary, obsType, importance)
+}
+
+func (a *obsSkillAdapter) SaveNewObservation(userID, chatID int64, chatType, obsType, title, summary, contentHash string, facts []string, importance int) (string, error) {
+	obs := memory.Observation{
+		UserID:      userID,
+		ChatID:      chatID,
+		ChatType:    chatType,
+		Type:        obsType,
+		Title:       title,
+		Summary:     summary,
+		Facts:       facts,
+		Importance:  importance,
+		ContentHash: contentHash,
+	}
+	if err := a.store.SaveObservation(&obs); err != nil {
+		return "", err
+	}
+	// Best-effort Qdrant indexing.
+	if a.vs != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := a.vs.IndexObservation(ctx, obs); err != nil {
+			slog.Warn("supersede: vector index failed", "err", err, "obs", obs.ID)
+		}
+	}
+	return obs.ID, nil
+}
+
+func (a *obsSkillAdapter) AddObservationRelation(sourceID, targetID, relationType string, confidence float64, userID int64) error {
+	return a.store.AddObservationRelation(sourceID, targetID, relationType, confidence, userID)
+}
+
+func (a *obsSkillAdapter) ObservationExistsByHash(userID int64, hash string) (bool, error) {
+	return a.store.ObservationExistsByHash(userID, hash)
 }
 
 // entitySkillAdapter bridges the skills.EntityStore interface to memory.Store.

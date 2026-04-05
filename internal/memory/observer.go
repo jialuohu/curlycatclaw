@@ -35,11 +35,20 @@ entities: Extract mentioned people, projects, files, or tools. Only include enti
 
 importance scale: 1=trivial preference, 5=standard decision, 8=major project milestone, 10=life-changing decision.
 
+SUPERSESSION DETECTION:
+If existing observations are listed below under "Existing project_state observations",
+check whether any new observation you extract supersedes or contradicts one of them.
+If so, include a "relations" field in that observation:
+  "relations": [{"target_id": "uuid-from-list", "type": "supersedes", "confidence": 0.9}]
+Only emit relations when you are confident (>=0.7). Types: "supersedes" (new replaces old) or "contradicts" (new conflicts with old).
+
 RESPOND WITH ONLY A JSON ARRAY. No explanation, no preamble, no markdown. Start your response with [ and end with ].
 If nothing meaningful happened, return [].
 Do NOT extract the same event twice. Check the "already captured" list below.`
 
 const observerUserPromptTemplate = "Recent conversation segment:\n%s\n\nAlready captured in this conversation (do not duplicate):\n%s"
+
+const observerExistingObsTemplate = "\n\nExisting project_state observations (check for supersession):\n%s"
 
 // minTranscriptChars is the minimum transcript length required to attempt extraction.
 const minTranscriptChars = 200
@@ -48,9 +57,19 @@ const minTranscriptChars = 200
 type ObserverStore interface {
 	SaveObservation(obs *Observation) error
 	GetRecentObservationTitles(convID string, limit int) ([]string, error)
+	GetRecentObservationsByType(userID int64, obsType string, limit int) ([]Observation, error)
 	ObservationExistsByHash(userID int64, hash string) (bool, error)
 	CountObservations(convID string) (int, error)
 	GetMessagesSinceRowid(convID string, afterRowid, upToRowid int64) ([]Message, error)
+}
+
+// ExtractedRelation holds a supersession/contradiction relation emitted by Claude
+// during extraction. The caller is responsible for persisting it via AddObservationRelation.
+type ExtractedRelation struct {
+	SourceObsID string  // the newly created observation
+	TargetID    string  // existing observation being superseded/contradicted
+	Type        string  // "supersedes" or "contradicts"
+	Confidence  float64 // 0.0-1.0
 }
 
 // ObservationExtractor extracts structured observations from conversation
@@ -70,7 +89,8 @@ func NewObservationExtractor(
 }
 
 // Extract loads recent messages, asks Claude to extract observations, validates
-// and deduplicates the results, and saves them. Returns the saved observations.
+// and deduplicates the results, and saves them. Returns the saved observations
+// and any supersession/contradiction relations emitted by Claude.
 func (e *ObservationExtractor) Extract(
 	ctx context.Context,
 	convID string,
@@ -79,21 +99,21 @@ func (e *ObservationExtractor) Extract(
 	afterRowid, upToRowid int64,
 	maxPerConv int,
 	maxTranscriptChars int,
-) ([]Observation, error) {
+) ([]Observation, []ExtractedRelation, error) {
 	messages, err := e.store.GetMessagesSinceRowid(convID, afterRowid, upToRowid)
 	if err != nil {
-		return nil, fmt.Errorf("observer: load messages: %w", err)
+		return nil, nil, fmt.Errorf("observer: load messages: %w", err)
 	}
 
 	transcript := FormatTranscriptWithLimit(messages, maxTranscriptChars)
 
 	if len([]rune(transcript)) < minTranscriptChars {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	titles, err := e.store.GetRecentObservationTitles(convID, 50)
 	if err != nil {
-		return nil, fmt.Errorf("observer: load titles: %w", err)
+		return nil, nil, fmt.Errorf("observer: load titles: %w", err)
 	}
 
 	alreadyCaptured := "none"
@@ -102,19 +122,40 @@ func (e *ObservationExtractor) Extract(
 	}
 
 	userPrompt := fmt.Sprintf(observerUserPromptTemplate, transcript, alreadyCaptured)
+
+	// Load existing project_state observations for supersession detection.
+	existingObs, err := e.store.GetRecentObservationsByType(userID, "project_state", 10)
+	if err != nil {
+		slog.Warn("observer: failed to load existing observations for supersession", "error", err)
+		// Non-fatal: extraction proceeds without supersession context.
+	} else if len(existingObs) > 0 {
+		var lines []string
+		for _, o := range existingObs {
+			lines = append(lines, fmt.Sprintf("- [%s] %s: %s", o.ID, o.Title, o.Summary))
+		}
+		userPrompt += fmt.Sprintf(observerExistingObsTemplate, strings.Join(lines, "\n"))
+	}
+
+	// Build set of valid existing observation IDs for relation target validation.
+	validTargetIDs := make(map[string]bool, len(existingObs))
+	for _, o := range existingObs {
+		validTargetIDs[o.ID] = true
+	}
+
 	resp, err := e.send(ctx, observerSystemPrompt, userPrompt)
 	if err != nil {
-		return nil, fmt.Errorf("observer: claude call: %w", err)
+		return nil, nil, fmt.Errorf("observer: claude call: %w", err)
 	}
 
 	raw, err := parseObservationJSON(resp)
 	if err != nil {
 		slog.Warn("observer: invalid JSON from Claude", "error", err, "conv_id", convID)
-		return nil, nil // bad JSON is not a fatal error
+		return nil, nil, nil // bad JSON is not a fatal error
 	}
 
 	now := time.Now().UTC()
 	var saved []Observation
+	var relations []ExtractedRelation
 	for _, r := range raw {
 		obs, ok := validateRawObservation(r)
 		if !ok {
@@ -125,7 +166,7 @@ func (e *ObservationExtractor) Extract(
 
 		exists, err := e.store.ObservationExistsByHash(userID, hash)
 		if err != nil {
-			return saved, fmt.Errorf("observer: dedup check: %w", err)
+			return saved, relations, fmt.Errorf("observer: dedup check: %w", err)
 		}
 		if exists {
 			continue
@@ -133,7 +174,7 @@ func (e *ObservationExtractor) Extract(
 
 		count, err := e.store.CountObservations(convID)
 		if err != nil {
-			return saved, fmt.Errorf("observer: count check: %w", err)
+			return saved, relations, fmt.Errorf("observer: count check: %w", err)
 		}
 		if count >= maxPerConv {
 			break
@@ -149,9 +190,34 @@ func (e *ObservationExtractor) Extract(
 		obs.CreatedAt = now
 
 		if err := e.store.SaveObservation(&obs); err != nil {
-			return saved, fmt.Errorf("observer: save: %w", err)
+			return saved, relations, fmt.Errorf("observer: save: %w", err)
 		}
 		saved = append(saved, obs)
+
+		// Collect validated relations emitted by Claude.
+		for _, rel := range r.Relations {
+			if !validTargetIDs[rel.TargetID] {
+				slog.Warn("observer: ignoring relation with invalid target_id",
+					"target_id", rel.TargetID, "obs_id", obs.ID)
+				continue
+			}
+			if rel.Type != "supersedes" && rel.Type != "contradicts" {
+				continue
+			}
+			conf := rel.Confidence
+			if conf < 0 {
+				conf = 0
+			}
+			if conf > 1 {
+				conf = 1
+			}
+			relations = append(relations, ExtractedRelation{
+				SourceObsID: obs.ID,
+				TargetID:    rel.TargetID,
+				Type:        rel.Type,
+				Confidence:  conf,
+			})
+		}
 	}
 
 	// Instrumentation: log extraction metrics.
@@ -168,6 +234,7 @@ func (e *ObservationExtractor) Extract(
 		"parsed", len(raw),
 		"saved", len(saved),
 		"dedup_hits", dupCount,
+		"relations_emitted", len(relations),
 		"types", typeCounts,
 		"avg_importance", func() float64 {
 			if len(saved) == 0 {
@@ -177,23 +244,31 @@ func (e *ObservationExtractor) Extract(
 		}(),
 	)
 
-	return saved, nil
+	return saved, relations, nil
 }
 
 // rawObservation is the JSON shape returned by Claude.
 type rawObservation struct {
-	Type       string      `json:"type"`
-	Title      string      `json:"title"`
-	Summary    string      `json:"summary"`
-	Facts      []string    `json:"facts"`
-	Importance int         `json:"importance"`
-	Entities   []rawEntity `json:"entities"`
+	Type       string        `json:"type"`
+	Title      string        `json:"title"`
+	Summary    string        `json:"summary"`
+	Facts      []string      `json:"facts"`
+	Importance int           `json:"importance"`
+	Entities   []rawEntity   `json:"entities"`
+	Relations  []rawRelation `json:"relations,omitempty"`
 }
 
 // rawEntity is the JSON shape for entities returned by Claude.
 type rawEntity struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+// rawRelation is the JSON shape for supersession/contradiction relations.
+type rawRelation struct {
+	TargetID   string  `json:"target_id"`
+	Type       string  `json:"type"`       // "supersedes" or "contradicts"
+	Confidence float64 `json:"confidence"` // 0.0-1.0
 }
 
 // parseObservationJSON extracts a []rawObservation from Claude's response,

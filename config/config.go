@@ -217,7 +217,7 @@ func Load(path string) (*Config, error) {
 				RetrievalLimit:        8,
 				ScoreThreshold:        0.3,
 				HybridSearch:          false,
-				SupersessionThreshold: 0.85,
+				SupersessionThreshold: 0.8,
 				ProgressiveRetrieval:  false,
 				CompactLimit:          15,
 				ExpandedLimit:         3,

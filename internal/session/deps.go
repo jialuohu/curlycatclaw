@@ -83,6 +83,14 @@ type ObservationStore interface {
 	SearchObservationsFTS(query string, userID int64, limit int) ([]memory.FTSResult, error)
 	ObservationTextsAfter(afterID int64, limit int) ([]memory.MigrationText, int64, error)
 	AllObservations(limit int) ([]memory.Observation, error)
+	AddObservationRelation(sourceID, targetID, relationType string, confidence float64, userID int64) error
+	GetSupersededObservationIDs(userID int64, confidenceThreshold float64) (map[string]bool, error)
+	GetRecentObservationsByType(userID int64, obsType string, limit int) ([]memory.Observation, error)
+	ArchiveObservation(id string, userID int64) error
+	RestoreObservation(id string, userID int64) error
+	UpdateObservation(id string, userID int64, title, summary, obsType string, importance int) error
+	DeleteSupersessionRelation(targetID string, userID int64) error
+	GetSupersessionSourceID(targetID string, userID int64) (string, error)
 }
 
 // CLIClient abstracts the CLI subprocess manager for testing.

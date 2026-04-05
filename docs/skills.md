@@ -17,7 +17,10 @@
 | `search_observations` | Search extracted observations by meaning (requires Qdrant) |
 | `list_observations` | List all observations Claude has extracted about you |
 | `get_observation` | Get full details of a specific observation by ID |
-| `forget_observation` | Remove an extracted observation by ID |
+| `forget_observation` | Archive an observation (soft delete, restorable via restore_observation) |
+| `restore_observation` | Restore a previously archived observation |
+| `update_observation` | Edit title, summary, type, or importance of an existing observation |
+| `supersede_observation` | Replace an outdated observation with corrected information |
 | `search_entities` | Search for people, projects, files, or tools mentioned in observations |
 | `install_plugin` | Install a Claude Code plugin (auto-searches for marketplace) |
 | `uninstall_plugin` | Uninstall a Claude Code plugin |
