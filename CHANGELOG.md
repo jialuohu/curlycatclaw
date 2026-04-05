@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.26.0] - 2026-04-05
+
+Multi-account Google Workspace. Use multiple Google accounts through a single GWS MCP server with per-account service restrictions. Claude picks the right account for each operation.
+
+### Added
+- **Multi-account GWS support**: configure multiple Google accounts via `GWS_ACCOUNT_*` env vars instead of duplicating MCP server entries
+- **Per-account service filtering**: `GWS_ACCOUNT_<NAME>_SERVICES` restricts which Google services each account can access (e.g., Gmail only for secondary accounts)
+- **`gws_list_accounts` tool**: Claude can query available accounts, their default, and service permissions
+- **Account parameter on all GWS tools**: optional `account` field on every tool for explicit account selection
+- **`send_file` skill**: Claude can send files (documents, exports, reports) to the user in Telegram
+
+### Changed
+- **`ResolveAccount` returns resolved name**: callers always know which account was selected (needed for service validation)
+- **`ExecuteHelper`/`ExecuteAPI` accept env overrides**: per-call `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` for account switching
+- **`run()` builds deduped `cmd.Env`**: parent env vars overridden by account-specific values without duplicates
+- **`reservedFlags` includes `account`**: defense-in-depth prevents `--account` from leaking as a gws CLI flag
+
 ## [0.25.0] - 2026-04-05
 
 Thinking effort control. Configure Claude's reasoning depth via config or Telegram commands. Higher effort means deeper thinking on complex tasks.
