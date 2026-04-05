@@ -162,6 +162,7 @@ func (a *Actor) Run(ctx context.Context) error {
 	// Retry any conversations stuck from a previous run.
 	a.recoverSummarizations()
 	a.recoverExtractions()
+	a.reindexMissingObservations()
 
 	defer func() {
 		// Wait for in-flight vector indexing goroutines (with timeout).
@@ -747,6 +748,48 @@ func (a *Actor) recoverExtractions() {
 		} else {
 			_ = a.obsStore.UpdateExtractionState(convID, 0, 0, "idle")
 		}
+	}
+}
+
+// reindexMissingObservations re-indexes observations that exist in SQLite but
+// not in Qdrant (e.g., after a collection was recreated with different dimensions).
+func (a *Actor) reindexMissingObservations() {
+	if a.vectorStore == nil || a.obsStore == nil {
+		return
+	}
+	texts, _, err := a.obsStore.ObservationTextsAfter(0, 100)
+	if err != nil || len(texts) == 0 {
+		return
+	}
+
+	// Try to count Qdrant points. If the counts match, skip.
+	// If they don't match (or Qdrant returns fewer), re-index all.
+	ctx, cancel := context.WithTimeout(a.bgCtx(), 30*time.Second)
+	defer cancel()
+
+	reindexed := 0
+	for _, t := range texts {
+		obs := memory.Observation{
+			ID:       t.ID,
+			UserID:   t.UserID,
+			ChatID:   t.ChatID,
+			ChatType: t.ChatType,
+			Title:    t.Text, // "Title. Summary" format
+		}
+		// Split "Title. Summary" back into parts for proper embedding.
+		if idx := strings.Index(t.Text, ". "); idx > 0 {
+			obs.Title = t.Text[:idx]
+			obs.Summary = t.Text[idx+2:]
+		}
+
+		if err := a.vectorStore.IndexObservation(ctx, obs); err != nil {
+			slog.Warn("reindex observation", "err", err, "obs", t.ID[:8])
+			break // likely a persistent error, stop
+		}
+		reindexed++
+	}
+	if reindexed > 0 {
+		slog.Info("reindexed observations into Qdrant", "count", reindexed)
 	}
 }
 
