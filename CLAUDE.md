@@ -61,7 +61,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 
 **Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control.
 
-**MCP & tools**: MCP Manager holds persistent stdio connections. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools.
+**MCP & tools**: MCP Manager holds persistent stdio connections. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
 
 **Memory**: Four tiers: user facts (always), observations (Qdrant + FTS5 hybrid search), conversation summaries (Qdrant), sliding window (25 turns). Observation extraction auto-triggers after idle. Self-healing supersession detects stale project_state. Soft delete with archive/restore.
 
@@ -107,7 +107,8 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/skillloader/loader.go` | External skill collection loader (exec adapter) |
 | `internal/memory/migration.go` | Background embedding migration manager (backfill, catch-up, alias swap) |
 | `cmd/curlycatclaw/migrate.go` | CLI embedder migration tool (manual fallback, versioned collections + aliases) |
-| `cmd/curlycatclaw-gws-mcp/` | Standalone MCP server for Google Workspace via gws CLI |
+| `skills/send_file.go` | Send file skill (Telegram document delivery) |
+| `cmd/curlycatclaw-gws-mcp/` | Standalone MCP server for Google Workspace via gws CLI (multi-account, per-account service filtering) |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
 | `docker-compose.yml` | curlycatclaw + Qdrant + Ollama orchestration |
 | `.goreleaser.yml` | Release automation (binaries, checksums, Docker images) |
@@ -118,7 +119,7 @@ Copy `config.toml.example` to `~/.curlycatclaw/config.toml` and fill in credenti
 
 Auth modes: `cli_path` + `oauth_token` (Claude subscription via CLI subprocess) or `api_key` (direct API). CLI mode uses `oauth_token` from `claude setup-token` injected as `CLAUDE_CODE_OAUTH_TOKEN` env var.
 
-For Google Workspace, export credentials on a machine with a browser (`gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json`) and set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = "/data/gws-credentials.json"` in `[mcp.servers.env]`.
+For Google Workspace, export credentials on a machine with a browser (`gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json`). Single-account: set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` in `[mcp.servers.env]`. Multi-account: use `GWS_ACCOUNT_<NAME>` env vars with optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions and `GWS_DEFAULT_ACCOUNT`. See `config.toml.example`.
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 

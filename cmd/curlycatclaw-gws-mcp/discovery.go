@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -358,7 +359,7 @@ func cleanDash(s string) string {
 
 // registerHelperTool registers a gws helper command as an MCP tool.
 func registerHelperTool(server *mcp.Server, e *Executor, skill skillInfo) {
-	schema := buildInputSchema(skill.Flags)
+	schema := injectAccountField(buildInputSchema(skill.Flags), e.Accounts, e.DefaultAccount)
 
 	toolName := strings.ReplaceAll(skill.Name, "-", "_")
 	tool := &mcp.Tool{
@@ -381,6 +382,16 @@ func registerHelperTool(server *mcp.Server, e *Executor, skill skillInfo) {
 		req *mcp.CallToolRequest,
 		input map[string]any,
 	) (*mcp.CallToolResult, gwsToolOutput, error) {
+		// Resolve account and validate service access.
+		accountInput, _ := input["account"].(string)
+		resolvedName, credPath, err := e.ResolveAccount(accountInput)
+		if err != nil {
+			return errResult(err.Error()), gwsToolOutput{}, nil
+		}
+		if err := e.ValidateService(resolvedName, svc); err != nil {
+			return errResult(err.Error()), gwsToolOutput{}, nil
+		}
+
 		// Strip any input keys not in the discovered flag set.
 		filtered := make(map[string]any, len(input))
 		for k, v := range input {
@@ -388,7 +399,7 @@ func registerHelperTool(server *mcp.Server, e *Executor, skill skillInfo) {
 				filtered[k] = v
 			}
 		}
-		result, err := e.ExecuteHelper(ctx, svc, helper, filtered)
+		result, err := e.ExecuteHelper(ctx, svc, helper, filtered, AccountEnv(credPath))
 		if err != nil {
 			return errResult(err.Error()), gwsToolOutput{}, nil
 		}
@@ -398,7 +409,7 @@ func registerHelperTool(server *mcp.Server, e *Executor, skill skillInfo) {
 
 // registerGenericTool registers the gws_api escape hatch tool.
 func registerGenericTool(server *mcp.Server, e *Executor) {
-	schema := json.RawMessage(`{
+	schema := injectAccountField(json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"service":  {"type": "string", "description": "Google Workspace service (e.g. gmail, calendar, drive, sheets, docs)"},
@@ -408,7 +419,7 @@ func registerGenericTool(server *mcp.Server, e *Executor) {
 			"body":     {"type": "object", "description": "Request body as key-value pairs (passed via --json JSON)"}
 		},
 		"required": ["service", "method"]
-	}`)
+	}`), e.Accounts, e.DefaultAccount)
 
 	tool := &mcp.Tool{
 		Name:        "gws_api",
@@ -421,6 +432,13 @@ func registerGenericTool(server *mcp.Server, e *Executor) {
 		req *mcp.CallToolRequest,
 		input map[string]any,
 	) (*mcp.CallToolResult, gwsToolOutput, error) {
+		// Resolve account and validate service access.
+		accountInput, _ := input["account"].(string)
+		resolvedName, credPath, err := e.ResolveAccount(accountInput)
+		if err != nil {
+			return errResult(err.Error()), gwsToolOutput{}, nil
+		}
+
 		service, _ := input["service"].(string)
 		resource, _ := input["resource"].(string)
 		method, _ := input["method"].(string)
@@ -429,15 +447,93 @@ func registerGenericTool(server *mcp.Server, e *Executor) {
 			return errResult("service and method are required"), gwsToolOutput{}, nil
 		}
 
+		if err := e.ValidateService(resolvedName, service); err != nil {
+			return errResult(err.Error()), gwsToolOutput{}, nil
+		}
+
 		params := toStringMap(input["params"])
 		body := toStringMap(input["body"])
 
-		result, err := e.ExecuteAPI(ctx, service, resource, method, params, body)
+		result, err := e.ExecuteAPI(ctx, service, resource, method, params, body, AccountEnv(credPath))
 		if err != nil {
 			return errResult(err.Error()), gwsToolOutput{}, nil
 		}
 		return nil, gwsToolOutput{Text: result}, nil
 	})
+}
+
+// registerAccountsTool registers a read-only tool that lists available accounts.
+func registerAccountsTool(server *mcp.Server, accounts map[string]string, defaultAccount string, services map[string][]string) {
+	schema := json.RawMessage(`{"type": "object", "properties": {}}`)
+	tool := &mcp.Tool{
+		Name:        "gws_list_accounts",
+		Description: "List available Google Workspace accounts and the default.",
+		InputSchema: schema,
+	}
+
+	mcp.AddTool(server, tool, func(
+		ctx context.Context,
+		req *mcp.CallToolRequest,
+		input map[string]any,
+	) (*mcp.CallToolResult, gwsToolOutput, error) {
+		type accountInfo struct {
+			Name      string   `json:"name"`
+			IsDefault bool     `json:"is_default,omitempty"`
+			Services  []string `json:"services"` // explicit list, or ["all"] for unrestricted
+		}
+		var list []accountInfo
+		for name := range accounts {
+			ai := accountInfo{Name: name, IsDefault: name == defaultAccount}
+			if svcs, ok := services[name]; ok {
+				ai.Services = svcs
+			} else {
+				ai.Services = []string{"all"}
+			}
+			list = append(list, ai)
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+		data, _ := json.Marshal(list)
+		return nil, gwsToolOutput{Text: string(data)}, nil
+	})
+}
+
+// injectAccountField adds an optional "account" property to a JSON schema
+// when multi-account mode is active (accounts map is non-empty).
+// Returns the schema unchanged if accounts is nil or empty.
+func injectAccountField(schema json.RawMessage, accounts map[string]string, defaultAccount string) json.RawMessage {
+	if len(accounts) == 0 {
+		return schema
+	}
+
+	var s map[string]any
+	if err := json.Unmarshal(schema, &s); err != nil {
+		return schema
+	}
+
+	props, _ := s["properties"].(map[string]any)
+	if props == nil {
+		props = make(map[string]any)
+		s["properties"] = props
+	}
+
+	names := make([]string, 0, len(accounts))
+	for k := range accounts {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	desc := fmt.Sprintf("Google account to use. Available: %s. Default: %s",
+		strings.Join(names, ", "), defaultAccount)
+	props["account"] = map[string]any{
+		"type":        "string",
+		"description": desc,
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		return schema
+	}
+	return data
 }
 
 // buildInputSchema creates a JSON schema from flag definitions as json.RawMessage.

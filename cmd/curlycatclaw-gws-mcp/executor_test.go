@@ -98,12 +98,12 @@ func TestValidArg(t *testing.T) {
 func TestExecuteHelper_ArgumentInjection(t *testing.T) {
 	e := &Executor{GWSPath: "gws", Timeout: time.Second}
 
-	_, err := e.ExecuteHelper(context.Background(), "--config", "+send", nil)
+	_, err := e.ExecuteHelper(context.Background(), "--config", "+send", nil, nil)
 	if err == nil {
 		t.Error("expected error for injected service")
 	}
 
-	_, err = e.ExecuteHelper(context.Background(), "gmail", "--format json", nil)
+	_, err = e.ExecuteHelper(context.Background(), "gmail", "--format json", nil, nil)
 	if err == nil {
 		t.Error("expected error for injected helper")
 	}
@@ -112,12 +112,12 @@ func TestExecuteHelper_ArgumentInjection(t *testing.T) {
 func TestExecuteAPI_ArgumentInjection(t *testing.T) {
 	e := &Executor{GWSPath: "gws", Timeout: time.Second}
 
-	_, err := e.ExecuteAPI(context.Background(), "--config", "", "list", nil, nil)
+	_, err := e.ExecuteAPI(context.Background(), "--config", "", "list", nil, nil, nil)
 	if err == nil {
 		t.Error("expected error for injected service")
 	}
 
-	_, err = e.ExecuteAPI(context.Background(), "drive", "files", "--format table", nil, nil)
+	_, err = e.ExecuteAPI(context.Background(), "drive", "files", "--format table", nil, nil, nil)
 	if err == nil {
 		t.Error("expected error for injected method")
 	}
@@ -185,7 +185,7 @@ echo '{"result": "ok"}'
 		"to":      "alice@example.com",
 		"subject": "Test",
 		"body":    "Hello",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -210,7 +210,7 @@ sleep 10
 
 	e := &Executor{GWSPath: script, Timeout: 100 * time.Millisecond}
 
-	_, err = e.ExecuteHelper(context.Background(), "test", "+slow", nil)
+	_, err = e.ExecuteHelper(context.Background(), "test", "+slow", nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -236,12 +236,204 @@ exit 1
 
 	e := &Executor{GWSPath: script, Timeout: 5 * time.Second}
 
-	_, err = e.ExecuteHelper(context.Background(), "test", "+fail", nil)
+	_, err = e.ExecuteHelper(context.Background(), "test", "+fail", nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "something went wrong") {
 		t.Errorf("error = %q, expected stderr message", err)
+	}
+}
+
+func TestResolveAccount_Default(t *testing.T) {
+	e := &Executor{
+		Accounts:       map[string]string{"personal": "/data/p.json", "work": "/data/w.json"},
+		DefaultAccount: "personal",
+	}
+	name, path, err := e.ResolveAccount("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "personal" {
+		t.Errorf("name = %q, want personal", name)
+	}
+	if path != "/data/p.json" {
+		t.Errorf("path = %q, want /data/p.json", path)
+	}
+}
+
+func TestResolveAccount_Named(t *testing.T) {
+	e := &Executor{
+		Accounts:       map[string]string{"personal": "/data/p.json", "work": "/data/w.json"},
+		DefaultAccount: "personal",
+	}
+	name, path, err := e.ResolveAccount("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "work" {
+		t.Errorf("name = %q, want work", name)
+	}
+	if path != "/data/w.json" {
+		t.Errorf("path = %q, want /data/w.json", path)
+	}
+}
+
+func TestResolveAccount_Unknown(t *testing.T) {
+	e := &Executor{
+		Accounts:       map[string]string{"personal": "/data/p.json", "work": "/data/w.json"},
+		DefaultAccount: "personal",
+	}
+	_, _, err := e.ResolveAccount("wrok")
+	if err == nil {
+		t.Fatal("expected error for unknown account")
+	}
+	if !strings.Contains(err.Error(), "wrok") {
+		t.Errorf("error should mention the bad name, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "personal") || !strings.Contains(err.Error(), "work") {
+		t.Errorf("error should list available accounts, got: %v", err)
+	}
+}
+
+func TestResolveAccount_NoAccounts(t *testing.T) {
+	e := &Executor{}
+	name, path, err := e.ResolveAccount("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "" || path != "" {
+		t.Errorf("want empty name and path, got name=%q path=%q", name, path)
+	}
+}
+
+func TestValidateService_Allowed(t *testing.T) {
+	e := &Executor{
+		Accounts: map[string]string{"a": "/a.json", "b": "/b.json"},
+		Services: map[string][]string{"a": {"gmail", "calendar"}, "b": {"gmail"}},
+	}
+	if err := e.ValidateService("a", "gmail"); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+}
+
+func TestValidateService_Denied(t *testing.T) {
+	e := &Executor{
+		Accounts: map[string]string{"a": "/a.json", "b": "/b.json"},
+		Services: map[string][]string{"a": {"gmail", "calendar"}, "b": {"gmail"}},
+	}
+	err := e.ValidateService("b", "calendar")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "does not support calendar") {
+		t.Errorf("error should mention denied service, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "a") {
+		t.Errorf("error should list accounts with calendar access, got: %v", err)
+	}
+}
+
+func TestValidateService_NoRestrictions(t *testing.T) {
+	e := &Executor{Accounts: map[string]string{"a": "/a.json"}}
+	if err := e.ValidateService("a", "calendar"); err != nil {
+		t.Errorf("nil services should allow everything, got %v", err)
+	}
+}
+
+func TestValidateService_AccountNotInMap(t *testing.T) {
+	e := &Executor{
+		Accounts: map[string]string{"a": "/a.json", "b": "/b.json"},
+		Services: map[string][]string{"a": {"gmail"}},
+	}
+	// "b" has no entry in Services, should be allowed for anything.
+	if err := e.ValidateService("b", "calendar"); err != nil {
+		t.Errorf("account without services entry should allow everything, got %v", err)
+	}
+}
+
+func TestValidateService_DefaultAccountDenied(t *testing.T) {
+	e := &Executor{
+		Accounts:       map[string]string{"limited": "/l.json", "full": "/f.json"},
+		DefaultAccount: "limited",
+		Services:       map[string][]string{"limited": {"gmail"}},
+	}
+	err := e.ValidateService("limited", "drive")
+	if err == nil {
+		t.Fatal("expected error for default account lacking service")
+	}
+	if !strings.Contains(err.Error(), "full") {
+		t.Errorf("error should suggest unrestricted account, got: %v", err)
+	}
+}
+
+func TestAccountEnv(t *testing.T) {
+	env := AccountEnv("/data/creds.json")
+	if env == nil {
+		t.Fatal("expected non-nil env")
+	}
+	if env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] != "/data/creds.json" {
+		t.Errorf("wrong credential path: %v", env)
+	}
+
+	if AccountEnv("") != nil {
+		t.Error("expected nil env for empty path")
+	}
+}
+
+func TestRun_EnvOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gws")
+	// Print the credential env var so we can verify it was set.
+	err := os.WriteFile(script, []byte(`#!/bin/sh
+echo "$GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"
+`), 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Executor{GWSPath: script, Timeout: 5 * time.Second}
+	result, err := e.ExecuteHelper(context.Background(), "gmail", "+send", nil,
+		map[string]string{"GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE": "/data/work.json"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "/data/work.json") {
+		t.Errorf("env override not applied, got: %q", result)
+	}
+}
+
+func TestRun_NilOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gws")
+	err := os.WriteFile(script, []byte(`#!/bin/sh
+echo "ok"
+`), 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Executor{GWSPath: script, Timeout: 5 * time.Second}
+	result, err := e.ExecuteHelper(context.Background(), "gmail", "+send", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "ok") {
+		t.Errorf("unexpected result: %q", result)
+	}
+}
+
+func TestReservedFlags_Account(t *testing.T) {
+	if !reservedFlags["account"] {
+		t.Error("\"account\" should be in reservedFlags")
 	}
 }
 
@@ -263,7 +455,7 @@ echo "$@"
 	e := &Executor{GWSPath: script, Timeout: 5 * time.Second}
 
 	result, err := e.ExecuteAPI(context.Background(), "drive", "files", "list",
-		map[string]any{"pageSize": float64(10)}, nil)
+		map[string]any{"pageSize": float64(10)}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

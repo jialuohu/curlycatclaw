@@ -67,6 +67,23 @@ GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = "/data/gws-credentials.json"
 
 Rebuild and restart: `docker compose build curlycatclaw && docker compose up -d`
 
+### Multi-account GWS
+
+To use multiple Google accounts through a single GWS MCP server, replace `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` with `GWS_ACCOUNT_*` env vars:
+
+```toml
+[mcp.servers.env]
+GWS_PATH = "gws"
+GWS_ACCOUNT_PERSONAL          = "/data/gws-credentials.json"
+GWS_ACCOUNT_PERSONAL_SERVICES = "gmail,calendar,drive,sheets,docs,slides,tasks"
+GWS_ACCOUNT_WORK              = "/data/gws-work-credentials.json"
+GWS_ACCOUNT_WORK_SERVICES     = "gmail"
+GWS_DEFAULT_ACCOUNT           = "personal"
+GWS_FILTER = "gmail_*,calendar_*,drive_*,sheets_*,docs_*,slides_*,tasks_*"
+```
+
+Export credentials for each account separately. `_SERVICES` is optional (omit for full access). Claude picks the right account per request via the `account` parameter on every tool, or uses the default. Use `gws_list_accounts` to query available accounts.
+
 ## GitHub (optional)
 
 Access repos, PRs, CI status, issues, and releases from Telegram. Create a [Personal Access Token](https://github.com/settings/tokens) (classic PAT with `repo` scope recommended for private repo access), then add to `config.toml`:

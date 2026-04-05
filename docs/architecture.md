@@ -35,7 +35,7 @@
 
 Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s -> 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit.
 
-The MCP Manager maintains persistent stdio connections to configured servers (Google Workspace, GitHub) and runtime extensions (scrapling-mcp, fetch, etc.). In CLI mode, extensions are proxied through the curlycatclaw-skills MCP subprocess with hot-reload via `AddTool()`/`RemoveTools()`. Environment variables pass through a three-layer allowlist (subprocess -> MCP server -> extension) to prevent secret leakage while allowing necessary config like `PLAYWRIGHT_BROWSERS_PATH`.
+The MCP Manager maintains persistent stdio connections to configured servers (Google Workspace, GitHub) and runtime extensions (scrapling-mcp, fetch, etc.). In CLI mode, extensions are proxied through the curlycatclaw-skills MCP subprocess with hot-reload via `AddTool()`/`RemoveTools()`. Environment variables pass through a three-layer allowlist (subprocess -> MCP server -> extension) to prevent secret leakage while allowing necessary config like `PLAYWRIGHT_BROWSERS_PATH`. The GWS MCP server supports multi-account mode via `GWS_ACCOUNT_*` env vars, with per-call credential switching (`cmd.Env` override) and optional per-account service filtering (`GWS_ACCOUNT_<NAME>_SERVICES`). A `gws_list_accounts` tool lets Claude discover available accounts and their service permissions.
 
 ## Streaming Pipeline
 
@@ -118,6 +118,7 @@ Claude tool_use ──► skills.Registry.Get(name)
 ├──────────────────┼───────────────────┼──────────────────────┤
 │  web_search      │  Config servers:  │  Capability-gated:   │
 │  save_note       │  server__tool     │  ├ http (SSRF block) │
+│  send_file       │  (multi-account)  │                      │
 │  set_reminder    │                   │  ├ db_read (enforced │
 │  remember_fact   │  Runtime exts:    │  │  :user_id scoping,│
 │  semantic_search │  ext__tool (proxy)│  │  UNION blocked)   │
