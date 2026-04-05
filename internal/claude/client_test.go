@@ -13,6 +13,8 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/jialuohu/curlycatclaw/config"
 )
 
 // ---------- test helpers ----------
@@ -369,5 +371,73 @@ func TestSendStreaming_EmptyResponse(t *testing.T) {
 	}
 	if resp.StopReason != "end_turn" {
 		t.Errorf("stop_reason = %q, want %q", resp.StopReason, "end_turn")
+	}
+}
+
+func TestApplyThinking_HighEffort(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		MaxTokens: defaultMaxTokens,
+	}
+	applyThinking(&params, "high")
+
+	if params.MaxTokens != defaultMaxTokens+10_000 {
+		t.Errorf("MaxTokens = %d, want %d", params.MaxTokens, defaultMaxTokens+10_000)
+	}
+}
+
+func TestApplyThinking_MaxEffort(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		MaxTokens: defaultMaxTokens,
+	}
+	applyThinking(&params, "max")
+
+	if params.MaxTokens != defaultMaxTokens+32_000 {
+		t.Errorf("MaxTokens = %d, want %d", params.MaxTokens, defaultMaxTokens+32_000)
+	}
+}
+
+func TestApplyThinking_NoThinkingForLowMedium(t *testing.T) {
+	for _, e := range []config.Effort{"", "low", "medium"} {
+		params := anthropic.MessageNewParams{
+			MaxTokens: defaultMaxTokens,
+		}
+		applyThinking(&params, e)
+
+		if params.MaxTokens != defaultMaxTokens {
+			t.Errorf("effort=%q: MaxTokens = %d, want %d (unchanged)", e, params.MaxTokens, defaultMaxTokens)
+		}
+	}
+}
+
+func TestApplyThinking_ClampsToModelLimit(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		MaxTokens: maxModelOutputTokens - 1000,
+	}
+	applyThinking(&params, "max") // +32000 would exceed
+
+	if params.MaxTokens != maxModelOutputTokens {
+		t.Errorf("MaxTokens = %d, want %d (clamped)", params.MaxTokens, maxModelOutputTokens)
+	}
+}
+
+func TestBuildResponse_ThinkingBlocks(t *testing.T) {
+	msg := &anthropic.Message{
+		StopReason: "end_turn",
+		Content: []anthropic.ContentBlockUnion{
+			{Type: "thinking", Signature: "sig_abc123", Thinking: "I should think about this..."},
+			{Type: "text", Text: "The answer is 42."},
+		},
+	}
+
+	resp := buildResponse(msg)
+
+	if resp.TextContent != "The answer is 42." {
+		t.Errorf("TextContent = %q, want %q", resp.TextContent, "The answer is 42.")
+	}
+	if len(resp.ThinkingBlocks) != 1 {
+		t.Fatalf("ThinkingBlocks count = %d, want 1", len(resp.ThinkingBlocks))
+	}
+	if resp.ThinkingBlocks[0].Signature != "sig_abc123" {
+		t.Errorf("ThinkingBlocks[0].Signature = %q, want %q", resp.ThinkingBlocks[0].Signature, "sig_abc123")
 	}
 }

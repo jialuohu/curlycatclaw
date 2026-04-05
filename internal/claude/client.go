@@ -9,19 +9,38 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/jialuohu/curlycatclaw/config"
 )
 
 // defaultMaxTokens is used when the caller does not specify a limit.
 const defaultMaxTokens = 8192
+
+// Budget token presets for extended thinking.
+var effortBudget = map[config.Effort]int64{
+	config.EffortHigh: 10_000,
+	config.EffortMax:  32_000,
+}
+
+// maxModelOutputTokens caps MaxTokens to prevent API errors.
+const maxModelOutputTokens = 128_000
 
 // ToolCall represents a single tool invocation requested by the model.
 type ToolCall struct {
 	ID    string          // tool_use block ID (needed for tool_result)
 	Name  string          // tool name
 	Input json.RawMessage // raw JSON arguments
+}
+
+// ThinkingBlock stores a thinking block's signature for conversation history continuity.
+// Only the signature is persisted; the full thinking text is NOT stored to avoid
+// blowing the context window.
+type ThinkingBlock struct {
+	Signature string `json:"signature"`
 }
 
 // Response holds the result of one streaming request-response cycle.
@@ -32,6 +51,8 @@ type Response struct {
 	ToolCalls []ToolCall
 	// StopReason is the reason the model stopped generating.
 	StopReason string
+	// ThinkingBlocks stores signatures from thinking blocks for API history continuity.
+	ThinkingBlocks []ThinkingBlock
 }
 
 // SendParams configures a single SendStreaming call.
@@ -40,6 +61,11 @@ type SendParams struct {
 	SystemPrompt string
 	Tools        []anthropic.ToolUnionParam
 	MaxTokens    int64
+
+	// ThinkingEffort controls extended thinking. "" / "low" / "medium" use
+	// the model default (no extended thinking). "high" / "max" enable
+	// extended thinking with preset budget tokens.
+	ThinkingEffort config.Effort
 
 	// OnPartialText is called with each text delta as it arrives from the
 	// stream. This lets the caller push partial text to the user (e.g.
@@ -84,6 +110,21 @@ func (e *RateLimitError) Unwrap() error {
 	return e.Err
 }
 
+// applyThinking configures thinking and adjusts MaxTokens on reqParams.
+func applyThinking(reqParams *anthropic.MessageNewParams, effort config.Effort) {
+	budget, ok := effortBudget[effort]
+	if !ok {
+		return // no thinking for empty/low/medium
+	}
+	reqParams.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
+	reqParams.MaxTokens += budget
+	if reqParams.MaxTokens > maxModelOutputTokens {
+		slog.Warn("clamping max_tokens to model limit",
+			"requested", reqParams.MaxTokens, "cap", maxModelOutputTokens)
+		reqParams.MaxTokens = maxModelOutputTokens
+	}
+}
+
 // SendStreaming performs one streaming request-response cycle against the
 // Claude API. It accumulates the full response and invokes OnPartialText for
 // each text delta along the way. It does NOT loop on tool_use — the caller
@@ -109,6 +150,8 @@ func (c *Client) SendStreaming(ctx context.Context, params SendParams) (*Respons
 	if len(params.Tools) > 0 {
 		reqParams.Tools = params.Tools
 	}
+
+	applyThinking(&reqParams, params.ThinkingEffort)
 
 	stream := c.sdk.Messages.NewStreaming(ctx, reqParams)
 	defer stream.Close()
@@ -161,6 +204,8 @@ func (c *Client) Send(ctx context.Context, params SendParams) (*Response, error)
 		reqParams.Tools = params.Tools
 	}
 
+	applyThinking(&reqParams, params.ThinkingEffort)
+
 	msg, err := c.sdk.Messages.New(ctx, reqParams)
 	if err != nil {
 		return nil, wrapAPIError(err)
@@ -187,6 +232,10 @@ func buildResponse(msg *anthropic.Message) *Response {
 				ID:    block.ID,
 				Name:  block.Name,
 				Input: block.Input,
+			})
+		case "thinking":
+			resp.ThinkingBlocks = append(resp.ThinkingBlocks, ThinkingBlock{
+				Signature: block.Signature,
 			})
 		}
 	}
