@@ -42,12 +42,32 @@ type ProjectConfig struct {
 	Path string `toml:"path"`
 }
 
+// Effort controls reasoning depth for Claude requests.
+type Effort string
+
+const (
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortMax    Effort = "max"
+)
+
+// ValidEffort returns true if e is a recognized effort level (including empty for default).
+func ValidEffort(e Effort) bool {
+	switch e {
+	case "", EffortLow, EffortMedium, EffortHigh, EffortMax:
+		return true
+	}
+	return false
+}
+
 type ClaudeConfig struct {
 	CLIPath        string   `toml:"cli_path"`        // path to claude binary (CLI subprocess mode)
 	APIKey         string   `toml:"api_key"`         // direct API mode
 	OAuthToken     string   `toml:"oauth_token"`     // long-lived token from `claude setup-token` (CLI mode)
 	Model          string   `toml:"model"`
-	IsolatedHome string `toml:"isolated_home"` // path to isolated Claude home dir for project work
+	ThinkingEffort Effort   `toml:"thinking_effort"` // reasoning depth: low, medium, high, max
+	IsolatedHome   string   `toml:"isolated_home"`   // path to isolated Claude home dir for project work
 }
 
 // UseCLI returns true if CLI subprocess mode is configured.
@@ -270,6 +290,9 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("CURLYCATCLAW_ISOLATED_HOME"); v != "" {
 		c.Claude.IsolatedHome = v
 	}
+	if v := os.Getenv("CURLYCATCLAW_THINKING_EFFORT"); v != "" {
+		c.Claude.ThinkingEffort = Effort(v)
+	}
 	if v := os.Getenv("CURLYCATCLAW_EMBEDDER"); v != "" {
 		c.Vector.Embedder = v
 	}
@@ -286,6 +309,9 @@ func (c *Config) validate() error {
 	}
 	if hasCLI && hasAPIKey {
 		return fmt.Errorf("config: claude.cli_path cannot be combined with api_key")
+	}
+	if !ValidEffort(c.Claude.ThinkingEffort) {
+		return fmt.Errorf("config: claude.thinking_effort must be one of low, medium, high, max; got %q", c.Claude.ThinkingEffort)
 	}
 	if c.Telegram.Token == "" {
 		return fmt.Errorf("config: telegram.token is required")

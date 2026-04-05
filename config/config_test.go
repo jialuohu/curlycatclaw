@@ -686,3 +686,89 @@ func TestLoad_EnvOverridesNotSet(t *testing.T) {
 		t.Errorf("Claude.Model = %q, want %q (from TOML)", cfg.Claude.Model, "claude-sonnet-4-6-20250514")
 	}
 }
+
+func TestValidEffort(t *testing.T) {
+	valid := []Effort{"", EffortLow, EffortMedium, EffortHigh, EffortMax}
+	for _, e := range valid {
+		if !ValidEffort(e) {
+			t.Errorf("ValidEffort(%q) = false, want true", e)
+		}
+	}
+
+	invalid := []Effort{"turbo", "HIGH", "Max", "none", "auto"}
+	for _, e := range invalid {
+		if ValidEffort(e) {
+			t.Errorf("ValidEffort(%q) = true, want false", e)
+		}
+	}
+}
+
+func TestValidate_InvalidThinkingEffort(t *testing.T) {
+	cfg := &Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key", ThinkingEffort: "turbo"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("validate with invalid thinking_effort should return an error")
+	}
+	if !strings.Contains(err.Error(), "thinking_effort") {
+		t.Errorf("error = %q, want it to mention thinking_effort", err.Error())
+	}
+}
+
+func TestValidate_ValidThinkingEffort(t *testing.T) {
+	for _, e := range []Effort{"", "low", "medium", "high", "max"} {
+		cfg := &Config{
+			Timezone: "UTC",
+			Claude:   ClaudeConfig{APIKey: "sk-key", ThinkingEffort: e},
+			Telegram: TGConfig{Token: "tok", AllowAll: true},
+			Storage:  StorageConfig{DBPath: "/data/test.db"},
+		}
+		if err := cfg.validate(); err != nil {
+			t.Errorf("validate with thinking_effort=%q returned error: %v", e, err)
+		}
+	}
+}
+
+func TestLoad_ThinkingEffortFromTOML(t *testing.T) {
+	standalone := `
+timezone = "America/New_York"
+
+[claude]
+api_key = "sk-test-key"
+model   = "claude-sonnet-4-6-20250514"
+thinking_effort = "high"
+
+[telegram]
+token           = "123456:ABC-DEF"
+allowed_user_ids = [42]
+
+[storage]
+db_path = "/tmp/test.db"
+`
+	path := writeConfig(t, standalone)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Claude.ThinkingEffort != EffortHigh {
+		t.Errorf("ThinkingEffort = %q, want %q", cfg.Claude.ThinkingEffort, EffortHigh)
+	}
+}
+
+func TestEnvOverride_ThinkingEffort(t *testing.T) {
+	path := writeConfig(t, validTOML)
+
+	t.Setenv("CURLYCATCLAW_THINKING_EFFORT", "max")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Claude.ThinkingEffort != EffortMax {
+		t.Errorf("ThinkingEffort = %q, want %q (from env)", cfg.Claude.ThinkingEffort, EffortMax)
+	}
+}
