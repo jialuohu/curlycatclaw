@@ -875,15 +875,23 @@ func (ss *streamState) onDelta(delta string) {
 		if ss.flushing {
 			return // another flush is in progress, just accumulate
 		}
-		// Enable HTML for the final edit to this message so it renders
-		// markdown properly instead of showing raw markdown text.
+
+		text := ss.buf.String()
+		first, remainder := splitAtBoundary(text)
+
+		// Flush the first part with HTML conversion.
+		ss.buf.Reset()
+		ss.buf.WriteString(first)
+		ss.runeCount = utf8.RuneCountInString(first)
 		ss.htmlMode = true
 		ss.flush()
 		ss.htmlMode = false
-		// Reset for a new message (next flush will create a new one).
+
+		// Start a new message with the remainder.
 		ss.msgID = 0
 		ss.buf.Reset()
-		ss.runeCount = 0
+		ss.buf.WriteString(remainder)
+		ss.runeCount = utf8.RuneCountInString(remainder)
 		return
 	}
 
@@ -987,6 +995,72 @@ func (ss *streamState) finalFlush() {
 	ss.htmlMode = true
 	ss.flush()
 	ss.htmlMode = false
+}
+
+// splitAtBoundary finds a clean place to split text for Telegram message overflow.
+// It prefers paragraph boundaries (\n\n) outside code fences. If the split point
+// falls inside a code fence, it closes the fence in the first part and reopens
+// it in the second so both messages render correctly.
+func splitAtBoundary(text string) (first, remainder string) {
+	runes := []rune(text)
+	target := 3900
+	if target > len(runes) {
+		return text, ""
+	}
+
+	// Search backward from target for a paragraph boundary (\n\n).
+	// Don't search too far back (keep at least 2000 runes in first part).
+	best := -1
+	for i := target; i >= 2000; i-- {
+		if i < len(runes)-1 && runes[i] == '\n' && runes[i+1] == '\n' {
+			best = i
+			break
+		}
+	}
+	if best < 0 {
+		// No paragraph boundary found. Try single newline.
+		for i := target; i >= 2000; i-- {
+			if runes[i] == '\n' {
+				best = i
+				break
+			}
+		}
+	}
+	if best < 0 {
+		best = target // hard cut as last resort
+	}
+
+	firstPart := string(runes[:best])
+	rest := string(runes[best:])
+
+	// Check if the split falls inside an unclosed code fence.
+	// Count opening ``` fences that aren't closed.
+	fenceCount := 0
+	fencePrefix := ""
+	lines := strings.Split(firstPart, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if fenceCount == 0 {
+				// Opening fence, capture the language tag.
+				fencePrefix = trimmed
+				fenceCount++
+			} else {
+				// Closing fence.
+				fenceCount--
+				fencePrefix = ""
+			}
+		}
+	}
+
+	if fenceCount > 0 {
+		// We're inside an unclosed code fence. Close it in first, reopen in second.
+		firstPart += "\n```"
+		// Reopen with the same language tag.
+		rest = fencePrefix + "\n" + rest
+	}
+
+	return firstPart, rest
 }
 
 // reset clears the stream state for a new message (e.g. after tool execution).
