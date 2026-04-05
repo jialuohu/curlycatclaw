@@ -932,7 +932,7 @@ func (s *Store) SaveObservation(obs *Observation) error {
 // ordered newest first. Used for dedup context during extraction.
 func (s *Store) GetRecentObservationTitles(convID string, limit int) ([]string, error) {
 	rows, err := s.db.Query(
-		`SELECT title FROM observations WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?`,
+		`SELECT title FROM observations WHERE conversation_id = ? AND archived_at IS NULL ORDER BY created_at DESC LIMIT ?`,
 		convID, limit,
 	)
 	if err != nil {
@@ -949,6 +949,32 @@ func (s *Store) GetRecentObservationTitles(convID string, limit int) ([]string, 
 		titles = append(titles, title)
 	}
 	return titles, rows.Err()
+}
+
+// GetRecentObservationsByType returns recent observations of a given type for a user,
+// ordered newest first. Used to feed existing observations to extraction prompt for
+// supersession detection. Returns id, title, summary for each observation.
+func (s *Store) GetRecentObservationsByType(userID int64, obsType string, limit int) ([]Observation, error) {
+	rows, err := s.db.Query(
+		`SELECT id, title, summary FROM observations
+		 WHERE user_id = ? AND type = ? AND archived_at IS NULL
+		 ORDER BY created_at DESC LIMIT ?`,
+		userID, obsType, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get recent observations by type: %w", err)
+	}
+	defer rows.Close()
+
+	var obs []Observation
+	for rows.Next() {
+		var o Observation
+		if err := rows.Scan(&o.ID, &o.Title, &o.Summary); err != nil {
+			return nil, fmt.Errorf("memory: scan observation by type: %w", err)
+		}
+		obs = append(obs, o)
+	}
+	return obs, rows.Err()
 }
 
 // GetExtractionState returns the extraction state for a conversation, or nil if not found.
@@ -1027,7 +1053,7 @@ func (s *Store) IncrementExtractionTurnCount(convID string) error {
 func (s *Store) ObservationExistsByHash(userID int64, hash string) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM observations WHERE user_id = ? AND content_hash = ?)`,
+		`SELECT EXISTS(SELECT 1 FROM observations WHERE user_id = ? AND content_hash = ? AND archived_at IS NULL)`,
 		userID, hash,
 	).Scan(&exists)
 	if err != nil {
@@ -1079,11 +1105,62 @@ func (s *Store) DeleteObservation(id string, userID int64) error {
 	return nil
 }
 
+// ArchiveObservation soft-deletes an observation by setting archived_at.
+// IDOR protection: only the owning user can archive.
+func (s *Store) ArchiveObservation(id string, userID int64) error {
+	res, err := s.db.Exec(
+		`UPDATE observations SET archived_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? AND archived_at IS NULL`,
+		id, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: archive observation: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("memory: observation %s not found or already archived", id)
+	}
+	return nil
+}
+
+// RestoreObservation un-archives a soft-deleted observation.
+// IDOR protection: only the owning user can restore.
+func (s *Store) RestoreObservation(id string, userID int64) error {
+	res, err := s.db.Exec(
+		`UPDATE observations SET archived_at = NULL WHERE id = ? AND user_id = ? AND archived_at IS NOT NULL`,
+		id, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: restore observation: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("memory: observation %s not found or not archived", id)
+	}
+	return nil
+}
+
+// UpdateObservation updates the title, summary, type, and importance of an observation.
+// IDOR protection: only the owning user can update.
+func (s *Store) UpdateObservation(id string, userID int64, title, summary, obsType string, importance int) error {
+	res, err := s.db.Exec(
+		`UPDATE observations SET title = ?, summary = ?, type = ?, importance = ? WHERE id = ? AND user_id = ?`,
+		title, summary, obsType, importance, id, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: update observation: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("memory: observation %s not found or wrong user", id)
+	}
+	return nil
+}
+
 // CountObservations returns the number of observations in a conversation.
 func (s *Store) CountObservations(convID string) (int, error) {
 	var count int
 	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM observations WHERE conversation_id = ?`,
+		`SELECT COUNT(*) FROM observations WHERE conversation_id = ? AND archived_at IS NULL`,
 		convID,
 	).Scan(&count)
 	if err != nil {
@@ -1410,6 +1487,22 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("memory: create observation_relations table: %w", err)
 	}
 
+	// Phase 3: add archived_at column for soft delete (idempotent ALTER TABLE).
+	s.db.Exec(`ALTER TABLE observations ADD COLUMN archived_at TIMESTAMP`) //nolint:errcheck
+
+	// Phase 3: FTS5 UPDATE triggers (INSERT/DELETE triggers already exist).
+	ftsUpdateTriggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE OF title, summary ON observations BEGIN
+			INSERT INTO observations_fts(observations_fts, rowid, title, summary) VALUES('delete', old.rowid, old.title, old.summary);
+			INSERT INTO observations_fts(rowid, title, summary) VALUES (new.rowid, new.title, new.summary);
+		END`,
+	}
+	for _, sql := range ftsUpdateTriggers {
+		if _, err := s.db.Exec(sql); err != nil {
+			return fmt.Errorf("memory: create FTS5 update trigger: %w", err)
+		}
+	}
+
 	// Backfill FTS5 indexes from existing data (idempotent, safe to run on every startup).
 	s.RebuildFTS() //nolint:errcheck // best-effort: FTS5 tables may not have data yet
 
@@ -1476,7 +1569,7 @@ func (s *Store) SearchObservationsFTS(query string, userID int64, limit int) ([]
 		`SELECT o.rowid, o.id, o.title, o.summary, f.rank
 		 FROM observations_fts f
 		 JOIN observations o ON o.rowid = f.rowid
-		 WHERE observations_fts MATCH ? AND o.user_id = ?
+		 WHERE observations_fts MATCH ? AND o.user_id = ? AND o.archived_at IS NULL
 		 ORDER BY f.rank
 		 LIMIT ?`,
 		escaped, userID, limit,
@@ -1520,7 +1613,7 @@ func (s *Store) AllObservations(limit int) ([]Observation, error) {
 	rows, err := s.db.Query(
 		`SELECT id, conversation_id, user_id, chat_id, COALESCE(chat_type, 'private'),
 		        type, title, summary, importance, created_at
-		 FROM observations ORDER BY rowid ASC LIMIT ?`, limit,
+		 FROM observations WHERE archived_at IS NULL ORDER BY rowid ASC LIMIT ?`, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("memory: all observations: %w", err)
@@ -1564,7 +1657,7 @@ func (s *Store) ObservationTextsAfter(afterID int64, limit int) ([]MigrationText
 	rows, err := s.db.Query(
 		`SELECT rowid, id, user_id, chat_id, title, summary, COALESCE(chat_type, 'private')
 		 FROM observations
-		 WHERE rowid > ?
+		 WHERE rowid > ? AND archived_at IS NULL
 		 ORDER BY rowid ASC
 		 LIMIT ?`, afterID, limit,
 	)
@@ -1735,9 +1828,17 @@ type ObservationRelation struct {
 
 // AddObservationRelation creates a relation between two observations.
 // IDOR protection: both source and target must belong to the same user.
+// Uses INSERT OR IGNORE for concurrency safety (first write wins on duplicate).
+// Confidence is clamped to [0.0, 1.0].
 func (s *Store) AddObservationRelation(sourceID, targetID, relationType string, confidence float64, userID int64) error {
+	if confidence < 0 {
+		confidence = 0
+	}
+	if confidence > 1 {
+		confidence = 1
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO observation_relations (source_id, target_id, relation_type, confidence)
+		`INSERT OR IGNORE INTO observation_relations (source_id, target_id, relation_type, confidence)
 		 SELECT ?, ?, ?, ?
 		 WHERE EXISTS (SELECT 1 FROM observations WHERE id = ? AND user_id = ?)
 		   AND EXISTS (SELECT 1 FROM observations WHERE id = ? AND user_id = ?)`,
@@ -1782,17 +1883,20 @@ func (s *Store) GetObservationRelations(obsID string, userID int64) ([]Observati
 }
 
 // GetSupersededObservationIDs returns observation IDs that have been superseded
-// (are targets of a 'supersedes' relation) for the given user.
-func (s *Store) GetSupersededObservationIDs(userID int64) (map[string]bool, error) {
+// (are targets of a 'supersedes' relation with confidence >= threshold) for the given user.
+// On DB error, returns an empty map (graceful degradation: stale obs may appear).
+func (s *Store) GetSupersededObservationIDs(userID int64, confidenceThreshold float64) (map[string]bool, error) {
 	rows, err := s.db.Query(
 		`SELECT r.target_id
 		 FROM observation_relations r
 		 JOIN observations o ON o.id = r.target_id
-		 WHERE r.relation_type = 'supersedes' AND r.confirmed = 1 AND o.user_id = ?`,
-		userID,
+		 WHERE r.relation_type = 'supersedes'
+		   AND (r.confirmed = 1 OR r.confidence >= ?)
+		   AND o.user_id = ?`,
+		confidenceThreshold, userID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("memory: get superseded IDs: %w", err)
+		return make(map[string]bool), nil // graceful degradation
 	}
 	defer rows.Close()
 
