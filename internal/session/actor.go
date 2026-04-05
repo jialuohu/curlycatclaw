@@ -97,6 +97,9 @@ type Actor struct {
 	effortOverride map[userKey]config.Effort
 	// lastUserMsg stores the last non-command user message per user for /retry.
 	lastUserMsg map[userKey]telegram.IncomingMessage
+	// debugOverride stores per-user session-level debug toggle set via /debug.
+	// nil = use config default, non-nil = override.
+	debugOverride map[userKey]bool
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -148,6 +151,7 @@ func New(
 		activeProjects: make(map[userKey]string),
 		effortOverride: make(map[userKey]config.Effort),
 		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+		debugOverride:  make(map[userKey]bool),
 	}
 }
 
@@ -217,6 +221,12 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// Handle memory management commands.
 	if a.handleMemoryCommand(msg) {
+		return nil
+	}
+
+	// Handle /debug command (toggle tool call visibility).
+	if msg.Text == "/debug" || strings.HasPrefix(msg.Text, "/debug ") {
+		a.handleDebugCommand(msg)
 		return nil
 	}
 
@@ -1242,7 +1252,8 @@ func (a *Actor) toolUseLoop(
 		toolLines = filtered
 
 		// Send tool transparency message to user.
-		if a.cfg.Telegram.ShowToolCalls && len(toolLines) > 0 {
+		toolKey := userKey{UserID: userID, ChatID: chatID}
+		if a.showToolCalls(toolKey) && len(toolLines) > 0 {
 			a.trySend(telegram.OutgoingMessage{
 				ChatID: chatID,
 				Text:   strings.Join(toolLines, "\n"),
@@ -1375,7 +1386,8 @@ func (a *Actor) handleWithCLI(
 		ss.mu.Unlock()
 		ss.reset()
 
-		if a.cfg.Telegram.ShowToolCalls {
+		cliToolKey := userKey{UserID: userID, ChatID: chatID}
+		if a.showToolCalls(cliToolKey) {
 			a.trySend(telegram.OutgoingMessage{
 				ChatID: chatID,
 				Text:   fmt.Sprintf("[tool] %s", toolName),
@@ -1721,6 +1733,50 @@ func (a *Actor) getEffectiveEffort(key userKey) config.Effort {
 		return override
 	}
 	return a.cfg.Claude.ThinkingEffort
+}
+
+// handleDebugCommand toggles tool call visibility via /debug.
+func (a *Actor) handleDebugCommand(msg telegram.IncomingMessage) {
+	key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+
+	arg := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Text), "/debug"))
+
+	switch arg {
+	case "on":
+		a.debugOverride[key] = true
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Debug mode ON. Tool calls will be shown."})
+	case "off":
+		a.debugOverride[key] = false
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Debug mode OFF. Tool calls hidden."})
+	case "reset":
+		delete(a.debugOverride, key)
+		label := "off"
+		if a.cfg.Telegram.ShowToolCalls {
+			label = "on"
+		}
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: fmt.Sprintf("Debug mode reset to config default (%s).", label)})
+	case "":
+		current := a.showToolCalls(key)
+		label := "OFF"
+		if current {
+			label = "ON"
+		}
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Debug mode: %s. Use /debug on, /debug off, or /debug reset.", label),
+		})
+	default:
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Usage: /debug [on|off|reset]"})
+	}
+}
+
+// showToolCalls returns whether tool calls should be shown for this user,
+// checking session override first, then config default.
+func (a *Actor) showToolCalls(key userKey) bool {
+	if override, ok := a.debugOverride[key]; ok {
+		return override
+	}
+	return a.cfg.Telegram.ShowToolCalls
 }
 
 // getActiveProject returns the active project config for the given user, or nil.

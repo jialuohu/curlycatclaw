@@ -155,6 +155,7 @@ func (ch *Channel) Run(ctx context.Context) error {
 	commands := tgbotapi.NewSetMyCommands(
 		tgbotapi.BotCommand{Command: "effort", Description: "Show or set thinking effort level (low/medium/high/max)"},
 		tgbotapi.BotCommand{Command: "retry", Description: "Replay last message at higher effort"},
+		tgbotapi.BotCommand{Command: "debug", Description: "Toggle tool call visibility (on/off)"},
 	)
 	if _, err := bot.Request(commands); err != nil {
 		slog.Warn("telegram: failed to register bot commands", "err", err)
