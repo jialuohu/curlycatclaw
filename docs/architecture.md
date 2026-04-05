@@ -80,6 +80,8 @@ Observation Extraction (idle detection, in-memory turn counter):
   Search: hybrid (RRF of FTS5 keyword + vector similarity), multi-vector (per-fact points)
   Retrieval: progressive 3-layer (compact index → expanded → full detail)
   Relations: supersedes/refines/contradicts (advisory, ranking boost not hiding)
+  Model: extraction uses per-spawn model override (extraction_model config, e.g., haiku)
+  Startup: FixObservationCollectionDimension + reindexMissingObservations (auto-heal)
   System prompt: "What I remember" section with dedup against facts
 
 Conversation Archival (>4h idle, both API and CLI modes):
@@ -87,6 +89,7 @@ Conversation Archival (>4h idle, both API and CLI modes):
                                                                        │
                                                   SQLite (text) ◄──────┤
                                                   Qdrant (embed+type) ◄┘
+  Model: summarization uses per-spawn model override (summarize_model config)
   Crash recovery: retries pending/failed/indexed_failed on startup
   Chat-type-aware: DM summaries cross-chat, group summaries stay scoped
 ```

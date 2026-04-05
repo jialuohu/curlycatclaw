@@ -5,7 +5,7 @@
 | `web_search` | Search the web via DuckDuckGo |
 | `save_note` | Save a note (user-scoped, persisted to SQLite) |
 | `search_notes` | Search saved notes by keyword |
-| `set_reminder` | Set a reminder with time, optional recurrence, and optional Claude-powered prompt |
+| `set_reminder` | Set a reminder with time, optional recurrence, Claude-powered prompt, and per-reminder model override |
 | `list_reminders` | List pending/fired reminders |
 | `cancel_reminder` | Cancel a scheduled reminder |
 | `semantic_search` | Search conversation history and notes by meaning (requires Qdrant) |
