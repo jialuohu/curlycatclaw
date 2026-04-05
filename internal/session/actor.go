@@ -1077,7 +1077,11 @@ func (a *Actor) toolUseLoop(
 		}
 
 		// Build the assistant content blocks for the conversation continuation.
-		assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, 1+len(resp.ToolCalls))
+		// Thinking blocks must come first for API history continuity.
+		assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, len(resp.ThinkingBlocks)+1+len(resp.ToolCalls))
+		for _, tb := range resp.ThinkingBlocks {
+			assistantBlocks = append(assistantBlocks, anthropic.NewThinkingBlock(tb.Signature, ""))
+		}
 		if resp.TextContent != "" {
 			assistantBlocks = append(assistantBlocks, anthropic.NewTextBlock(resp.TextContent))
 		}
@@ -1613,6 +1617,10 @@ func (a *Actor) handleRetryCommand(ctx context.Context, msg telegram.IncomingMes
 				a.effortOverride[key] = prev
 			} else {
 				delete(a.effortOverride, key)
+			}
+			// Kill CLI process so the next message spawns with restored effort.
+			if a.cliMgr != nil {
+				a.cliMgr.Remove(msg.UserID, msg.ChatID)
 			}
 		}()
 		if a.cliMgr != nil {
