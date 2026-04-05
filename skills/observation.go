@@ -413,7 +413,7 @@ func makeUpdateObservationExecute(store ObservationStore) func(ctx context.Conte
 			}
 		}
 		if params.Importance < 0 {
-			params.Importance = 1
+			params.Importance = 0 // 0 means "don't change" in UpdateObservation
 		}
 		if params.Importance > 10 {
 			params.Importance = 10

@@ -1752,15 +1752,13 @@ func (a *Actor) handleMemoryCommand(msg telegram.IncomingMessage) bool {
 	var result string
 	switch cmd {
 	case "keep_both":
-		// Remove the supersession relation AND restore the target observation.
+		// Remove the supersession relation so the target is no longer filtered from search.
+		// Restore is best-effort: extraction-created supersessions don't archive the target.
 		if err := a.obsStore.DeleteSupersessionRelation(obsID, msg.UserID); err != nil {
 			slog.Warn("memory: delete relation for keep_both", "err", err)
 		}
-		if err := a.obsStore.RestoreObservation(obsID, msg.UserID); err != nil {
-			result = fmt.Sprintf("Could not restore observation: %v", err)
-		} else {
-			result = fmt.Sprintf("Kept both observations. Restored %s.", obsID)
-		}
+		_ = a.obsStore.RestoreObservation(obsID, msg.UserID) // no-op if not archived
+		result = fmt.Sprintf("Kept both observations. Relation removed for %s.", obsID)
 	case "revert":
 		// Archive the replacement (source), remove the relation, restore the original (target).
 		sourceID, _ := a.obsStore.GetSupersessionSourceID(obsID, msg.UserID)
@@ -1770,11 +1768,8 @@ func (a *Actor) handleMemoryCommand(msg telegram.IncomingMessage) bool {
 		if err := a.obsStore.DeleteSupersessionRelation(obsID, msg.UserID); err != nil {
 			slog.Warn("memory: delete relation for revert", "err", err)
 		}
-		if err := a.obsStore.RestoreObservation(obsID, msg.UserID); err != nil {
-			result = fmt.Sprintf("Could not revert: %v", err)
-		} else {
-			result = fmt.Sprintf("Reverted. Restored observation %s.", obsID)
-		}
+		_ = a.obsStore.RestoreObservation(obsID, msg.UserID) // no-op if not archived
+		result = fmt.Sprintf("Reverted. Relation removed for %s.", obsID)
 	case "forget_old":
 		// Hard-delete the superseded observation permanently + clean up Qdrant vector.
 		if err := a.obsStore.DeleteObservation(obsID, msg.UserID); err != nil {
