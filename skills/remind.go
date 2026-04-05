@@ -547,6 +547,9 @@ func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.
 			unscheduled = append(unscheduled, r)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("reminder: poll rows iteration error", "err", err)
+	}
 	rows.Close()
 
 	now := time.Now().UTC()
