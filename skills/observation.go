@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -46,6 +47,9 @@ type ObservationStore interface {
 	SearchObservations(ctx context.Context, query string, userID int64, obsType string, limit int) ([]ObservationSearchResult, error)
 	DeleteObservation(id string, userID int64) error
 	DeleteObservationVector(ctx context.Context, id string) error
+	ArchiveObservation(id string, userID int64) error
+	RestoreObservation(id string, userID int64) error
+	UpdateObservation(id string, userID int64, title, summary, obsType string, importance int) error
 }
 
 // EntitySearchResult from FTS5 search on entity names.
@@ -87,9 +91,21 @@ func InitObservationSkills(db *sql.DB, store ObservationStore, entityStore Entit
 		},
 		{
 			Name:        "forget_observation",
-			Description: "Delete an observation by its ID. Also removes it from vector search.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"UUID of the observation to delete"}},"required":["id"]}`),
+			Description: "Archive an observation by its ID. The observation can be restored later with restore_observation.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"UUID of the observation to archive"}},"required":["id"]}`),
 			Execute:     makeForgetObservationExecute(store),
+		},
+		{
+			Name:        "restore_observation",
+			Description: "Restore a previously archived observation, making it active again in search results.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"UUID of the observation to restore"}},"required":["id"]}`),
+			Execute:     makeRestoreObservationExecute(store),
+		},
+		{
+			Name:        "update_observation",
+			Description: "Update an observation's title, summary, type, or importance. Use when the user corrects or refines a remembered observation.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"UUID of the observation to update"},"title":{"type":"string","description":"New title"},"summary":{"type":"string","description":"New summary"},"type":{"type":"string","enum":["decision","preference","project_state","commitment","discovery","reference"],"description":"New type"},"importance":{"type":"integer","description":"New importance (1-10)"}},"required":["id"]}`),
+			Execute:     makeUpdateObservationExecute(store),
 		},
 		{
 			Name:        "search_entities",
@@ -203,12 +219,12 @@ func makeListObservationsExecute(db *sql.DB) func(ctx context.Context, input jso
 		var err error
 		if params.Type != "" {
 			rows, err = db.QueryContext(ctx,
-				`SELECT id, type, title, created_at FROM observations WHERE user_id = ? AND type = ? ORDER BY created_at DESC LIMIT ?`,
+				`SELECT id, type, title, created_at FROM observations WHERE user_id = ? AND type = ? AND archived_at IS NULL ORDER BY created_at DESC LIMIT ?`,
 				user.UserID, params.Type, params.Limit,
 			)
 		} else {
 			rows, err = db.QueryContext(ctx,
-				`SELECT id, type, title, created_at FROM observations WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
+				`SELECT id, type, title, created_at FROM observations WHERE user_id = ? AND archived_at IS NULL ORDER BY created_at DESC LIMIT ?`,
 				user.UserID, params.Limit,
 			)
 		}
@@ -279,11 +295,31 @@ func makeGetObservationExecute(db *sql.DB) func(ctx context.Context, input json.
 			return "", fmt.Errorf("get observation: %w", err)
 		}
 
+		// Hydrate facts for this observation.
+		factRows, factErr := db.QueryContext(ctx,
+			`SELECT fact FROM observation_facts WHERE observation_id = ?`, id)
+		var facts []string
+		if factErr == nil {
+			defer factRows.Close()
+			for factRows.Next() {
+				var f string
+				if err := factRows.Scan(&f); err == nil {
+					facts = append(facts, f)
+				}
+			}
+		}
+
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Observation %s\n", id)
 		fmt.Fprintf(&sb, "Type: %s\n", obsType)
 		fmt.Fprintf(&sb, "Created: %s\n\n", createdAt.Format("2006-01-02 15:04:05"))
 		fmt.Fprintf(&sb, "%s\n%s", title, summary)
+		if len(facts) > 0 {
+			sb.WriteString("\n\nFacts:\n")
+			for _, f := range facts {
+				fmt.Fprintf(&sb, "  - %s\n", f)
+			}
+		}
 		return sb.String(), nil
 	}
 }
@@ -307,14 +343,88 @@ func makeForgetObservationExecute(store ObservationStore) func(ctx context.Conte
 
 		user := GetUser(ctx)
 
-		if err := store.DeleteObservation(params.ID, user.UserID); err != nil {
-			return "", fmt.Errorf("delete observation: %w", err)
+		// Soft delete: archive instead of permanent deletion.
+		if err := store.ArchiveObservation(params.ID, user.UserID); err != nil {
+			return "", fmt.Errorf("archive observation: %w", err)
 		}
-		// Best-effort vector cleanup; log but don't fail the skill.
-		if err := store.DeleteObservationVector(ctx, params.ID); err != nil {
-			return fmt.Sprintf("Deleted observation %s (vector cleanup failed: %v).", params.ID, err), nil
+		return fmt.Sprintf("Archived observation %s. Use restore_observation to undo.", params.ID), nil
+	}
+}
+
+type restoreObservationInput struct {
+	ID string `json:"id"`
+}
+
+func makeRestoreObservationExecute(store ObservationStore) func(ctx context.Context, input json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		var params restoreObservationInput
+		if err := json.Unmarshal(input, &params); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
 		}
-		return fmt.Sprintf("Deleted observation %s.", params.ID), nil
+		if params.ID == "" {
+			return "", fmt.Errorf("id is required")
+		}
+		if !isValidUUID(params.ID) {
+			return "", fmt.Errorf("invalid observation ID format")
+		}
+
+		user := GetUser(ctx)
+
+		if err := store.RestoreObservation(params.ID, user.UserID); err != nil {
+			return "", fmt.Errorf("restore observation: %w", err)
+		}
+		return fmt.Sprintf("Restored observation %s.", params.ID), nil
+	}
+}
+
+type updateObservationInput struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Summary    string `json:"summary"`
+	Type       string `json:"type"`
+	Importance int    `json:"importance"`
+}
+
+func makeUpdateObservationExecute(store ObservationStore) func(ctx context.Context, input json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		var params updateObservationInput
+		if err := json.Unmarshal(input, &params); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
+		}
+		if params.ID == "" {
+			return "", fmt.Errorf("id is required")
+		}
+		if !isValidUUID(params.ID) {
+			return "", fmt.Errorf("invalid observation ID format")
+		}
+		if params.Title == "" && params.Summary == "" && params.Type == "" && params.Importance == 0 {
+			return "", fmt.Errorf("at least one field (title, summary, type, importance) must be provided")
+		}
+		if params.Type != "" {
+			valid := false
+			for _, t := range AllowedObservationTypes {
+				if t == params.Type {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return "", fmt.Errorf("invalid observation type: %s", params.Type)
+			}
+		}
+		if params.Importance < 0 {
+			params.Importance = 1
+		}
+		if params.Importance > 10 {
+			params.Importance = 10
+		}
+
+		user := GetUser(ctx)
+
+		if err := store.UpdateObservation(params.ID, user.UserID, params.Title, params.Summary, params.Type, params.Importance); err != nil {
+			return "", fmt.Errorf("update observation: %w", err)
+		}
+		return fmt.Sprintf("Updated observation %s.", params.ID), nil
 	}
 }
 
@@ -364,4 +474,111 @@ func makeSearchEntitiesExecute(store EntityStore) func(ctx context.Context, inpu
 		}
 		return sb.String(), nil
 	}
+}
+
+// SupersessionStore extends ObservationStore with methods needed for the
+// supersede_observation skill (save new observations, create relations, dedup).
+type SupersessionStore interface {
+	ObservationStore
+	// SaveNewObservation creates a new observation and returns its UUID.
+	SaveNewObservation(userID, chatID int64, chatType, obsType, title, summary, contentHash string, facts []string, importance int) (string, error)
+	AddObservationRelation(sourceID, targetID, relationType string, confidence float64, userID int64) error
+	ObservationExistsByHash(userID int64, hash string) (bool, error)
+}
+
+type supersedeObservationInput struct {
+	TargetID   string `json:"target_id"`
+	Reason     string `json:"reason"`
+	NewTitle   string `json:"new_title"`
+	NewSummary string `json:"new_summary"`
+}
+
+// InitSupersedeSkill creates the supersede_observation skill.
+// Separated from InitObservationSkills because it requires a richer store interface.
+func InitSupersedeSkill(store SupersessionStore) *Skill {
+	return &Skill{
+		Name:        "supersede_observation",
+		Description: "Replace an outdated observation with corrected information. Use when the user indicates something previously remembered is no longer accurate.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"target_id":{"type":"string","description":"UUID of the outdated observation to supersede"},"reason":{"type":"string","description":"Why this observation is being superseded"},"new_title":{"type":"string","description":"Corrected title for the replacement observation"},"new_summary":{"type":"string","description":"Corrected summary for the replacement observation"}},"required":["target_id","reason"]}`),
+		Execute:     makeSupersedeObservationExecute(store),
+	}
+}
+
+func makeSupersedeObservationExecute(store SupersessionStore) func(ctx context.Context, input json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		var params supersedeObservationInput
+		if err := json.Unmarshal(input, &params); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
+		}
+		if params.TargetID == "" {
+			return "", fmt.Errorf("target_id is required")
+		}
+		if !isValidUUID(params.TargetID) {
+			return "", fmt.Errorf("invalid target_id format")
+		}
+		if params.Reason == "" {
+			return "", fmt.Errorf("reason is required")
+		}
+
+		user := GetUser(ctx)
+
+		// Check if target is already archived (idempotent).
+		if err := store.ArchiveObservation(params.TargetID, user.UserID); err != nil {
+			// "already archived" is not an error for supersession.
+			if !strings.Contains(err.Error(), "already archived") {
+				return "", fmt.Errorf("supersede: archive target: %w", err)
+			}
+		}
+
+		// Create replacement observation if new content provided.
+		if params.NewTitle != "" {
+			summary := params.NewSummary
+			if summary == "" {
+				summary = params.Reason
+			}
+
+			// Sanitize inputs (same limits as extraction pipeline).
+			title := truncateRunesSafe(params.NewTitle, 200)
+			summary = truncateRunesSafe(summary, 1000)
+
+			// Content hash dedup: prevent LLM loop duplicates.
+			hash := skillContentHash(title, summary)
+			exists, err := store.ObservationExistsByHash(user.UserID, hash)
+			if err != nil {
+				return "", fmt.Errorf("supersede: dedup check: %w", err)
+			}
+			if exists {
+				return fmt.Sprintf("Superseded observation %s (replacement already exists).", params.TargetID), nil
+			}
+
+			newID, err := store.SaveNewObservation(
+				user.UserID, user.ChatID, "private",
+				"project_state", title, summary, hash,
+				[]string{params.Reason}, 7,
+			)
+			if err != nil {
+				return "", fmt.Errorf("supersede: save replacement: %w", err)
+			}
+
+			// Create supersedes relation with confidence 1.0 (user-initiated).
+			_ = store.AddObservationRelation(newID, params.TargetID, "supersedes", 1.0, user.UserID)
+
+			return fmt.Sprintf("Superseded observation %s with \"%s\".", params.TargetID, title), nil
+		}
+
+		return fmt.Sprintf("Archived outdated observation %s. Reason: %s", params.TargetID, params.Reason), nil
+	}
+}
+
+func truncateRunesSafe(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes])
+	}
+	return s
+}
+
+func skillContentHash(title, summary string) string {
+	sum := sha256.Sum256([]byte(title + "|" + summary))
+	return fmt.Sprintf("%x", sum)
 }
