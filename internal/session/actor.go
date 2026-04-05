@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1699,10 +1700,14 @@ func (a *Actor) sendMemoryNotification(chatID int64, relations []memory.Extracte
 		for _, rel := range relations {
 			sourceTitle := titles[rel.SourceObsID]
 			if sourceTitle == "" {
-				sourceTitle = rel.SourceObsID[:8]
+				sourceTitle = rel.SourceObsID
+				if len(sourceTitle) > 8 {
+					sourceTitle = sourceTitle[:8]
+				}
 			}
-			fmt.Fprintf(&sb, "  - \"%s\" %s older observation\n", sourceTitle, rel.Type)
+			fmt.Fprintf(&sb, "  - \"%s\" %s %s\n", sourceTitle, rel.Type, rel.TargetID)
 		}
+		sb.WriteString("Reply: /keep_both <id> | /revert <id> | /forget_old <id>")
 	}
 
 	a.trySend(telegram.OutgoingMessage{
@@ -1710,6 +1715,9 @@ func (a *Actor) sendMemoryNotification(chatID int64, relations []memory.Extracte
 		Text:   sb.String(),
 	})
 }
+
+// uuidRe matches standard UUID v4 format.
+var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // handleMemoryCommand processes /keep_both, /revert, and /forget_old commands.
 // Returns true if the message was a memory command and was handled.
@@ -1736,27 +1744,47 @@ func (a *Actor) handleMemoryCommand(msg telegram.IncomingMessage) bool {
 		return true
 	}
 
+	if !uuidRe.MatchString(obsID) {
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Invalid observation ID format."})
+		return true
+	}
+
 	var result string
 	switch cmd {
 	case "keep_both":
-		// Remove the supersession relation, restoring the target observation to active status.
+		// Remove the supersession relation AND restore the target observation.
+		if err := a.obsStore.DeleteSupersessionRelation(obsID, msg.UserID); err != nil {
+			slog.Warn("memory: delete relation for keep_both", "err", err)
+		}
 		if err := a.obsStore.RestoreObservation(obsID, msg.UserID); err != nil {
 			result = fmt.Sprintf("Could not restore observation: %v", err)
 		} else {
 			result = fmt.Sprintf("Kept both observations. Restored %s.", obsID)
 		}
 	case "revert":
-		// Restore the superseded observation (undo the supersession).
+		// Archive the replacement (source), remove the relation, restore the original (target).
+		sourceID, _ := a.obsStore.GetSupersessionSourceID(obsID, msg.UserID)
+		if sourceID != "" {
+			_ = a.obsStore.ArchiveObservation(sourceID, msg.UserID)
+		}
+		if err := a.obsStore.DeleteSupersessionRelation(obsID, msg.UserID); err != nil {
+			slog.Warn("memory: delete relation for revert", "err", err)
+		}
 		if err := a.obsStore.RestoreObservation(obsID, msg.UserID); err != nil {
 			result = fmt.Sprintf("Could not revert: %v", err)
 		} else {
 			result = fmt.Sprintf("Reverted. Restored observation %s.", obsID)
 		}
 	case "forget_old":
-		// Hard-delete the superseded observation permanently.
+		// Hard-delete the superseded observation permanently + clean up Qdrant vector.
 		if err := a.obsStore.DeleteObservation(obsID, msg.UserID); err != nil {
 			result = fmt.Sprintf("Could not delete: %v", err)
 		} else {
+			if a.vectorStore != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = a.vectorStore.DeleteObservationVector(ctx, obsID)
+				cancel()
+			}
 			result = fmt.Sprintf("Permanently deleted observation %s.", obsID)
 		}
 	}

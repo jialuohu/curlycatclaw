@@ -89,6 +89,8 @@ type ObservationStore interface {
 	ArchiveObservation(id string, userID int64) error
 	RestoreObservation(id string, userID int64) error
 	UpdateObservation(id string, userID int64, title, summary, obsType string, importance int) error
+	DeleteSupersessionRelation(targetID string, userID int64) error
+	GetSupersessionSourceID(targetID string, userID int64) (string, error)
 }
 
 // CLIClient abstracts the CLI subprocess manager for testing.

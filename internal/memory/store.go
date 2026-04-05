@@ -1139,13 +1139,34 @@ func (s *Store) RestoreObservation(id string, userID int64) error {
 	return nil
 }
 
-// UpdateObservation updates the title, summary, type, and importance of an observation.
+// UpdateObservation updates only the non-zero fields of an observation.
+// Empty strings and importance=0 are treated as "don't change".
 // IDOR protection: only the owning user can update.
 func (s *Store) UpdateObservation(id string, userID int64, title, summary, obsType string, importance int) error {
-	res, err := s.db.Exec(
-		`UPDATE observations SET title = ?, summary = ?, type = ?, importance = ? WHERE id = ? AND user_id = ?`,
-		title, summary, obsType, importance, id, userID,
-	)
+	var setClauses []string
+	var args []any
+	if title != "" {
+		setClauses = append(setClauses, "title = ?")
+		args = append(args, title)
+	}
+	if summary != "" {
+		setClauses = append(setClauses, "summary = ?")
+		args = append(args, summary)
+	}
+	if obsType != "" {
+		setClauses = append(setClauses, "type = ?")
+		args = append(args, obsType)
+	}
+	if importance > 0 {
+		setClauses = append(setClauses, "importance = ?")
+		args = append(args, importance)
+	}
+	if len(setClauses) == 0 {
+		return fmt.Errorf("memory: no fields to update")
+	}
+	query := "UPDATE observations SET " + strings.Join(setClauses, ", ") + " WHERE id = ? AND user_id = ? AND archived_at IS NULL"
+	args = append(args, id, userID)
+	res, err := s.db.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("memory: update observation: %w", err)
 	}
@@ -1880,6 +1901,38 @@ func (s *Store) GetObservationRelations(obsID string, userID int64) ([]Observati
 		results = append(results, r)
 	}
 	return results, rows.Err()
+}
+
+// DeleteSupersessionRelation removes supersession relations targeting a given observation.
+// Used by /keep_both and /revert commands to undo a supersession.
+func (s *Store) DeleteSupersessionRelation(targetID string, userID int64) error {
+	_, err := s.db.Exec(
+		`DELETE FROM observation_relations
+		 WHERE target_id = ? AND relation_type = 'supersedes'
+		   AND EXISTS (SELECT 1 FROM observations WHERE id = observation_relations.target_id AND user_id = ?)`,
+		targetID, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("memory: delete supersession relation: %w", err)
+	}
+	return nil
+}
+
+// GetSupersessionSourceID returns the source observation ID that superseded the given target.
+// Used by /revert to archive the replacement observation.
+func (s *Store) GetSupersessionSourceID(targetID string, userID int64) (string, error) {
+	var sourceID string
+	err := s.db.QueryRow(
+		`SELECT r.source_id FROM observation_relations r
+		 JOIN observations o ON o.id = r.source_id
+		 WHERE r.target_id = ? AND r.relation_type = 'supersedes' AND o.user_id = ?
+		 LIMIT 1`,
+		targetID, userID,
+	).Scan(&sourceID)
+	if err != nil {
+		return "", err
+	}
+	return sourceID, nil
 }
 
 // GetSupersededObservationIDs returns observation IDs that have been superseded

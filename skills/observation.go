@@ -561,7 +561,10 @@ func makeSupersedeObservationExecute(store SupersessionStore) func(ctx context.C
 			}
 
 			// Create supersedes relation with confidence 1.0 (user-initiated).
-			_ = store.AddObservationRelation(newID, params.TargetID, "supersedes", 1.0, user.UserID)
+			// Errors are non-fatal (the archive + new observation are already saved).
+			if relErr := store.AddObservationRelation(newID, params.TargetID, "supersedes", 1.0, user.UserID); relErr != nil {
+				return fmt.Sprintf("Superseded observation %s with \"%s\" (relation creation failed: %v).", params.TargetID, title, relErr), nil
+			}
 
 			return fmt.Sprintf("Superseded observation %s with \"%s\".", params.TargetID, title), nil
 		}
@@ -579,6 +582,8 @@ func truncateRunesSafe(s string, maxRunes int) string {
 }
 
 func skillContentHash(title, summary string) string {
-	sum := sha256.Sum256([]byte(title + "|" + summary))
+	// Match normalization from internal/memory/observer.go:observationContentHash
+	input := strings.ToLower(strings.TrimSpace(title + "|" + summary))
+	sum := sha256.Sum256([]byte(input))
 	return fmt.Sprintf("%x", sum)
 }
