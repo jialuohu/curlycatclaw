@@ -65,7 +65,9 @@ func (t *OpenAITranscriber) Transcribe(ctx context.Context, audio []byte, format
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Limit response read to 1 MiB to prevent memory exhaustion from a
+	// malicious or malfunctioning API endpoint.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}

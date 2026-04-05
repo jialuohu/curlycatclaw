@@ -92,6 +92,14 @@ type Actor struct {
 	// activeProjects tracks the currently active project per user.
 	activeProjects map[userKey]string
 	projectsMu     sync.RWMutex
+
+	// effortOverride stores per-user session-level effort overrides set via /effort.
+	effortOverride map[userKey]config.Effort
+	// lastUserMsg stores the last non-command user message per user for /retry.
+	lastUserMsg map[userKey]telegram.IncomingMessage
+	// debugOverride stores per-user session-level debug toggle set via /debug.
+	// nil = use config default, non-nil = override.
+	debugOverride map[userKey]bool
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -141,6 +149,9 @@ func New(
 		configPath:     configPath,
 		extRegistry:    extReg,
 		activeProjects: make(map[userKey]string),
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+		debugOverride:  make(map[userKey]bool),
 	}
 }
 
@@ -211,6 +222,29 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// Handle memory management commands.
 	if a.handleMemoryCommand(msg) {
 		return nil
+	}
+
+	// Handle /debug command (toggle tool call visibility).
+	if msg.Text == "/debug" || strings.HasPrefix(msg.Text, "/debug ") {
+		a.handleDebugCommand(msg)
+		return nil
+	}
+
+	// Handle /effort command (session-level thinking effort override).
+	if msg.Text == "/effort" || strings.HasPrefix(msg.Text, "/effort ") {
+		a.handleEffortCommand(msg)
+		return nil
+	}
+
+	// Handle /retry command (replay last message at specified effort).
+	if msg.Text == "/retry" || strings.HasPrefix(msg.Text, "/retry ") {
+		return a.handleRetryCommand(ctx, msg)
+	}
+
+	// Store last non-command user message for /retry.
+	if a.lastUserMsg != nil {
+		key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+		a.lastUserMsg[key] = msg
 	}
 
 	// Get or create conversation for this user.
@@ -291,7 +325,8 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// CLI subprocess mode: delegate to claude CLI which handles the agent loop.
 	if a.cliMgr != nil {
-		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos(), systemPrompt)
+		effKey := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos(), systemPrompt, string(a.getEffectiveEffort(effKey)))
 	}
 
 	// Direct API mode: build context and run the tool_use loop.
@@ -331,8 +366,12 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	copy(tools, a.cachedAnthropicTools)
 	tools = append(tools, toSkillTools(a.skills)...)
 
+	// Resolve effective effort for this request.
+	effKey := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+	effort := a.getEffectiveEffort(effKey)
+
 	// Run the tool_use loop.
-	return a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools)
+	return a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools, effort)
 }
 
 // typingRefreshInterval is the interval between "typing..." indicator refreshes.
@@ -846,15 +885,23 @@ func (ss *streamState) onDelta(delta string) {
 		if ss.flushing {
 			return // another flush is in progress, just accumulate
 		}
-		// Enable HTML for the final edit to this message so it renders
-		// markdown properly instead of showing raw markdown text.
+
+		text := ss.buf.String()
+		first, remainder := splitAtBoundary(text)
+
+		// Flush the first part with HTML conversion.
+		ss.buf.Reset()
+		ss.buf.WriteString(first)
+		ss.runeCount = utf8.RuneCountInString(first)
 		ss.htmlMode = true
 		ss.flush()
 		ss.htmlMode = false
-		// Reset for a new message (next flush will create a new one).
+
+		// Start a new message with the remainder.
 		ss.msgID = 0
 		ss.buf.Reset()
-		ss.runeCount = 0
+		ss.buf.WriteString(remainder)
+		ss.runeCount = utf8.RuneCountInString(remainder)
 		return
 	}
 
@@ -960,6 +1007,72 @@ func (ss *streamState) finalFlush() {
 	ss.htmlMode = false
 }
 
+// splitAtBoundary finds a clean place to split text for Telegram message overflow.
+// It prefers paragraph boundaries (\n\n) outside code fences. If the split point
+// falls inside a code fence, it closes the fence in the first part and reopens
+// it in the second so both messages render correctly.
+func splitAtBoundary(text string) (first, remainder string) {
+	runes := []rune(text)
+	target := 3900
+	if target > len(runes) {
+		return text, ""
+	}
+
+	// Search backward from target for a paragraph boundary (\n\n).
+	// Don't search too far back (keep at least 2000 runes in first part).
+	best := -1
+	for i := target; i >= 2000; i-- {
+		if i < len(runes)-1 && runes[i] == '\n' && runes[i+1] == '\n' {
+			best = i
+			break
+		}
+	}
+	if best < 0 {
+		// No paragraph boundary found. Try single newline.
+		for i := target; i >= 2000; i-- {
+			if runes[i] == '\n' {
+				best = i
+				break
+			}
+		}
+	}
+	if best < 0 {
+		best = target // hard cut as last resort
+	}
+
+	firstPart := string(runes[:best])
+	rest := string(runes[best:])
+
+	// Check if the split falls inside an unclosed code fence.
+	// Count opening ``` fences that aren't closed.
+	fenceCount := 0
+	fencePrefix := ""
+	lines := strings.Split(firstPart, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if fenceCount == 0 {
+				// Opening fence, capture the language tag.
+				fencePrefix = trimmed
+				fenceCount++
+			} else {
+				// Closing fence.
+				fenceCount--
+				fencePrefix = ""
+			}
+		}
+	}
+
+	if fenceCount > 0 {
+		// We're inside an unclosed code fence. Close it in first, reopen in second.
+		firstPart += "\n```"
+		// Reopen with the same language tag.
+		rest = fencePrefix + "\n" + rest
+	}
+
+	return firstPart, rest
+}
+
 // reset clears the stream state for a new message (e.g. after tool execution).
 func (ss *streamState) reset() {
 	ss.mu.Lock()
@@ -978,6 +1091,7 @@ func (a *Actor) toolUseLoop(
 	messages []anthropic.MessageParam,
 	systemPrompt string,
 	tools []anthropic.ToolUnionParam,
+	effort config.Effort,
 ) error {
 	ss := &streamState{chatID: chatID, tg: a.tg}
 
@@ -987,9 +1101,10 @@ func (a *Actor) toolUseLoop(
 
 		claudeCtx, claudeCancel := context.WithTimeout(ctx, claudeTimeout)
 		resp, err := a.claude.SendStreaming(claudeCtx, claude.SendParams{
-			Messages:     messages,
-			SystemPrompt: systemPrompt,
-			Tools:        tools,
+			Messages:       messages,
+			SystemPrompt:   systemPrompt,
+			Tools:          tools,
+			ThinkingEffort: effort,
 			OnPartialText: func(delta string) {
 				ss.onDelta(delta)
 			},
@@ -1046,7 +1161,15 @@ func (a *Actor) toolUseLoop(
 		}
 
 		// Build the assistant content blocks for the conversation continuation.
-		assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, 1+len(resp.ToolCalls))
+		// Thinking blocks must come first for API history continuity.
+		assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, len(resp.ThinkingBlocks)+1+len(resp.ToolCalls))
+		for _, tb := range resp.ThinkingBlocks {
+			if tb.IsRedacted {
+				assistantBlocks = append(assistantBlocks, anthropic.NewRedactedThinkingBlock(tb.RedactedData))
+			} else {
+				assistantBlocks = append(assistantBlocks, anthropic.NewThinkingBlock(tb.Signature, ""))
+			}
+		}
 		if resp.TextContent != "" {
 			assistantBlocks = append(assistantBlocks, anthropic.NewTextBlock(resp.TextContent))
 		}
@@ -1129,7 +1252,8 @@ func (a *Actor) toolUseLoop(
 		toolLines = filtered
 
 		// Send tool transparency message to user.
-		if a.cfg.Telegram.ShowToolCalls && len(toolLines) > 0 {
+		toolKey := userKey{UserID: userID, ChatID: chatID}
+		if a.showToolCalls(toolKey) && len(toolLines) > 0 {
 			a.trySend(telegram.OutgoingMessage{
 				ChatID: chatID,
 				Text:   strings.Join(toolLines, "\n"),
@@ -1172,6 +1296,7 @@ func (a *Actor) handleWithCLI(
 	userMsg string,
 	photos []telegram.Attachment,
 	systemPrompt string,
+	effort string,
 ) error {
 	ss := &streamState{chatID: chatID, tg: a.tg}
 
@@ -1228,6 +1353,7 @@ func (a *Actor) handleWithCLI(
 		SystemPrompt: systemPrompt,
 		MCPConfig:    mcpConfig,
 		InitialMsg:   userJSON,
+		Effort:       effort,
 	}
 
 	// Set working directory and isolated home for project work.
@@ -1260,7 +1386,8 @@ func (a *Actor) handleWithCLI(
 		ss.mu.Unlock()
 		ss.reset()
 
-		if a.cfg.Telegram.ShowToolCalls {
+		cliToolKey := userKey{UserID: userID, ChatID: chatID}
+		if a.showToolCalls(cliToolKey) {
 			a.trySend(telegram.OutgoingMessage{
 				ChatID: chatID,
 				Text:   fmt.Sprintf("[tool] %s", toolName),
@@ -1483,6 +1610,173 @@ func (a *Actor) handleProjectCommand(msg telegram.IncomingMessage) error {
 		Text:   fmt.Sprintf("Switched to project %q at %s.", found.Name, found.Path),
 	})
 	return nil
+}
+
+// handleEffortCommand processes /effort commands for thinking effort override.
+func (a *Actor) handleEffortCommand(msg telegram.IncomingMessage) {
+	text := strings.TrimSpace(msg.Text)
+	key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+
+	// /effort with no args: show current effective effort.
+	if text == "/effort" {
+		current := a.getEffectiveEffort(key)
+		label := string(current)
+		if label == "" {
+			label = "(default, no extended thinking)"
+		}
+		override := a.effortOverride[key]
+		if override != "" {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   fmt.Sprintf("Effort: %s (session override). Config default: %s.\nUse /effort reset to clear override.", label, a.cfg.Claude.ThinkingEffort),
+			})
+		} else {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   fmt.Sprintf("Effort: %s (from config). Use /effort <low|medium|high|max> to override.", label),
+			})
+		}
+		return
+	}
+
+	arg := strings.TrimSpace(strings.TrimPrefix(text, "/effort"))
+
+	// /effort reset: clear override.
+	if arg == "reset" || arg == "off" {
+		delete(a.effortOverride, key)
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Effort override cleared. Using config default: %s.", a.cfg.Claude.ThinkingEffort),
+		})
+		return
+	}
+
+	// /effort <level>: validate and set.
+	effort := config.Effort(arg)
+	if !config.ValidEffort(effort) || effort == "" {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Unknown effort level %q. Valid: low, medium, high, max.", arg),
+		})
+		return
+	}
+
+	a.effortOverride[key] = effort
+
+	// In CLI mode, kill+respawn so the new effort takes effect (--effort is spawn-time).
+	if a.cliMgr != nil {
+		a.cliMgr.Remove(msg.UserID, msg.ChatID)
+		slog.Info("cli: respawning for effort change", "user_id", msg.UserID, "effort", effort)
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   fmt.Sprintf("Effort set to %s for this session.", effort),
+	})
+}
+
+// handleRetryCommand replays the last user message at the current (or specified) effort level.
+func (a *Actor) handleRetryCommand(ctx context.Context, msg telegram.IncomingMessage) error {
+	key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+
+	last, ok := a.lastUserMsg[key]
+	if !ok {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   "No previous message to retry.",
+		})
+		return nil
+	}
+
+	// Parse optional effort level: /retry high
+	arg := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Text), "/retry"))
+	if arg != "" {
+		effort := config.Effort(arg)
+		if !config.ValidEffort(effort) || effort == "" {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   fmt.Sprintf("Unknown effort level %q. Valid: low, medium, high, max. Or just /retry to replay at current effort.", arg),
+			})
+			return nil
+		}
+		// One-shot override: set temporarily, restore previous value after.
+		prev, hadPrev := a.effortOverride[key]
+		a.effortOverride[key] = effort
+		defer func() {
+			if hadPrev {
+				a.effortOverride[key] = prev
+			} else {
+				delete(a.effortOverride, key)
+			}
+			// Kill CLI process so the next message spawns with restored effort.
+			if a.cliMgr != nil {
+				a.cliMgr.Remove(msg.UserID, msg.ChatID)
+			}
+		}()
+		if a.cliMgr != nil {
+			a.cliMgr.Remove(msg.UserID, msg.ChatID)
+		}
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   fmt.Sprintf("Retrying at effort: %s...", a.getEffectiveEffort(key)),
+	})
+
+	// Replay the last message through normal handling (creates a new conversation turn).
+	return a.handleMessage(ctx, last)
+}
+
+// getEffectiveEffort returns the effort level for a user, checking session override first.
+func (a *Actor) getEffectiveEffort(key userKey) config.Effort {
+	if override, ok := a.effortOverride[key]; ok {
+		return override
+	}
+	return a.cfg.Claude.ThinkingEffort
+}
+
+// handleDebugCommand toggles tool call visibility via /debug.
+func (a *Actor) handleDebugCommand(msg telegram.IncomingMessage) {
+	key := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
+
+	arg := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Text), "/debug"))
+
+	switch arg {
+	case "on":
+		a.debugOverride[key] = true
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Debug mode ON. Tool calls will be shown."})
+	case "off":
+		a.debugOverride[key] = false
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Debug mode OFF. Tool calls hidden."})
+	case "reset":
+		delete(a.debugOverride, key)
+		label := "off"
+		if a.cfg.Telegram.ShowToolCalls {
+			label = "on"
+		}
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: fmt.Sprintf("Debug mode reset to config default (%s).", label)})
+	case "":
+		current := a.showToolCalls(key)
+		label := "OFF"
+		if current {
+			label = "ON"
+		}
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Debug mode: %s. Use /debug on, /debug off, or /debug reset.", label),
+		})
+	default:
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Usage: /debug [on|off|reset]"})
+	}
+}
+
+// showToolCalls returns whether tool calls should be shown for this user,
+// checking session override first, then config default.
+func (a *Actor) showToolCalls(key userKey) bool {
+	if override, ok := a.debugOverride[key]; ok {
+		return override
+	}
+	return a.cfg.Telegram.ShowToolCalls
 }
 
 // getActiveProject returns the active project config for the given user, or nil.
@@ -1845,6 +2139,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("Also include these built-in skills: web_search, save_note, search_notes, set_reminder, list_reminders, cancel_reminder, semantic_search, remember_fact, forget_fact, list_facts, list_summaries, delete_summary, load_prompt_skill.\n")
 	sb.WriteString("NEVER answer from memory, conversation history, or previous tool results. EVERY TIME the user asks, you MUST make fresh tool calls, even if you just fetched the same data moments ago. Extensions can change between messages.\n")
 	sb.WriteString("\nWhen using prompt skills (like humanizer, scrapling), call load_prompt_skill directly by name. Do NOT use ToolSearch to find it.\n")
+	sb.WriteString("When browsing or scraping websites, use this priority: (1) scrapling-mcp 'get' for most pages (fast HTTP, no browser needed), (2) scrapling-mcp 'fetch' or 'stealthy_fetch' only if JS rendering is required (these need Playwright/Chromium), (3) fetch MCP as last resort (basic HTTP only). Do NOT use ToolSearch to find scrapling tools, call them directly.\n")
 
 	sb.WriteString("\nWhen adding an external tool as an exec extension, the tool MUST speak the curlycatclaw JSON protocol:\n")
 	sb.WriteString("- Input (stdin): {\"input\": <json>, \"context\": {\"user_id\": N, \"chat_id\": N}}\n")

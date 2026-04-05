@@ -236,17 +236,20 @@ func defaultCfg() *config.Config {
 
 func newTestActor(llm LLMClient, store MessageStore, ctxb ContextProvider, router ToolRouter, vector VectorIndexer, tg TelegramTransport) *Actor {
 	return &Actor{
-		cfg:      defaultCfg(),
-		claude:   llm,
-		tg:       tg,
-		mcp:      router,
-		store:    store,
-		ctxb:     ctxb,
-		skills:   skills.NewRegistry(),
-		vector:   vector,
-		indexSem: make(chan struct{}, 10),
-		obsSem:   make(chan struct{}, 3),
-		obsState: make(map[string]*obsConvState),
+		cfg:            defaultCfg(),
+		claude:         llm,
+		tg:             tg,
+		mcp:            router,
+		store:          store,
+		ctxb:           ctxb,
+		skills:         skills.NewRegistry(),
+		vector:         vector,
+		indexSem:       make(chan struct{}, 10),
+		obsSem:         make(chan struct{}, 3),
+		obsState:       make(map[string]*obsConvState),
+		activeProjects: make(map[userKey]string),
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
 	}
 }
 
@@ -1271,6 +1274,75 @@ func TestFinalFlush_WaitsForInProgressFlush(t *testing.T) {
 			texts = append(texts, fmt.Sprintf("%q (msgID=%d)", m.Text, m.MessageID))
 		}
 		t.Errorf("expected 'Hello world!' in final message, got messages: %v", texts)
+	}
+}
+
+// TestToolUseLoop_ThinkingBlocksInHistory is a regression test for the bug where
+// thinking block signatures were not included in the assistant message during the
+// tool_use loop. Without them, the Claude API would error on the second call when
+// extended thinking is enabled.
+func TestToolUseLoop_ThinkingBlocksInHistory(t *testing.T) {
+	llm := &mockLLM{
+		responses: []*claude.Response{
+			{
+				TextContent: "Let me look that up.",
+				ToolCalls: []claude.ToolCall{
+					{ID: "tc-1", Name: "search__web", Input: json.RawMessage(`{"q":"test"}`)},
+				},
+				ThinkingBlocks: []claude.ThinkingBlock{
+					{Signature: "sig_abc123"},
+				},
+			},
+			{TextContent: "Found the answer."},
+		},
+	}
+	store := &mockStore{convID: "conv-think"}
+	ctxb := &mockContextProvider{}
+	router := &mockToolRouter{
+		callFn: func(_ context.Context, _ string, _ map[string]any) (string, error) {
+			return "result", nil
+		},
+	}
+	tg := newMockTelegram()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = tg.drainInbox(ctx)
+
+	actor := newTestActor(llm, store, ctxb, router, nil, tg)
+
+	msg := telegram.IncomingMessage{ChatID: 100, UserID: 42, Text: "think hard about this"}
+	if err := actor.handleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	// The second Claude call should include thinking blocks from the first response
+	// in the assistant message content.
+	llm.mu.Lock()
+	defer llm.mu.Unlock()
+	if len(llm.calls) < 2 {
+		t.Fatalf("expected 2 Claude calls, got %d", len(llm.calls))
+	}
+
+	// Check the messages in the second call: the assistant message (from first response)
+	// should contain a thinking block before the text block.
+	secondCall := llm.calls[1]
+	if len(secondCall.Messages) < 2 {
+		t.Fatalf("second call has %d messages, expected at least 2", len(secondCall.Messages))
+	}
+
+	// The assistant message is the second-to-last (before the tool_result user message).
+	// With thinking blocks, it should have 3 content blocks: thinking + text + tool_use.
+	assistantMsg := secondCall.Messages[len(secondCall.Messages)-2]
+	content := assistantMsg.Content
+	if len(content) < 3 {
+		t.Fatalf("assistant message has %d content blocks, expected at least 3 (thinking + text + tool_use)", len(content))
+	}
+
+	// First block should be a thinking block.
+	firstBlock := content[0]
+	sig := firstBlock.GetSignature()
+	if sig == nil || *sig != "sig_abc123" {
+		t.Errorf("first content block signature = %v, want 'sig_abc123'", sig)
 	}
 }
 

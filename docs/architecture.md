@@ -3,34 +3,39 @@
 ## System Overview
 
 ```
-┌───────────────────────────────────────────────────────┐
-│                     Supervisor                        │
-│          (panic/recover, backoff, 30s drain)          │
-│                                                       │
-│  ┌──────────┐   ┌───────────┐   ┌───────────┐         │
-│  │ Channel  │◄─►│  Session  │   │ Reminder  │         │
-│  │  Actor   │   │   Actor   │   │   Actor   │         │
-│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘         │
-│       │               │               │               │
-│       │               ├──► Claude     │               │
-│       │               │    Direct API (stream+tools)  │
-│       │               │    OR CLI subprocess (Max)    │
-│       │               │               │               │
-│       │               ├──► Tools      │               │
-│       │               │    Skills / MCP / Wasm / Ext  │
-│       │               │               │               │
-│       │               └──► Memory ◄───┘               │
-│       │                    SQLite / Vector             │
-│       │                                               │
-│       │◄── [tool] lines + [confirm?] previews         │
-│       │                                               │
-└───────┼───────────────────────────────────────────────┘
-        │                  │
-   Telegram            Landlock
-   Bot API          (Linux sandbox)
+┌────────────────────────────────────────────────────────────┐
+│                       Supervisor                           │
+│            (panic/recover, backoff, 30s drain)             │
+│                                                            │
+│  ┌──────────┐   ┌───────────┐   ┌───────────┐              │
+│  │ Channel  │◄─►│  Session  │   │ Reminder  │              │
+│  │  Actor   │   │   Actor   │   │   Actor   │              │
+│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘              │
+│       │               │               │                    │
+│       │               ├──► Claude     │                    │
+│       │               │    Direct API (stream+tools)       │
+│       │               │    OR CLI subprocess               │
+│       │               │    + /effort /retry /debug         │
+│       │               │               │                    │
+│       │               ├──► MCP Manager                     │
+│       │               │    ├─ Config servers (gws, github) │
+│       │               │    ├─ Runtime extensions (proxy)   │
+│       │               │    └─ Skills (built-in + Wasm)     │
+│       │               │               │                    │
+│       │               └──► Memory ◄───┘                    │
+│       │                    SQLite / Qdrant / Ollama        │
+│       │                                                    │
+│       │◄── [tool] lines (/debug toggles visibility)        │
+│       │                                                    │
+└───────┼────────────────────────────────────────────────────┘
+        │
+   Telegram
+   Bot API
 ```
 
-Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s → 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit.
+Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s -> 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit.
+
+The MCP Manager maintains persistent stdio connections to configured servers (Google Workspace, GitHub) and runtime extensions (scrapling-mcp, fetch, etc.). In CLI mode, extensions are proxied through the curlycatclaw-skills MCP subprocess with hot-reload via `AddTool()`/`RemoveTools()`. Environment variables pass through a three-layer allowlist (subprocess -> MCP server -> extension) to prevent secret leakage while allowing necessary config like `PLAYWRIGHT_BROWSERS_PATH`.
 
 ## Streaming Pipeline
 
@@ -54,7 +59,9 @@ Telegram ──► Channel Actor ──► Session Actor ──► Claude API (s
                                               state, loop (max 10 rounds)
 ```
 
-Each tool round produces a distinct Telegram message. Text edits respect Telegram's 4096-char limit -- long responses split automatically. The `flushing` state flag prevents lock contention during Telegram I/O.
+Each tool round produces a distinct Telegram message. Text edits respect Telegram's 4096-char limit. Long responses split at paragraph boundaries, and code blocks are closed/reopened across splits so both messages render correctly. The `flushing` state flag prevents lock contention during Telegram I/O. Rate-limited HTML edits retry once to prevent raw markdown display.
+
+Thinking effort (`/effort low|medium|high|max`) controls extended thinking budget per request. In direct API mode, `high` and `max` enable `ThinkingConfigParamOfEnabled` with 10K/32K token budgets. Thinking block signatures are preserved in conversation history for multi-turn tool calls. `/retry` replays the last message at a different effort level (one-shot). `/debug on|off` toggles tool call visibility.
 
 ## Memory System
 
@@ -64,14 +71,14 @@ Four-tier hierarchical memory:
 Context Assembly (per request)
 ┌──────────────────────────────────────────────────────────┐
 │  Tier 1 (always)    │ User Facts (SQLite)                │  system prompt
-│  Tier 2 (semantic)  │ Observations (Qdrant + FTS5)        │  decisions, preferences, project state, commitments, discoveries, references
+│  Tier 2 (semantic)  │ Observations (Qdrant + FTS5)       │  decisions, preferences, project state, commitments, discoveries, references
 │  Tier 3 (semantic)  │ Relevant Summaries (Qdrant)        │  cosine similarity
 │  Tier 4 (window)    │ Recent Messages (SQLite)           │  25 turns, ~150K tokens
 └──────────────────────────────────────────────────────────┘
 
 Observation Extraction (idle detection, in-memory turn counter):
   Conversation turns ──► Turn threshold ──► ObservationExtractor
-                                                   │
+                                                    │
                               SQLite (structured) ◄─┤
                               Qdrant (embed) ◄──────┤
                               Entities (FTS5) ◄─────┘

@@ -20,17 +20,19 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Features
 
-💬 **Telegram-native** -- text, photos, documents, voice, audio, typing indicators, streaming responses with tool previews
+- 💬 **Telegram-native** -- text, photos, documents, voice, audio, typing indicators, streaming responses with tool previews, smart message splitting that preserves code blocks
 
-🧠 **Smart memory** -- four-tier context (user facts, auto-extracted observations with entity tracking and self-healing supersession, conversation summaries via Qdrant, sliding window), FTS5 hybrid search, progressive retrieval, pluggable embeddings, voice messages transcribed via OpenAI Whisper
+- 🧠 **Smart memory** -- four-tier context (user facts, auto-extracted observations with entity tracking and self-healing supersession, conversation summaries via Qdrant, sliding window), FTS5 hybrid search, progressive retrieval, pluggable embeddings, voice messages transcribed via OpenAI Whisper
 
-🔌 **Extensible** -- Google Workspace, GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, all manageable from chat
+- 🔌 **Extensible** -- Google Workspace, GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, all manageable from chat
 
-⏰ **Cron tasks** -- scheduled prompts through Claude with full tool access, per-reminder model selection
+- 🧪 **Thinking effort control** -- configure Claude's reasoning depth (`/effort low|medium|high|max`), replay messages at higher effort (`/retry`), extended thinking with budget presets, per-session override via Telegram
 
-🔒 **Secure** -- Landlock sandbox, AES-256-GCM encrypted credentials, SSRF protection, user scoping, tool confirmation
+- ⏰ **Cron tasks** -- scheduled prompts through Claude with full tool access, per-reminder model selection
 
-🐳 **Docker ready** -- one command to run with Qdrant + Ollama, health endpoint, supervised actors with auto-restart
+- 🔒 **Secure** -- AES-256-GCM encrypted credentials, SSRF protection, user scoping, tool confirmation, Docker isolation
+
+- 🐳 **Docker ready** -- one command to run with Qdrant + Ollama, health endpoint, supervised actors with auto-restart
 
 ## Quick Start
 
@@ -61,31 +63,34 @@ Then message your Telegram bot. Done.
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────┐
-│                     Supervisor                        │
-│          (panic/recover, backoff, 30s drain)          │
-│                                                       │
-│  ┌──────────┐   ┌───────────┐   ┌───────────┐         │
-│  │ Channel  │◄─►│  Session  │   │ Reminder  │         │
-│  │  Actor   │   │   Actor   │   │   Actor   │         │
-│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘         │
-│       │               │               │               │
-│       │               ├──► Claude     │               │
-│       │               │    Direct API (stream+tools)  │
-│       │               │    OR CLI subprocess (Max)    │
-│       │               │               │               │
-│       │               ├──► Tools      │               │
-│       │               │    Skills / MCP / Wasm / Ext  │
-│       │               │               │               │
-│       │               └──► Memory ◄───┘               │
-│       │                    SQLite / Vector             │
-│       │                                               │
-│       │◄── [tool] lines + [confirm?] previews         │
-│       │                                               │
-└───────┼───────────────────────────────────────────────┘
-        │                  │
-   Telegram            Landlock
-   Bot API          (Linux sandbox)
+┌────────────────────────────────────────────────────────────┐
+│                       Supervisor                           │
+│            (panic/recover, backoff, 30s drain)             │
+│                                                            │
+│  ┌──────────┐   ┌───────────┐   ┌───────────┐              │
+│  │ Channel  │◄─►│  Session  │   │ Reminder  │              │
+│  │  Actor   │   │   Actor   │   │   Actor   │              │
+│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘              │
+│       │               │               │                    │
+│       │               ├──► Claude     │                    │
+│       │               │    Direct API (stream+tools)       │
+│       │               │    OR CLI subprocess               │
+│       │               │    + /effort /retry /debug         │
+│       │               │               │                    │
+│       │               ├──► MCP Manager                     │
+│       │               │    ├─ Config servers (gws, github) │
+│       │               │    ├─ Runtime extensions (proxy)   │
+│       │               │    └─ Skills (built-in + Wasm)     │
+│       │               │               │                    │
+│       │               └──► Memory ◄───┘                    │
+│       │                    SQLite / Qdrant / Ollama        │
+│       │                                                    │
+│       │◄── [tool] lines (/debug toggles visibility)        │
+│       │                                                    │
+└───────┼────────────────────────────────────────────────────┘
+        │
+   Telegram
+   Bot API
 ```
 
 Everything runs as goroutine-based actors under supervision. The Channel Actor handles Telegram I/O, the Session Actor orchestrates Claude conversations and tool execution, and the Reminder Actor manages scheduled tasks. See [docs/architecture.md](docs/architecture.md) for the full streaming pipeline, memory system, tool execution, and vector search diagrams.

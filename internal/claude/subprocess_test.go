@@ -457,3 +457,17 @@ func TestFilteredSpawnEnv_ExcludesSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestNewCLIManager_EffortField(t *testing.T) {
+	mgr := NewCLIManager("/usr/bin/claude", "claude-sonnet-4-6-20250514", "high", "tok")
+	if mgr.effort != "high" {
+		t.Errorf("effort = %q, want %q", mgr.effort, "high")
+	}
+}
+
+func TestNewCLIManager_EmptyEffort(t *testing.T) {
+	mgr := NewCLIManager("/usr/bin/claude", "claude-sonnet-4-6-20250514", "", "tok")
+	if mgr.effort != "" {
+		t.Errorf("effort = %q, want empty", mgr.effort)
+	}
+}

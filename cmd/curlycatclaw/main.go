@@ -141,12 +141,15 @@ func run(configPath string) error {
 	var cliManager *claude.CLIManager
 	var authOpt option.RequestOption
 	if cfg.Claude.UseCLI() {
-		cliManager = claude.NewCLIManager(cfg.Claude.CLIPath, cfg.Claude.Model, cfg.Claude.OAuthToken)
-		slog.Info("claude CLI manager initialized", "cli", cfg.Claude.CLIPath, "model", cfg.Claude.Model)
+		cliManager = claude.NewCLIManager(cfg.Claude.CLIPath, cfg.Claude.Model, string(cfg.Claude.ThinkingEffort), cfg.Claude.OAuthToken)
+		slog.Info("claude CLI manager initialized", "cli", cfg.Claude.CLIPath, "model", cfg.Claude.Model, "effort", cfg.Claude.ThinkingEffort)
 	} else {
 		authOpt = cfg.Claude.AuthOption()
 		claudeClient = claude.NewClient(authOpt, cfg.Claude.Model)
-		slog.Info("claude client initialized", "model", cfg.Claude.Model)
+		slog.Info("claude client initialized", "model", cfg.Claude.Model, "effort", cfg.Claude.ThinkingEffort)
+		if cfg.Claude.ThinkingEffort == config.EffortLow || cfg.Claude.ThinkingEffort == config.EffortMedium {
+			slog.Info("note: low/medium effort uses standard reasoning in direct API mode (no extended thinking)")
+		}
 	}
 
 	// Initialize Telegram channel.
@@ -363,23 +366,6 @@ func run(configPath string) error {
 			}()
 			defer wasmRT.Close()
 			slog.Info("wasm runtime enabled", "dir", cfg.Wasm.SkillsDir)
-		}
-	}
-
-	// Apply filesystem sandbox (Linux-only, no-op on other platforms).
-	if cfg.Sandbox.Enabled {
-		var logDir string
-		if cfg.Logging.File != "" {
-			logDir = filepath.Dir(cfg.Logging.File)
-		}
-		if err := security.ApplySandbox(security.SandboxParams{
-			DataDir:      dataDir,
-			ConfigPath:   configPath,
-			LogDir:       logDir,
-			ExtraPaths:   cfg.Sandbox.ExtraPaths,
-			ExtraPathsRW: cfg.Sandbox.ExtraPathsRW,
-		}); err != nil {
-			slog.Warn("sandbox: failed to apply", "err", err)
 		}
 	}
 

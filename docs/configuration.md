@@ -9,6 +9,7 @@ timezone = "America/Los_Angeles"
 cli_path      = "/usr/local/bin/claude"
 oauth_token   = "sk-ant-oat01-..."          # from `claude setup-token`
 model         = "claude-sonnet-4-6-20250514"
+# thinking_effort = "high"               # low/medium = standard, high/max = extended thinking
 isolated_home = "/data/claude-home"
 
 [telegram]

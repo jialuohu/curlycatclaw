@@ -28,6 +28,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && GH_MCP_ARCH=$(dpkg --print-architecture | sed 's/amd64/x86_64/') \
     && curl -fsSL "https://github.com/github/github-mcp-server/releases/download/v0.32.0/github-mcp-server_Linux_${GH_MCP_ARCH}.tar.gz" \
        | tar -xz -C /usr/local/bin github-mcp-server
+# Install Playwright Chromium for scrapling-mcp browser-based tools (fetch, stealthy_fetch).
+# Install to /opt/playwright so the runtime user (curlycatclaw) can access it.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN /usr/local/bin/uv pip install --system --break-system-packages playwright \
+    && playwright install --with-deps chromium \
+    && chmod -R o+rX /opt/playwright
 RUN useradd -m -d /data curlycatclaw
 COPY --from=builder /curlycatclaw /usr/local/bin/curlycatclaw
 COPY --from=builder /curlycatclaw-gws-mcp /usr/local/bin/curlycatclaw-gws-mcp

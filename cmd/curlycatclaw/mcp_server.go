@@ -39,6 +39,8 @@ var dangerousEnvPrefixes = []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_"}
 var baselineEnvAllowlist = map[string]struct{}{
 	"PATH": {}, "HOME": {}, "USER": {}, "LANG": {}, "LC_ALL": {},
 	"SHELL": {}, "TMPDIR": {}, "TZ": {}, "XDG_RUNTIME_DIR": {},
+	// Playwright (needed by scrapling-mcp browser tools).
+	"PLAYWRIGHT_BROWSERS_PATH": {},
 }
 
 // runMCPServer starts curlycatclaw as an MCP stdio server, exposing built-in

@@ -151,6 +151,16 @@ func (ch *Channel) Run(ctx context.Context) error {
 
 	slog.Info("telegram bot authorised", "username", bot.Self.UserName)
 
+	// Register slash commands so they show in Telegram's autocomplete menu.
+	commands := tgbotapi.NewSetMyCommands(
+		tgbotapi.BotCommand{Command: "effort", Description: "Show or set thinking effort level (low/medium/high/max)"},
+		tgbotapi.BotCommand{Command: "retry", Description: "Replay last message at higher effort"},
+		tgbotapi.BotCommand{Command: "debug", Description: "Toggle tool call visibility (on/off)"},
+	)
+	if _, err := bot.Request(commands); err != nil {
+		slog.Warn("telegram: failed to register bot commands", "err", err)
+	}
+
 	ucfg := tgbotapi.NewUpdate(0)
 	ucfg.Timeout = 30
 	tgUpdates := bot.GetUpdatesChan(ucfg)
@@ -389,6 +399,21 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 				edit.ParseMode = ""
 				if _, retryErr := bot.Send(edit); retryErr != nil {
 					slog.Warn("telegram: failed to edit message (plain retry)",
+						"chat_id", msg.ChatID,
+						"message_id", msg.MessageID,
+						"err", retryErr,
+					)
+				}
+			} else if strings.Contains(err.Error(), "Too Many Requests") && msg.HTML {
+				// Rate-limited on the final HTML edit. Wait and retry once
+				// so the user sees formatted text instead of raw markdown.
+				slog.Warn("telegram: rate limited on HTML edit, will retry",
+					"chat_id", msg.ChatID,
+					"message_id", msg.MessageID,
+				)
+				time.Sleep(3 * time.Second)
+				if _, retryErr := bot.Send(edit); retryErr != nil {
+					slog.Warn("telegram: failed to edit message (rate limit retry)",
 						"chat_id", msg.ChatID,
 						"message_id", msg.MessageID,
 						"err", retryErr,

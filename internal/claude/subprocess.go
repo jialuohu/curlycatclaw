@@ -215,6 +215,7 @@ func (p *CLIProcess) Kill() {
 type CLIManager struct {
 	cliPath    string
 	model      string
+	effort     string // default effort level for all spawns
 	oauthToken string // long-lived token from `claude setup-token`
 
 	mu        sync.Mutex
@@ -224,10 +225,11 @@ type CLIManager struct {
 
 // NewCLIManager creates a new manager. If oauthToken is non-empty, it is
 // injected as CLAUDE_CODE_OAUTH_TOKEN on each subprocess.
-func NewCLIManager(cliPath, model, oauthToken string) *CLIManager {
+func NewCLIManager(cliPath, model, effort, oauthToken string) *CLIManager {
 	return &CLIManager{
 		cliPath:    cliPath,
 		model:      model,
+		effort:     effort,
 		oauthToken: oauthToken,
 		processes:  make(map[userKey]*CLIProcess),
 	}
@@ -241,6 +243,7 @@ type SpawnParams struct {
 	WorkDir      string          // if set, cmd.Dir is set to this path
 	HomeDir      string          // if set, HOME env var is replaced with this path
 	Model        string          // if set, overrides CLIManager.model for this spawn
+	Effort       string          // if set, overrides CLIManager.effort for this spawn
 }
 
 // GetOrCreate returns the existing CLI process for a user or spawns a new one.
@@ -387,6 +390,13 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 	}
 	if model != "" {
 		args = append(args, "--model", model)
+	}
+	effort := m.effort
+	if params.Effort != "" {
+		effort = params.Effort
+	}
+	if effort != "" {
+		args = append(args, "--effort", effort)
 	}
 
 	cmd := exec.CommandContext(ctx, m.cliPath, args...)
@@ -749,6 +759,8 @@ var spawnEnvAllowlist = map[string]struct{}{
 	"NODE_PATH": {}, "NODE_OPTIONS": {}, "NODE_EXTRA_CA_CERTS": {},
 	// Terminal (needed for Claude CLI output formatting).
 	"TERM": {}, "COLORTERM": {},
+	// Playwright (needed by scrapling-mcp browser tools).
+	"PLAYWRIGHT_BROWSERS_PATH": {},
 }
 
 // filteredSpawnEnv returns a copy of the current process environment filtered

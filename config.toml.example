@@ -12,6 +12,9 @@ timezone = "America/Los_Angeles"
 # api_key  = "sk-ant-..."
 #
 model = "claude-sonnet-4-6-20250514"
+# Reasoning depth: low/medium = standard reasoning, high/max = extended thinking enabled.
+# Override per session with /effort in Telegram, or env CURLYCATCLAW_THINKING_EFFORT.
+# thinking_effort = "high"
 # isolated_home = "/data/claude-home"
 
 [telegram]
@@ -119,10 +122,6 @@ port    = 8080
 # [wasm]
 # enabled    = true
 # skills_dir = "/data/skills"
-
-# Filesystem sandbox (Linux only, kernel 5.13+).
-# [sandbox]
-# enabled = false
 
 # Voice transcription via OpenAI Whisper (speech-to-text).
 # [voice]

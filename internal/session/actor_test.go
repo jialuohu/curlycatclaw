@@ -187,6 +187,8 @@ func TestHandleMessage_SendsTypingBeforeClaude(t *testing.T) {
 		indexSem:       make(chan struct{}, 10),
 		sumSem:         make(chan struct{}, 2),
 		activeProjects: make(map[userKey]string),
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
 	}
 
 	// Drain inbox so streamState.flush doesn't block waiting for message IDs.
@@ -1122,4 +1124,176 @@ func TestBuildSystemPrompt_GitHubWorkflowGuidance(t *testing.T) {
 	}
 }
 
+func TestHandleEffortCommand_ShowCurrent(t *testing.T) {
+	tg := newMockTG()
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: config.EffortHigh}},
+		tg:             tg,
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
 
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort"})
+
+	select {
+	case msg := <-tg.inbox:
+		if !strings.Contains(msg.Text, "high") {
+			t.Errorf("expected 'high' in response, got: %s", msg.Text)
+		}
+	default:
+		t.Error("expected a message to be sent")
+	}
+}
+
+func TestHandleEffortCommand_SetOverride(t *testing.T) {
+	tg := newMockTG()
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: ""}},
+		tg:             tg,
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
+
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort max"})
+
+	key := userKey{UserID: 42, ChatID: 100}
+	if a.effortOverride[key] != config.EffortMax {
+		t.Errorf("effortOverride = %q, want %q", a.effortOverride[key], config.EffortMax)
+	}
+
+	select {
+	case msg := <-tg.inbox:
+		if !strings.Contains(msg.Text, "max") {
+			t.Errorf("expected 'max' in response, got: %s", msg.Text)
+		}
+	default:
+		t.Error("expected a message to be sent")
+	}
+}
+
+func TestHandleEffortCommand_Reset(t *testing.T) {
+	tg := newMockTG()
+	key := userKey{UserID: 42, ChatID: 100}
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: config.EffortLow}},
+		tg:             tg,
+		effortOverride: map[userKey]config.Effort{key: config.EffortMax},
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
+
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort reset"})
+
+	if _, ok := a.effortOverride[key]; ok {
+		t.Error("expected effortOverride to be cleared after /effort reset")
+	}
+}
+
+func TestHandleEffortCommand_InvalidLevel(t *testing.T) {
+	tg := newMockTG()
+	a := &Actor{
+		cfg:            &config.Config{},
+		tg:             tg,
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
+
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort turbo"})
+
+	select {
+	case msg := <-tg.inbox:
+		if !strings.Contains(msg.Text, "Unknown") {
+			t.Errorf("expected error message, got: %s", msg.Text)
+		}
+	default:
+		t.Error("expected a message to be sent")
+	}
+}
+
+func TestGetEffectiveEffort_OverrideTakesPrecedence(t *testing.T) {
+	key := userKey{UserID: 42, ChatID: 100}
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: config.EffortLow}},
+		effortOverride: map[userKey]config.Effort{key: config.EffortMax},
+	}
+
+	got := a.getEffectiveEffort(key)
+	if got != config.EffortMax {
+		t.Errorf("getEffectiveEffort = %q, want %q (override)", got, config.EffortMax)
+	}
+}
+
+func TestSplitAtBoundary_PrefersParagraphBreak(t *testing.T) {
+	// Build text: 2500 chars, then \n\n, then 2000 chars.
+	part1 := strings.Repeat("a", 2500)
+	part2 := strings.Repeat("b", 2000)
+	text := part1 + "\n\n" + part2
+
+	first, remainder := splitAtBoundary(text)
+
+	if !strings.HasSuffix(first, "a") {
+		t.Errorf("first part should end with 'a', got last char: %q", first[len(first)-1:])
+	}
+	if !strings.HasPrefix(strings.TrimLeft(remainder, "\n"), "b") {
+		t.Errorf("remainder should start with 'b', got: %q", remainder[:10])
+	}
+}
+
+func TestSplitAtBoundary_KeepsCodeFenceIntact(t *testing.T) {
+	// Build text with a code fence after a paragraph boundary. The split
+	// should happen at \n\n BEFORE the fence, keeping the code block whole.
+	before := strings.Repeat("x", 2000) + "\n\n```go\n"
+	code := strings.Repeat("fmt.Println(\"hello\")\n", 100)
+	text := before + code
+
+	first, remainder := splitAtBoundary(text)
+
+	// First part should be the x's, split at the paragraph boundary.
+	if strings.Contains(first, "```") {
+		t.Error("first part should not contain code fence (split should be before it)")
+	}
+	// Remainder should contain the complete code block.
+	if !strings.Contains(remainder, "```go") {
+		t.Error("remainder should contain the code fence opener")
+	}
+}
+
+func TestSplitAtBoundary_ClosesCodeFenceWhenForced(t *testing.T) {
+	// Build text where the code fence starts early and the only split point
+	// is INSIDE the code block (no paragraph boundary after the fence opens).
+	before := "Some intro text.\n\n```go\n"
+	// Make the code block itself huge so the 3900-rune limit falls inside it.
+	code := strings.Repeat("x := 1\n", 600) // ~4200 chars, all inside the fence
+	text := before + code
+
+	first, remainder := splitAtBoundary(text)
+
+	// First part should close the code fence since split is inside it.
+	if !strings.HasSuffix(strings.TrimSpace(first), "```") {
+		t.Error("first part should close the unclosed code fence")
+	}
+	// Remainder should reopen with the language tag.
+	if !strings.HasPrefix(strings.TrimSpace(remainder), "```go") {
+		t.Errorf("remainder should reopen code fence, got: %q", remainder[:min(30, len(remainder))])
+	}
+}
+
+func TestSplitAtBoundary_ShortTextNoSplit(t *testing.T) {
+	text := "short text"
+	first, remainder := splitAtBoundary(text)
+	if first != text || remainder != "" {
+		t.Errorf("short text should not split, got first=%q remainder=%q", first, remainder)
+	}
+}
+
+func TestGetEffectiveEffort_FallsBackToConfig(t *testing.T) {
+	key := userKey{UserID: 42, ChatID: 100}
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: config.EffortHigh}},
+		effortOverride: make(map[userKey]config.Effort),
+	}
+
+	got := a.getEffectiveEffort(key)
+	if got != config.EffortHigh {
+		t.Errorf("getEffectiveEffort = %q, want %q (config)", got, config.EffortHigh)
+	}
+}

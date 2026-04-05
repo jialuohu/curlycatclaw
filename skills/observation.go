@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -306,6 +307,9 @@ func makeGetObservationExecute(db *sql.DB) func(ctx context.Context, input json.
 				if err := factRows.Scan(&f); err == nil {
 					facts = append(facts, f)
 				}
+			}
+			if err := factRows.Err(); err != nil {
+				slog.Warn("get_observation: fact rows iteration error", "err", err, "id", id)
 			}
 		}
 
