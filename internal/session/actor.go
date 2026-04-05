@@ -757,12 +757,12 @@ func (a *Actor) reindexMissingObservations() {
 	if a.vectorStore == nil || a.obsStore == nil {
 		return
 	}
-	texts, _, err := a.obsStore.ObservationTextsAfter(0, 100)
-	if err != nil || len(texts) == 0 {
+	observations, err := a.obsStore.AllObservations(200)
+	if err != nil || len(observations) == 0 {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(a.bgCtx(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(a.bgCtx(), 60*time.Second)
 	defer cancel()
 
 	// Check if collection exists with wrong dimension. If so, delete and let
@@ -773,32 +773,19 @@ func (a *Actor) reindexMissingObservations() {
 
 	// Quick check: if Qdrant point count matches SQLite, skip reindex.
 	qdrantCount, _ := a.vectorStore.CountObservationPoints(ctx)
-	if qdrantCount >= len(texts) {
+	if qdrantCount >= len(observations) {
 		return // Qdrant already has all observations.
 	}
 
 	reindexed := 0
-	for _, t := range texts {
-		obs := memory.Observation{
-			ID:       t.ID,
-			UserID:   t.UserID,
-			ChatID:   t.ChatID,
-			ChatType: t.ChatType,
-			Title:    t.Text, // "Title. Summary" format
-		}
-		// Split "Title. Summary" back into parts for proper embedding.
-		if idx := strings.Index(t.Text, ". "); idx > 0 {
-			obs.Title = t.Text[:idx]
-			obs.Summary = t.Text[idx+2:]
-		}
-
+	for _, obs := range observations {
 		if err := a.vectorStore.IndexObservation(ctx, obs); err != nil {
-			idShort := t.ID
+			idShort := obs.ID
 			if len(idShort) > 8 {
 				idShort = idShort[:8]
 			}
 			slog.Warn("reindex observation", "err", err, "obs", idShort)
-			break // likely a persistent error, stop
+			break
 		}
 		reindexed++
 	}

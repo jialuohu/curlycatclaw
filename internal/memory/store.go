@@ -1512,6 +1512,52 @@ func (s *Store) RebuildFTS() error {
 	return nil
 }
 
+// AllObservations returns all observations with their facts for reindexing.
+func (s *Store) AllObservations(limit int) ([]Observation, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.Query(
+		`SELECT id, conversation_id, user_id, chat_id, COALESCE(chat_type, 'private'),
+		        type, title, summary, importance, created_at
+		 FROM observations ORDER BY rowid ASC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: all observations: %w", err)
+	}
+	defer rows.Close()
+
+	var obs []Observation
+	for rows.Next() {
+		var o Observation
+		if err := rows.Scan(&o.ID, &o.ConversationID, &o.UserID, &o.ChatID, &o.ChatType,
+			&o.Type, &o.Title, &o.Summary, &o.Importance, &o.CreatedAt); err != nil {
+			return obs, fmt.Errorf("memory: scan observation: %w", err)
+		}
+		obs = append(obs, o)
+	}
+	if err := rows.Err(); err != nil {
+		return obs, err
+	}
+
+	// Hydrate facts.
+	if len(obs) > 0 {
+		ids := make([]string, len(obs))
+		for i, o := range obs {
+			ids[i] = o.ID
+		}
+		factsMap, err := s.GetObservationFactsByIDs(ids)
+		if err != nil {
+			return obs, fmt.Errorf("memory: hydrate facts: %w", err)
+		}
+		for i := range obs {
+			obs[i].Facts = factsMap[obs[i].ID]
+		}
+	}
+
+	return obs, nil
+}
+
 // ObservationTextsAfter returns observation texts for migration backfill.
 // Each observation yields "Title. Summary" as the text for embedding.
 func (s *Store) ObservationTextsAfter(afterID int64, limit int) ([]MigrationText, int64, error) {

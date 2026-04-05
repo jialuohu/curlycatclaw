@@ -82,6 +82,7 @@ type ObservationStore interface {
 	DeleteEntitiesByObservation(obsID string) error
 	SearchObservationsFTS(query string, userID int64, limit int) ([]memory.FTSResult, error)
 	ObservationTextsAfter(afterID int64, limit int) ([]memory.MigrationText, int64, error)
+	AllObservations(limit int) ([]memory.Observation, error)
 }
 
 // CLIClient abstracts the CLI subprocess manager for testing.
