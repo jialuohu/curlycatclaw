@@ -1259,6 +1259,15 @@ func TestArchiveAndRestoreObservation(t *testing.T) {
 		t.Error("archived observation should not appear in hash dedup check")
 	}
 
+	// Should not appear in FTS search.
+	ftsResults, ftsErr := s.SearchObservationsFTS("Active observation", 42, 10)
+	if ftsErr != nil {
+		t.Fatalf("SearchObservationsFTS after archive: %v", ftsErr)
+	}
+	if len(ftsResults) != 0 {
+		t.Errorf("expected 0 FTS results for archived observation, got %d", len(ftsResults))
+	}
+
 	// Archive again should fail (already archived).
 	if err := s.ArchiveObservation(obs.ID, 42); err == nil {
 		t.Error("expected error archiving already-archived observation")
@@ -1330,6 +1339,91 @@ func TestUpdateObservation(t *testing.T) {
 	// IDOR: wrong user should fail.
 	if err := s.UpdateObservation(obs.ID, 99, "Hacked", "Hacked.", "decision", 1); err == nil {
 		t.Error("expected error for wrong user update")
+	}
+}
+
+func TestUpdateObservation_PartialUpdate(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	obs := Observation{
+		ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+		Type: "decision", Title: "Original", Summary: "Original summary",
+		Facts: []string{"fact1"}, Importance: 7, ContentHash: "partial-update-1",
+	}
+	if err := s.SaveObservation(&obs); err != nil {
+		t.Fatalf("SaveObservation: %v", err)
+	}
+
+	// Update only the title (summary="", type="", importance=0 mean "don't change").
+	if err := s.UpdateObservation(obs.ID, 42, "New title", "", "", 0); err != nil {
+		t.Fatalf("UpdateObservation partial: %v", err)
+	}
+
+	var title, summary, obsType string
+	var importance int
+	if err := s.db.QueryRow(
+		`SELECT title, summary, type, importance FROM observations WHERE id = ?`, obs.ID,
+	).Scan(&title, &summary, &obsType, &importance); err != nil {
+		t.Fatalf("query after partial update: %v", err)
+	}
+
+	if title != "New title" {
+		t.Errorf("title = %q, want %q", title, "New title")
+	}
+	if summary != "Original summary" {
+		t.Errorf("summary = %q, want %q (should be unchanged)", summary, "Original summary")
+	}
+	if obsType != "decision" {
+		t.Errorf("type = %q, want %q (should be unchanged)", obsType, "decision")
+	}
+	if importance != 7 {
+		t.Errorf("importance = %d, want %d (should be unchanged)", importance, 7)
+	}
+}
+
+func TestFTS5UpdateTrigger(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	obs := Observation{
+		ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+		Type: "decision", Title: "Redis caching", Summary: "Use a key-value store for the caching layer.",
+		Facts: []string{"cache layer chosen"}, Importance: 6, ContentHash: "fts-update-1",
+	}
+	if err := s.SaveObservation(&obs); err != nil {
+		t.Fatalf("SaveObservation: %v", err)
+	}
+
+	// Update title from "Redis caching" to "Memcached caching".
+	if err := s.UpdateObservation(obs.ID, 42, "Memcached caching", "", "", 0); err != nil {
+		t.Fatalf("UpdateObservation: %v", err)
+	}
+
+	// Old title term should no longer match (not in summary either).
+	results, err := s.SearchObservationsFTS("Redis", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchObservationsFTS Redis: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for 'Redis' after title update, got %d", len(results))
+	}
+
+	// New title term should match.
+	results, err = s.SearchObservationsFTS("Memcached", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchObservationsFTS Memcached: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for 'Memcached' after title update, got %d", len(results))
 	}
 }
 
