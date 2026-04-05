@@ -83,6 +83,16 @@ db_path = "/data/curlycatclaw.db"
 # GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = "/data/gws-credentials.json"  # Docker path (mounted from ~/.curlycatclaw)
 # GWS_SKILLS_DIR = ""           # optional: pre-generated skills dir (skip gws generate-skills)
 # GWS_FILTER = "gmail_*,calendar_*,drive_*,sheets_*,docs_*,slides_*,tasks_*"  # optional: glob filter
+#
+# Multi-account: authenticate each account separately, export to separate files:
+#   gws auth login -s drive,gmail,calendar   # log in with account #2
+#   gws auth export --unmasked > ~/.curlycatclaw/gws-work-credentials.json
+# Then replace GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE with GWS_ACCOUNT_* vars:
+# GWS_ACCOUNT_PERSONAL          = "/data/gws-credentials.json"
+# GWS_ACCOUNT_PERSONAL_SERVICES = "gmail,calendar,drive,sheets,docs,slides,tasks"
+# GWS_ACCOUNT_WORK              = "/data/gws-work-credentials.json"
+# GWS_ACCOUNT_WORK_SERVICES     = "gmail"  # omit to allow all services
+# GWS_DEFAULT_ACCOUNT           = "personal"
 
 # GitHub via github-mcp-server (https://github.com/github/github-mcp-server).
 # Auth: create a Personal Access Token at https://github.com/settings/tokens
