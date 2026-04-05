@@ -122,6 +122,24 @@ func runMCPServer() error {
 		}
 	}
 
+	// Observation skills (requires memory + observations enabled).
+	// VectorStore is connected later (line ~242); observation skills that need
+	// vector search (search_observations) will fail gracefully if vs is nil.
+	// Skills that only need SQLite/FTS5 (list, get, forget, search_entities) always work.
+	var mcpObsAdapter *obsSkillAdapter
+	if cfg.Memory.Enabled && cfg.Memory.Observations.Enabled {
+		mcpObsAdapter = &obsSkillAdapter{store: store, vs: nil, cfg: cfg}
+		entStore := &entitySkillAdapter{store: store}
+		obsSkills, err := skills.InitObservationSkills(store.DB(), mcpObsAdapter, entStore)
+		if err != nil {
+			slog.Warn("mcp-server: observation skills init failed", "err", err)
+		} else {
+			for _, s := range obsSkills {
+				reg.Register(s)
+			}
+		}
+	}
+
 	// Plugin management skills (optional, requires CLI + isolated home).
 	cliPath := os.Getenv("CURLYCATCLAW_CLI_PATH")
 	isolatedHome := os.Getenv("CURLYCATCLAW_ISOLATED_HOME")
@@ -224,6 +242,7 @@ func runMCPServer() error {
 	// Semantic search (optional, requires Qdrant).
 	if cfg.Vector.Enabled {
 		embedder := newEmbedder(cfg.Vector)
+		slog.Info("mcp-server: embedder configured", "name", embedder.Name(), "dim", embedder.Dimension())
 		ctx := context.Background()
 		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr, embedder)
 		if err != nil {
@@ -231,6 +250,10 @@ func runMCPServer() error {
 		} else {
 			defer vs.Close()
 			reg.Register(skills.NewSemanticSearchSkill(vs))
+			// Wire VectorStore into observation skill adapter for search_observations.
+			if mcpObsAdapter != nil {
+				mcpObsAdapter.vs = vs
+			}
 		}
 	}
 

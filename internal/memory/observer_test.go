@@ -405,6 +405,99 @@ func TestExtract_MaxPerConversation(t *testing.T) {
 	}
 }
 
+func TestExtract_WithEntities(t *testing.T) {
+	store := newMockObserverStore()
+	store.messages = makeMessages(5)
+
+	claudeResp := `[
+		{
+			"type": "discovery",
+			"title": "Team uses Kubernetes",
+			"summary": "Learned the team deploys on Kubernetes with Helm charts.",
+			"facts": ["K8s for deployment", "Helm charts used"],
+			"importance": 6,
+			"entities": [
+				{"name": "Kubernetes", "type": "tool"},
+				{"name": "  Alice  ", "type": "person"},
+				{"name": "bad-type", "type": "unknown_type"},
+				{"name": "", "type": "tool"}
+			]
+		}
+	]`
+
+	sendFn := func(ctx context.Context, system, user string) (string, error) {
+		return claudeResp, nil
+	}
+
+	ext := NewObservationExtractor(sendFn, store)
+	obs, err := ext.Extract(context.Background(), "conv-1", 42, 100, "private", 0, 100, 50, 10000)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(obs) != 1 {
+		t.Fatalf("got %d observations, want 1", len(obs))
+	}
+
+	// Should have 2 valid entities (Kubernetes + Alice). "unknown_type" and empty name are skipped.
+	if len(obs[0].Entities) != 2 {
+		t.Fatalf("got %d entities, want 2", len(obs[0].Entities))
+	}
+	// Names should be canonicalized (lowercased, trimmed).
+	if obs[0].Entities[0].Name != "kubernetes" {
+		t.Errorf("entity 0 name = %q, want %q", obs[0].Entities[0].Name, "kubernetes")
+	}
+	if obs[0].Entities[1].Name != "alice" {
+		t.Errorf("entity 1 name = %q, want %q", obs[0].Entities[1].Name, "alice")
+	}
+	// Type should be "discovery" (new Phase 2 type).
+	if obs[0].Type != "discovery" {
+		t.Errorf("type = %q, want %q", obs[0].Type, "discovery")
+	}
+}
+
+func TestExtract_AllAllowedTypes(t *testing.T) {
+	// Verify all 6 observation types pass validation.
+	for typ := range AllowedObservationTypes {
+		r := rawObservation{
+			Type:       typ,
+			Title:      "Test " + typ,
+			Summary:    "Testing " + typ + " type.",
+			Facts:      []string{"fact"},
+			Importance: 5,
+		}
+		obs, ok := validateRawObservation(r)
+		if !ok {
+			t.Errorf("type %q should be allowed but was rejected", typ)
+			continue
+		}
+		if obs.Type != typ {
+			t.Errorf("type = %q, want %q", obs.Type, typ)
+		}
+	}
+}
+
+func TestValidateRawObservation_EntityCap(t *testing.T) {
+	entities := make([]rawEntity, 15)
+	for i := range entities {
+		entities[i] = rawEntity{Name: "entity", Type: "tool"}
+	}
+	r := rawObservation{
+		Type:       "decision",
+		Title:      "Test",
+		Summary:    "Test summary.",
+		Facts:      []string{"fact"},
+		Importance: 5,
+		Entities:   entities,
+	}
+	obs, ok := validateRawObservation(r)
+	if !ok {
+		t.Fatal("expected valid observation")
+	}
+	if len(obs.Entities) != 10 {
+		t.Errorf("got %d entities, want 10 (cap)", len(obs.Entities))
+	}
+}
+
 func TestContentHash(t *testing.T) {
 	// Deterministic: same input produces same hash.
 	h1 := observationContentHash("Use Go", "Go was chosen")

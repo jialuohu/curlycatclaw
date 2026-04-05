@@ -70,7 +70,7 @@ func TestCronExecutor_SimplePrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Summarize my day")
+	result, err := ce.Execute(ctx, 1, 10, "Summarize my day", "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestCronExecutor_WithToolUse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Search for test")
+	result, err := ce.Execute(ctx, 1, 10, "Search for test", "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestCronExecutor_ToolError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Use broken tool")
+	result, err := ce.Execute(ctx, 1, 10, "Use broken tool", "")
 	if err != nil {
 		t.Fatalf("Execute should succeed (tool error fed back to Claude): %v", err)
 	}
@@ -217,7 +217,7 @@ func TestCronExecutor_UserContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := ce.Execute(ctx, 42, 10, "check user context")
+	_, err := ce.Execute(ctx, 42, 10, "check user context", "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestCronExecutor_Semaphore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := ce.Execute(ctx, 1, 10, "blocked")
+	_, err := ce.Execute(ctx, 1, 10, "blocked", "")
 	if err == nil {
 		t.Fatal("expected error when semaphore is full and context times out")
 	}

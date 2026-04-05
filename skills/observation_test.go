@@ -78,7 +78,7 @@ func newTestObservationDB(t *testing.T) *memory.Store {
 func TestSearchObservations_InvalidType(t *testing.T) {
 	store := &mockObservationStore{}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestSearchObservations_ValidType(t *testing.T) {
 		},
 	}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestForgetObservation_IDOR(t *testing.T) {
 		deleteErr: fmt.Errorf("observation not found"),
 	}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestForgetObservation_IDOR(t *testing.T) {
 func TestForgetObservation_InvalidUUID(t *testing.T) {
 	store := &mockObservationStore{}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestForgetObservation_InvalidUUID(t *testing.T) {
 func TestListObservations_LimitClamping(t *testing.T) {
 	db := newTestObservationDB(t)
 	store := &mockObservationStore{}
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestListObservations_LimitClamping(t *testing.T) {
 func TestListObservations_TypeFilter(t *testing.T) {
 	db := newTestObservationDB(t)
 	store := &mockObservationStore{}
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestListObservations_TypeFilter(t *testing.T) {
 func TestGetObservation_IDOR(t *testing.T) {
 	db := newTestObservationDB(t)
 	store := &mockObservationStore{}
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestGetObservation_IDOR(t *testing.T) {
 func TestSearchObservations_EmptyQuery(t *testing.T) {
 	store := &mockObservationStore{}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestSearchObservations_StoreError(t *testing.T) {
 		searchErr: fmt.Errorf("connection refused"),
 	}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestSearchObservations_NoResults(t *testing.T) {
 		searchResults: nil,
 	}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestSearchObservations_LimitClamping(t *testing.T) {
 		},
 	}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestSearchObservations_LimitClamping(t *testing.T) {
 func TestGetObservation_EmptyID(t *testing.T) {
 	db := newTestObservationDB(t)
 	store := &mockObservationStore{}
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestGetObservation_EmptyID(t *testing.T) {
 func TestGetObservation_InvalidUUID(t *testing.T) {
 	db := newTestObservationDB(t)
 	store := &mockObservationStore{}
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -551,7 +551,7 @@ func TestGetObservation_InvalidUUID(t *testing.T) {
 func TestForgetObservation_EmptyID(t *testing.T) {
 	store := &mockObservationStore{}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -580,7 +580,7 @@ func TestForgetObservation_VectorCleanupFailure(t *testing.T) {
 		vectorDelErr: fmt.Errorf("qdrant unreachable"),
 	}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -611,7 +611,7 @@ func TestForgetObservation_VectorCleanupFailure(t *testing.T) {
 func TestForgetObservation_Success(t *testing.T) {
 	store := &mockObservationStore{}
 	db := newTestObservationDB(t)
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestForgetObservation_Success(t *testing.T) {
 func TestListObservations_NegativeLimit(t *testing.T) {
 	db := newTestObservationDB(t)
 	store := &mockObservationStore{}
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}
@@ -683,7 +683,7 @@ func TestListObservations_NegativeLimit(t *testing.T) {
 func TestListObservations_Empty(t *testing.T) {
 	db := newTestObservationDB(t)
 	store := &mockObservationStore{}
-	skills, err := InitObservationSkills(db.DB(), store)
+	skills, err := InitObservationSkills(db.DB(), store, nil)
 	if err != nil {
 		t.Fatalf("InitObservationSkills: %v", err)
 	}

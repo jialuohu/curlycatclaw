@@ -15,6 +15,9 @@ var AllowedObservationTypes = []string{
 	"decision",
 	"preference",
 	"project_state",
+	"commitment",
+	"discovery",
+	"reference",
 }
 
 // uuidPattern matches a standard UUID v4 with hyphens (8-4-4-4-12 hex).
@@ -45,23 +48,35 @@ type ObservationStore interface {
 	DeleteObservationVector(ctx context.Context, id string) error
 }
 
+// EntitySearchResult from FTS5 search on entity names.
+type EntitySearchResult struct {
+	ObservationID string
+	Name          string
+	EntityType    string
+}
+
+// EntityStore abstracts entity operations needed by observation skills.
+type EntityStore interface {
+	SearchEntitiesFTS(query string, entityType string, userID int64, limit int) ([]EntitySearchResult, error)
+}
+
 // InitObservationSkills creates the observations table (if not exists) and
 // returns the search_observations, list_observations, get_observation, and
 // forget_observation skills. The db should be the same *sql.DB used by the
 // memory store.
-func InitObservationSkills(db *sql.DB, store ObservationStore) ([]*Skill, error) {
+func InitObservationSkills(db *sql.DB, store ObservationStore, entityStore EntityStore) ([]*Skill, error) {
 	// Schema is created by internal/memory/store.go migrate(). No need to create here.
 	return []*Skill{
 		{
 			Name:        "search_observations",
 			Description: "Search past observations by semantic query. Use when looking for patterns, preferences, or behaviors observed about the user.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Natural language query to search observations"},"type":{"type":"string","enum":["decision","preference","project_state"],"description":"Filter by observation type"},"limit":{"type":"integer","description":"Maximum number of results (1-50, default 10)"}},"required":["query"]}`),
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Natural language query to search observations"},"type":{"type":"string","enum":["decision","preference","project_state","commitment","discovery","reference"],"description":"Filter by observation type"},"limit":{"type":"integer","description":"Maximum number of results (1-50, default 10)"}},"required":["query"]}`),
 			Execute:     makeSearchObservationsExecute(store),
 		},
 		{
 			Name:        "list_observations",
 			Description: "List recent observations, optionally filtered by type.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"type":{"type":"string","enum":["decision","preference","project_state"],"description":"Filter by observation type"},"limit":{"type":"integer","description":"Maximum number of results (1-50, default 10)"}}}`),
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"type":{"type":"string","enum":["decision","preference","project_state","commitment","discovery","reference"],"description":"Filter by observation type"},"limit":{"type":"integer","description":"Maximum number of results (1-50, default 10)"}}}`),
 			Execute:     makeListObservationsExecute(db),
 		},
 		{
@@ -76,8 +91,27 @@ func InitObservationSkills(db *sql.DB, store ObservationStore) ([]*Skill, error)
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"UUID of the observation to delete"}},"required":["id"]}`),
 			Execute:     makeForgetObservationExecute(store),
 		},
+		{
+			Name:        "search_entities",
+			Description: "Search for entities (people, projects, files, tools) mentioned in observations. Use for 'what do I know about X?' queries.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Entity name to search for"},"type":{"type":"string","enum":["person","project","file","tool"],"description":"Filter by entity type"},"limit":{"type":"integer","description":"Maximum number of results (1-50, default 10)"}},"required":["query"]}`),
+			Execute:     makeSearchEntitiesExecute(entityStore),
+		},
 	}, nil
 }
+
+// isAllowedEntityType checks whether the given entity type is valid.
+func isAllowedEntityType(t string) bool {
+	for _, allowed := range AllowedEntityTypes {
+		if t == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowedEntityTypes is the whitelist of valid entity types for skills.
+var AllowedEntityTypes = []string{"person", "project", "file", "tool"}
 
 // isAllowedObservationType checks whether the given type is in the whitelist.
 func isAllowedObservationType(t string) bool {
@@ -132,7 +166,7 @@ func makeSearchObservationsExecute(store ObservationStore) func(ctx context.Cont
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Found %d observations for: %s\n\n", len(results), params.Query)
 		for i, r := range results {
-			fmt.Fprintf(&sb, "%d. [%s] (score: %.2f)\n", i+1, r.Type, r.Score)
+			fmt.Fprintf(&sb, "%d. [%s] %s (score: %.2f)\n", i+1, r.Type, r.ID, r.Score)
 			if r.CreatedAt != "" {
 				fmt.Fprintf(&sb, "   Time: %s\n", r.CreatedAt)
 			}
@@ -281,5 +315,53 @@ func makeForgetObservationExecute(store ObservationStore) func(ctx context.Conte
 			return fmt.Sprintf("Deleted observation %s (vector cleanup failed: %v).", params.ID, err), nil
 		}
 		return fmt.Sprintf("Deleted observation %s.", params.ID), nil
+	}
+}
+
+type searchEntitiesInput struct {
+	Query string `json:"query"`
+	Type  string `json:"type"`
+	Limit int    `json:"limit"`
+}
+
+func makeSearchEntitiesExecute(store EntityStore) func(ctx context.Context, input json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		var params searchEntitiesInput
+		if err := json.Unmarshal(input, &params); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
+		}
+		if params.Query == "" {
+			return "", fmt.Errorf("query is required")
+		}
+		limit := params.Limit
+		if limit <= 0 {
+			limit = 10
+		}
+		if limit > 50 {
+			limit = 50
+		}
+		if params.Type != "" && !isAllowedEntityType(params.Type) {
+			return "", fmt.Errorf("invalid entity type %q; allowed: person, project, file, tool", params.Type)
+		}
+
+		user := GetUser(ctx)
+		if store == nil {
+			return "Entity search is not available.", nil
+		}
+
+		results, err := store.SearchEntitiesFTS(params.Query, params.Type, user.UserID, limit)
+		if err != nil {
+			return "", fmt.Errorf("search entities: %w", err)
+		}
+		if len(results) == 0 {
+			return "No entities found matching your query.", nil
+		}
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Found %d entities:\n\n", len(results))
+		for _, r := range results {
+			fmt.Fprintf(&sb, "- %s (%s) — observation %s\n", r.Name, r.EntityType, r.ObservationID)
+		}
+		return sb.String(), nil
 	}
 }

@@ -11,10 +11,11 @@ type Observation struct {
 	UserID         int64
 	ChatID         int64
 	ChatType       string // private/group/supergroup
-	Type           string // decision/preference/project_state
+	Type           string // decision/preference/project_state/commitment/discovery/reference
 	Title          string // 1-line summary (~100 chars)
 	Summary        string // 1-2 sentence description
 	Facts          []string
+	Entities       []Entity
 	Importance     int   // 1-10 salience score
 	SourceMsgStart int64 // messages.rowid range start
 	SourceMsgEnd   int64 // messages.rowid range end
@@ -44,9 +45,26 @@ type ExtractionState struct {
 	Status                string // idle/pending/failed
 }
 
-// AllowedObservationTypes is the whitelist of valid observation types for Phase 1.
+// Entity represents a named entity extracted alongside an observation.
+type Entity struct {
+	Name string // canonicalized: lowercase, trimmed, collapsed spaces
+	Type string // person/project/file/tool
+}
+
+// AllowedEntityTypes is the whitelist of valid entity types.
+var AllowedEntityTypes = map[string]bool{
+	"person":  true,
+	"project": true,
+	"file":    true,
+	"tool":    true,
+}
+
+// AllowedObservationTypes is the whitelist of valid observation types.
 var AllowedObservationTypes = map[string]bool{
 	"decision":      true,
 	"preference":    true,
 	"project_state": true,
+	"commitment":    true,
+	"discovery":     true,
+	"reference":     true,
 }

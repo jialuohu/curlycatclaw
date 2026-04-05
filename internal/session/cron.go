@@ -49,7 +49,7 @@ func NewCronExecutor(
 
 // Execute runs a prompt through Claude with a clean context (facts only, no
 // conversation history) and returns the text result. It supports tool use.
-func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, prompt string) (string, error) {
+func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, prompt, model string) (string, error) {
 	// Acquire concurrency slot.
 	select {
 	case ce.sem <- struct{}{}:
@@ -61,7 +61,7 @@ func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, promp
 	slog.Info("cron: executing", "user_id", userID, "chat_id", chatID)
 
 	if ce.cfg.Claude.UseCLI() && ce.cliMgr != nil {
-		return ce.executeWithCLI(ctx, userID, chatID, prompt)
+		return ce.executeWithCLI(ctx, userID, chatID, prompt, model)
 	}
 
 	return ce.executeWithAPI(ctx, userID, chatID, prompt)
@@ -173,10 +173,11 @@ func (ce *CronExecutor) runToolLoop(
 }
 
 // executeWithCLI runs the prompt through a one-shot CLI subprocess.
-func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt string) (string, error) {
+func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt, model string) (string, error) {
 	proc, err := ce.cliMgr.SpawnOneShot(ctx, claude.SpawnParams{
 		SystemPrompt: ce.buildSystemPrompt(userID),
 		InitialMsg:   claude.BuildUserMessage(prompt),
+		Model:        model,
 	})
 	if err != nil {
 		return "", fmt.Errorf("cron: spawn CLI: %w", err)

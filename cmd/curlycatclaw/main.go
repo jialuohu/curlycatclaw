@@ -414,11 +414,13 @@ func run(configPath string) error {
 				return resp.TextContent, nil
 			})
 		} else if cliManager != nil {
-			// CLI mode: use SpawnOneShot for summarization, same pattern as CronExecutor.
+			// CLI mode: use SpawnOneShot with summarize_model override (cheaper model for summarization).
+			summarizeModel := cfg.Memory.SummarizeModel
 			summarizer = memory.NewSummarizer(func(ctx context.Context, system, user string) (string, error) {
 				proc, err := cliManager.SpawnOneShot(ctx, claude.SpawnParams{
 					SystemPrompt: system,
 					InitialMsg:   claude.BuildUserMessage(user),
+					Model:        summarizeModel,
 				})
 				if err != nil {
 					return "", fmt.Errorf("cli summarize: spawn: %w", err)
@@ -512,11 +514,13 @@ func run(configPath string) error {
 				return resp.TextContent, nil
 			}, store)
 		} else if cliManager != nil {
-			// CLI mode: use SpawnOneShot (same pattern as summarizer).
+			// CLI mode: use SpawnOneShot with extraction_model override (cheaper model for extraction).
+			extractionModel := cfg.Memory.Observations.ExtractionModel
 			observer = memory.NewObservationExtractor(func(ctx context.Context, system, user string) (string, error) {
 				proc, err := cliManager.SpawnOneShot(ctx, claude.SpawnParams{
 					SystemPrompt: system,
 					InitialMsg:   claude.BuildUserMessage(user),
+					Model:        extractionModel,
 				})
 				if err != nil {
 					return "", fmt.Errorf("cli observe: spawn: %w", err)
@@ -538,7 +542,8 @@ func run(configPath string) error {
 
 			// Register observation skills.
 			skillObsStore := &obsSkillAdapter{store: store, vs: vectorStore, cfg: cfg}
-			obsSkills, err := skills.InitObservationSkills(store.DB(), skillObsStore)
+			entityStore := &entitySkillAdapter{store: store}
+			obsSkills, err := skills.InitObservationSkills(store.DB(), skillObsStore, entityStore)
 			if err != nil {
 				slog.Warn("failed to init observation skills", "err", err)
 			} else {
@@ -858,4 +863,25 @@ func (a *obsSkillAdapter) DeleteObservationVector(ctx context.Context, id string
 		return nil
 	}
 	return a.vs.DeleteObservationVector(ctx, id)
+}
+
+// entitySkillAdapter bridges the skills.EntityStore interface to memory.Store.
+type entitySkillAdapter struct {
+	store *memory.Store
+}
+
+func (a *entitySkillAdapter) SearchEntitiesFTS(query string, entityType string, userID int64, limit int) ([]skills.EntitySearchResult, error) {
+	results, err := a.store.SearchEntitiesFTS(query, entityType, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]skills.EntitySearchResult, len(results))
+	for i, r := range results {
+		out[i] = skills.EntitySearchResult{
+			ObservationID: r.ObservationID,
+			Name:          r.Name,
+			EntityType:    r.EntityType,
+		}
+	}
+	return out, nil
 }

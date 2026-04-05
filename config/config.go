@@ -131,6 +131,12 @@ type ObservationsConfig struct {
 	CooldownSeconds     int     `toml:"cooldown_seconds"`
 	RetrievalLimit      int     `toml:"retrieval_limit"`
 	ScoreThreshold      float64 `toml:"retrieval_score_threshold"`
+	// Phase 2 additions.
+	HybridSearch          bool    `toml:"hybrid_search"`
+	SupersessionThreshold float64 `toml:"supersession_threshold"`
+	ProgressiveRetrieval  bool    `toml:"progressive_retrieval"`
+	CompactLimit          int     `toml:"compact_limit"`
+	ExpandedLimit         int     `toml:"expanded_limit"`
 }
 
 type SandboxConfig struct {
@@ -202,14 +208,19 @@ func Load(path string) (*Config, error) {
 			MinMsgToSummarize:    4,
 			VectorSearchTimeoutSec: 5,
 			Observations: ObservationsConfig{
-				Enabled:            false,
-				ExtractionInterval: 3,
-				ExtractionModel:    "claude-haiku-4-5",
-				MaxPerConversation: 50,
-				MaxTranscriptChars: 4000,
-				CooldownSeconds:    60,
-				RetrievalLimit:     8,
-				ScoreThreshold:     0.3,
+				Enabled:               false,
+				ExtractionInterval:    3,
+				ExtractionModel:       "claude-haiku-4-5",
+				MaxPerConversation:    50,
+				MaxTranscriptChars:    4000,
+				CooldownSeconds:       60,
+				RetrievalLimit:        8,
+				ScoreThreshold:        0.3,
+				HybridSearch:          false,
+				SupersessionThreshold: 0.85,
+				ProgressiveRetrieval:  false,
+				CompactLimit:          15,
+				ExpandedLimit:         3,
 			},
 		},
 		Sandbox: SandboxConfig{

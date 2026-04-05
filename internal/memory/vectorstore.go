@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -14,6 +15,18 @@ import (
 
 	"github.com/qdrant/go-client/qdrant"
 )
+
+// factPointID generates a deterministic UUID for a fact vector point.
+// Uses SHA-256 of obsID:factText, formatted as UUID v4.
+func factPointID(obsID, factText string) string {
+	h := sha256.Sum256([]byte(obsID + ":" + factText))
+	// Set version (4) and variant (RFC 4122) bits on the hash bytes.
+	h[6] = (h[6] & 0x0f) | 0x40
+	h[8] = (h[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		h[0:4], h[4:6], h[6:8], h[8:10], h[10:16],
+	)
+}
 
 const (
 	collectionMessages     = "curlycatclaw_messages"
@@ -34,8 +47,9 @@ type SearchResult struct {
 
 // dualWriteState holds the state for dual-writing to a new collection during migration.
 type dualWriteState struct {
-	embedder    Embedder  // new embedder for the target collection
-	collections [3]string // versioned collection names [messages, notes, summaries]
+	embedder      Embedder  // new embedder for the target collection
+	collections   [3]string // versioned collection names [messages, notes, summaries]
+	obsCollection string    // versioned observation collection (empty = no obs migration)
 }
 
 // VectorStore provides vector search backed by Qdrant.
@@ -412,13 +426,51 @@ func (vs *VectorStore) IndexObservation(ctx context.Context, obs Observation) er
 		},
 	})
 
-	// Dual-write to new collection during migration (best-effort).
-	if dw := vs.dw.Load(); dw != nil {
+	// Multi-vector: index each fact as a separate Qdrant point (best-effort).
+	if len(obs.Facts) > 0 {
+		factTexts := make([]string, len(obs.Facts))
+		copy(factTexts, obs.Facts)
+		factVecs, err := vs.activeEmbedder().BatchEmbed(ctx, factTexts)
+		if err != nil {
+			slog.Warn("vectorstore: batch embed facts", "err", err, "obs", obs.ID)
+		} else {
+			var factPoints []*qdrant.PointStruct
+			for i, fv := range factVecs {
+				fpID := factPointID(obs.ID, obs.Facts[i])
+				factPayload := qdrant.NewValueMap(map[string]any{
+					"user_id":       obs.UserID,
+					"chat_id":       obs.ChatID,
+					"chat_type":     obs.ChatType,
+					"type":          obs.Type,
+					"importance":    obs.Importance,
+					"obs_id":        obs.ID,
+					"parent_obs_id": obs.ID,
+					"fact_index":    i,
+					"is_fact":       true,
+					"created_at":    obs.CreatedAt.Format(time.RFC3339),
+				})
+				factPoints = append(factPoints, &qdrant.PointStruct{
+					Id:      qdrant.NewID(ToUUID(fpID)),
+					Vectors: qdrant.NewVectorsDense(fv),
+					Payload: factPayload,
+				})
+			}
+			if len(factPoints) > 0 {
+				if _, err := vs.client.Upsert(ctx, &qdrant.UpsertPoints{
+					CollectionName: observationsCollection,
+					Points:         factPoints,
+				}); err != nil {
+					slog.Warn("vectorstore: upsert fact vectors", "err", err, "obs", obs.ID)
+				}
+			}
+		}
+	}
+
+	// Dual-write to new versioned observation collection during migration (best-effort).
+	if dw := vs.dw.Load(); dw != nil && dw.obsCollection != "" {
 		if vec2, err2 := dw.embedder.Embed(ctx, text); err2 == nil {
-			// Observations are not part of the standard [3]string triplet,
-			// so dual-write uses the same collection name (Phase 1: no migration integration).
 			if _, err2 = vs.client.Upsert(ctx, &qdrant.UpsertPoints{
-				CollectionName: observationsCollection,
+				CollectionName: dw.obsCollection,
 				Points:         []*qdrant.PointStruct{{Id: pointID, Vectors: qdrant.NewVectorsDense(vec2), Payload: payload}},
 			}); err2 != nil {
 				slog.Warn("dual-write observation upsert failed", "err", err2)
@@ -468,6 +520,7 @@ func (vs *VectorStore) SearchObservations(ctx context.Context, query string, use
 			MustNot: []*qdrant.Condition{
 				qdrant.NewMatchKeyword("chat_type", "group"),
 				qdrant.NewMatchKeyword("chat_type", "supergroup"),
+				qdrant.NewMatchBool("is_fact", true), // Exclude fact vectors from primary search.
 			},
 		}
 	} else {
@@ -476,6 +529,9 @@ func (vs *VectorStore) SearchObservations(ctx context.Context, query string, use
 			Must: []*qdrant.Condition{
 				qdrant.NewMatchInt("user_id", userID),
 				qdrant.NewMatchInt("chat_id", chatID),
+			},
+			MustNot: []*qdrant.Condition{
+				qdrant.NewMatchBool("is_fact", true), // Exclude fact vectors from primary search.
 			},
 		}
 	}
@@ -549,18 +605,170 @@ func (vs *VectorStore) SearchObservations(ctx context.Context, query string, use
 		results = results[:limit]
 	}
 
+	// Instrumentation: log search metrics for retrieval quality analysis.
+	var topScore, avgTop3 float32
+	if len(results) > 0 {
+		topScore = results[0].Score
+		n := min(3, len(results))
+		for i := 0; i < n; i++ {
+			avgTop3 += results[i].Score
+		}
+		avgTop3 /= float32(n)
+	}
+	slog.Info("observation_search",
+		"query_len", len([]rune(query)),
+		"results", len(results),
+		"top_score", topScore,
+		"avg_top3", avgTop3,
+		"below_threshold", len(scored)-len(results),
+	)
+
 	return results, nil
+}
+
+// HybridSearchObservations merges vector and FTS5 keyword search results using
+// Reciprocal Rank Fusion (RRF) with k=60. This avoids normalizing across
+// different score spaces (cosine similarity vs BM25).
+func (vs *VectorStore) HybridSearchObservations(
+	ctx context.Context,
+	query string,
+	userID, chatID int64,
+	chatType string,
+	limit int,
+	scoreThreshold float32,
+	ftsResults []FTSResult,
+) ([]ObservationResult, error) {
+	// Get vector results.
+	vectorResults, err := vs.SearchObservations(ctx, query, userID, chatID, chatType, limit*2, scoreThreshold)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ftsResults) == 0 {
+		// No keyword results, return vector-only.
+		if len(vectorResults) > limit {
+			vectorResults = vectorResults[:limit]
+		}
+		return vectorResults, nil
+	}
+
+	// Build RRF scores. k=60 is standard for rank fusion.
+	const k = 60.0
+	type rrfEntry struct {
+		result ObservationResult
+		score  float64
+	}
+	scores := make(map[string]*rrfEntry)
+
+	// Score from vector results (already ranked by score descending).
+	for rank, r := range vectorResults {
+		scores[r.ID] = &rrfEntry{
+			result: r,
+			score:  1.0 / (k + float64(rank+1)),
+		}
+	}
+
+	// Score from FTS5 results (already ranked by BM25).
+	for rank, fr := range ftsResults {
+		ftsScore := 1.0 / (k + float64(rank+1))
+		if e, ok := scores[fr.ObsID]; ok {
+			e.score += ftsScore
+		} else {
+			// FTS-only result: minimal entry. Caller must hydrate facts, Type, CreatedAt from SQLite.
+			scores[fr.ObsID] = &rrfEntry{
+				result: ObservationResult{
+					ID:      fr.ObsID,
+					Title:   fr.Title,
+					Summary: fr.Summary,
+				},
+				score: ftsScore,
+			}
+		}
+	}
+
+	// Collect and sort by RRF score descending.
+	merged := make([]ObservationResult, 0, len(scores))
+	for _, e := range scores {
+		e.result.Score = float32(e.score)
+		merged = append(merged, e.result)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].Score > merged[j].Score
+	})
+
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+
+	slog.Info("hybrid_observation_search",
+		"vector_results", len(vectorResults),
+		"fts_results", len(ftsResults),
+		"merged", len(merged),
+	)
+
+	return merged, nil
+}
+
+// CountObservationPoints returns the total point count in the observations collection.
+// Returns 0 if the collection doesn't exist.
+func (vs *VectorStore) CountObservationPoints(ctx context.Context) (int, error) {
+	info, err := vs.client.GetCollectionInfo(ctx, observationsCollection)
+	if err != nil {
+		return 0, nil // collection doesn't exist yet
+	}
+	return int(info.GetPointsCount()), nil
+}
+
+// FixObservationCollectionDimension checks if the observations collection exists
+// with a different dimension than the active embedder. If so, deletes and resets
+// the lazy-create flag so IndexObservation will recreate it correctly.
+// Returns true if the collection was deleted (needs reindex).
+func (vs *VectorStore) FixObservationCollectionDimension(ctx context.Context) bool {
+	info, err := vs.client.GetCollectionInfo(ctx, observationsCollection)
+	if err != nil {
+		return false // doesn't exist, nothing to fix
+	}
+	existingDim := info.GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize()
+	expectedDim := vs.activeEmbedder().Dimension()
+	if existingDim == expectedDim {
+		return false // dimensions match
+	}
+	slog.Warn("observation collection dimension mismatch, recreating",
+		"existing", existingDim, "expected", expectedDim)
+	if err := vs.client.DeleteCollection(ctx, observationsCollection); err != nil {
+		slog.Warn("failed to delete stale observation collection", "err", err)
+		return false
+	}
+	// Reset lazy-create flag so ensureObservationsCollection will recreate.
+	vs.obsCollMu.Lock()
+	vs.obsCollDone = false
+	vs.obsCollMu.Unlock()
+	return true
 }
 
 // DeleteObservationVector deletes an observation's vector from the observations collection.
 func (vs *VectorStore) DeleteObservationVector(ctx context.Context, obsID string) error {
+	// Delete primary vector by point ID.
 	pointID := qdrant.NewID(ToUUID(obsID))
 	_, err := vs.client.Delete(ctx, &qdrant.DeletePoints{
 		CollectionName: observationsCollection,
 		Points:         qdrant.NewPointsSelector(pointID),
 	})
 	if err != nil {
-		return fmt.Errorf("vectorstore: delete observation: %w", err)
+		return fmt.Errorf("vectorstore: delete observation primary: %w", err)
+	}
+
+	// Delete all fact vectors by parent_obs_id filter.
+	_, err = vs.client.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: observationsCollection,
+		Points: qdrant.NewPointsSelectorFilter(&qdrant.Filter{
+			Must: []*qdrant.Condition{
+				qdrant.NewMatchKeyword("parent_obs_id", obsID),
+			},
+		}),
+	})
+	if err != nil {
+		return fmt.Errorf("vectorstore: delete observation facts: %w", err)
 	}
 	return nil
 }
@@ -620,6 +828,11 @@ func VersionedNames(version int) [3]string {
 	}
 }
 
+// ObservationVersionedName returns the versioned observation collection name.
+func ObservationVersionedName(version int) string {
+	return fmt.Sprintf("%s_v%d", observationsCollection, version)
+}
+
 // collectionIndex maps a source type to its index in the collection triplet.
 func collectionIndex(source string) int {
 	switch source {
@@ -636,6 +849,12 @@ func collectionIndex(source string) int {
 func (vs *VectorStore) EnableDualWrite(newEmb Embedder, newCollections [3]string) {
 	vs.dw.Store(&dualWriteState{embedder: newEmb, collections: newCollections})
 	slog.Info("dual-write enabled", "collections", newCollections)
+}
+
+// EnableDualWriteWithObs activates dual-writing including the observation collection.
+func (vs *VectorStore) EnableDualWriteWithObs(newEmb Embedder, newCollections [3]string, obsCollection string) {
+	vs.dw.Store(&dualWriteState{embedder: newEmb, collections: newCollections, obsCollection: obsCollection})
+	slog.Info("dual-write enabled", "collections", newCollections, "obs", obsCollection)
 }
 
 // DisableDualWrite stops dual-writing.

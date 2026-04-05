@@ -624,3 +624,364 @@ func TestGetMessagesSinceRowid(t *testing.T) {
 		t.Errorf("expected messages 3 and 4, got %d and %d", val0, val1)
 	}
 }
+
+// Phase 2 tests
+
+func TestSaveAndSearchEntities(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	obs := Observation{
+		ConversationID: convID,
+		UserID:         42,
+		ChatID:         100,
+		ChatType:       "private",
+		Type:           "discovery",
+		Title:          "Team uses Kubernetes",
+		Summary:        "Learned the team deploys on Kubernetes.",
+		Facts:          []string{"K8s used for deployment"},
+		Importance:     5,
+		ContentHash:    "ent-test-1",
+	}
+	if err := s.SaveObservation(&obs); err != nil {
+		t.Fatalf("SaveObservation: %v", err)
+	}
+
+	entities := []Entity{
+		{Name: "kubernetes", Type: "tool"},
+		{Name: "alice", Type: "person"},
+	}
+	if err := s.SaveEntities(obs.ID, entities); err != nil {
+		t.Fatalf("SaveEntities: %v", err)
+	}
+
+	// Empty entities should not error.
+	if err := s.SaveEntities(obs.ID, nil); err != nil {
+		t.Fatalf("SaveEntities(nil): %v", err)
+	}
+
+	// Hydrate entities by ID.
+	entMap, err := s.GetEntitiesByObservationIDs([]string{obs.ID})
+	if err != nil {
+		t.Fatalf("GetEntitiesByObservationIDs: %v", err)
+	}
+	if len(entMap[obs.ID]) != 2 {
+		t.Fatalf("expected 2 entities, got %d", len(entMap[obs.ID]))
+	}
+
+	// FTS search for "kubernetes".
+	results, err := s.SearchEntitiesFTS("kubernetes", "", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchEntitiesFTS: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 FTS result, got %d", len(results))
+	}
+	if results[0].Name != "kubernetes" {
+		t.Errorf("expected name 'kubernetes', got %q", results[0].Name)
+	}
+
+	// FTS search with type filter.
+	results, err = s.SearchEntitiesFTS("alice", "person", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchEntitiesFTS with type: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for person filter, got %d", len(results))
+	}
+
+	// FTS search with wrong type filter.
+	results, err = s.SearchEntitiesFTS("alice", "tool", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchEntitiesFTS wrong type: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for wrong type, got %d", len(results))
+	}
+
+	// IDOR: different user should not find these entities.
+	results, err = s.SearchEntitiesFTS("kubernetes", "", 99, 10)
+	if err != nil {
+		t.Fatalf("SearchEntitiesFTS IDOR: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("IDOR: user 99 found user 42's entities")
+	}
+
+	// Delete entities.
+	if err := s.DeleteEntitiesByObservation(obs.ID); err != nil {
+		t.Fatalf("DeleteEntitiesByObservation: %v", err)
+	}
+	entMap, err = s.GetEntitiesByObservationIDs([]string{obs.ID})
+	if err != nil {
+		t.Fatalf("GetEntitiesByObservationIDs after delete: %v", err)
+	}
+	if len(entMap[obs.ID]) != 0 {
+		t.Errorf("expected 0 entities after delete, got %d", len(entMap[obs.ID]))
+	}
+}
+
+func TestObservationRelations(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	obs1 := Observation{
+		ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+		Type: "preference", Title: "Use Redis", Summary: "Prefers Redis for caching.",
+		Facts: []string{"Redis preferred"}, Importance: 5, ContentHash: "rel-1",
+	}
+	obs2 := Observation{
+		ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+		Type: "preference", Title: "Use Memcached", Summary: "Switched to Memcached.",
+		Facts: []string{"Memcached now"}, Importance: 5, ContentHash: "rel-2",
+	}
+	if err := s.SaveObservation(&obs1); err != nil {
+		t.Fatalf("SaveObservation 1: %v", err)
+	}
+	if err := s.SaveObservation(&obs2); err != nil {
+		t.Fatalf("SaveObservation 2: %v", err)
+	}
+
+	// Add supersession relation.
+	if err := s.AddObservationRelation(obs2.ID, obs1.ID, "supersedes", 0.92, 42); err != nil {
+		t.Fatalf("AddObservationRelation: %v", err)
+	}
+
+	// IDOR: wrong user should fail.
+	if err := s.AddObservationRelation(obs2.ID, obs1.ID, "supersedes", 0.92, 99); err == nil {
+		t.Fatal("expected error for wrong user, got nil")
+	}
+
+	// Get relations.
+	rels, err := s.GetObservationRelations(obs1.ID, 42)
+	if err != nil {
+		t.Fatalf("GetObservationRelations: %v", err)
+	}
+	if len(rels) != 1 {
+		t.Fatalf("expected 1 relation, got %d", len(rels))
+	}
+	if rels[0].RelationType != "supersedes" {
+		t.Errorf("expected 'supersedes', got %q", rels[0].RelationType)
+	}
+
+	// Invalid IDs should fail.
+	if err := s.AddObservationRelation("nonexistent", obs1.ID, "supersedes", 0.5, 42); err == nil {
+		t.Fatal("expected error for nonexistent source, got nil")
+	}
+}
+
+func TestSearchObservationsFTS(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	obs := Observation{
+		ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+		Type: "decision", Title: "Deploy with Docker", Summary: "Using Docker containers for deployment.",
+		Facts: []string{"Docker chosen"}, Importance: 7, ContentHash: "fts-1",
+	}
+	if err := s.SaveObservation(&obs); err != nil {
+		t.Fatalf("SaveObservation: %v", err)
+	}
+
+	// Search for "Docker" should find it.
+	results, err := s.SearchObservationsFTS("Docker", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchObservationsFTS: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ObsID != obs.ID {
+		t.Errorf("expected obs ID %s, got %s", obs.ID, results[0].ObsID)
+	}
+
+	// Search for nonexistent term.
+	results, err = s.SearchObservationsFTS("PostgreSQL", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchObservationsFTS no match: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+
+	// Empty query returns nil.
+	results, err = s.SearchObservationsFTS("", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchObservationsFTS empty: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil results for empty query, got %d", len(results))
+	}
+
+	// IDOR: different user should not find it.
+	results, err = s.SearchObservationsFTS("Docker", 99, 10)
+	if err != nil {
+		t.Fatalf("SearchObservationsFTS IDOR: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("IDOR: user 99 found user 42's observations via FTS")
+	}
+}
+
+func TestRebuildFTS(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	obs := Observation{
+		ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+		Type: "decision", Title: "Use gRPC", Summary: "Choosing gRPC over REST.",
+		Facts: []string{"gRPC selected"}, Importance: 6, ContentHash: "rebuild-1",
+	}
+	if err := s.SaveObservation(&obs); err != nil {
+		t.Fatalf("SaveObservation: %v", err)
+	}
+
+	// RebuildFTS should not error.
+	if err := s.RebuildFTS(); err != nil {
+		t.Fatalf("RebuildFTS: %v", err)
+	}
+
+	// Data should still be searchable after rebuild.
+	results, err := s.SearchObservationsFTS("gRPC", 42, 10)
+	if err != nil {
+		t.Fatalf("SearchObservationsFTS after rebuild: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result after rebuild, got %d", len(results))
+	}
+}
+
+func TestDeleteObservationCascadesEntitiesAndRelations(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	obs1 := Observation{
+		ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+		Type: "decision", Title: "Old decision", Summary: "An old decision.",
+		Facts: []string{"fact1"}, Importance: 5, ContentHash: "cascade-1",
+	}
+	obs2 := Observation{
+		ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+		Type: "decision", Title: "New decision", Summary: "A new decision.",
+		Facts: []string{"fact2"}, Importance: 5, ContentHash: "cascade-2",
+	}
+	if err := s.SaveObservation(&obs1); err != nil {
+		t.Fatalf("SaveObservation 1: %v", err)
+	}
+	if err := s.SaveObservation(&obs2); err != nil {
+		t.Fatalf("SaveObservation 2: %v", err)
+	}
+
+	// Add entities to obs1.
+	if err := s.SaveEntities(obs1.ID, []Entity{{Name: "test-entity", Type: "tool"}}); err != nil {
+		t.Fatalf("SaveEntities: %v", err)
+	}
+
+	// Add relation between obs2 -> obs1.
+	if err := s.AddObservationRelation(obs2.ID, obs1.ID, "supersedes", 0.9, 42); err != nil {
+		t.Fatalf("AddObservationRelation: %v", err)
+	}
+
+	// Delete obs1 — should cascade to entities and relations.
+	if err := s.DeleteObservation(obs1.ID, 42); err != nil {
+		t.Fatalf("DeleteObservation: %v", err)
+	}
+
+	// Verify entities are gone.
+	entMap, err := s.GetEntitiesByObservationIDs([]string{obs1.ID})
+	if err != nil {
+		t.Fatalf("GetEntitiesByObservationIDs: %v", err)
+	}
+	if len(entMap[obs1.ID]) != 0 {
+		t.Errorf("expected 0 entities after cascade delete, got %d", len(entMap[obs1.ID]))
+	}
+
+	// Verify relations are gone.
+	rels, err := s.GetObservationRelations(obs1.ID, 42)
+	if err != nil {
+		t.Fatalf("GetObservationRelations: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected 0 relations after cascade delete, got %d", len(rels))
+	}
+
+	// obs2's relations should also be gone (it referenced obs1).
+	rels, err = s.GetObservationRelations(obs2.ID, 42)
+	if err != nil {
+		t.Fatalf("GetObservationRelations obs2: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected 0 relations for obs2 after target deleted, got %d", len(rels))
+	}
+}
+
+func TestObservationTextsAfter(t *testing.T) {
+	s := newTestStore(t)
+
+	convID, err := s.CreateConversation(42, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		obs := Observation{
+			ConversationID: convID, UserID: 42, ChatID: 100, ChatType: "private",
+			Type: "decision", Title: "Decision " + strings.Repeat("x", i),
+			Summary: "Summary " + strings.Repeat("y", i),
+			Facts: []string{"fact"}, Importance: 5,
+			ContentHash: "texts-" + strings.Repeat("z", i),
+		}
+		if err := s.SaveObservation(&obs); err != nil {
+			t.Fatalf("SaveObservation %d: %v", i, err)
+		}
+	}
+
+	// Get all texts.
+	texts, maxID, err := s.ObservationTextsAfter(0, 10)
+	if err != nil {
+		t.Fatalf("ObservationTextsAfter: %v", err)
+	}
+	if len(texts) != 3 {
+		t.Fatalf("expected 3 texts, got %d", len(texts))
+	}
+	if maxID <= 0 {
+		t.Errorf("expected positive maxID, got %d", maxID)
+	}
+
+	// Text format should be "Title. Summary".
+	if !strings.Contains(texts[0].Text, ". ") {
+		t.Errorf("expected 'Title. Summary' format, got %q", texts[0].Text)
+	}
+	if texts[0].Source != "observation" {
+		t.Errorf("expected source 'observation', got %q", texts[0].Source)
+	}
+
+	// Cursor-based: get texts after maxID should return 0.
+	texts2, _, err := s.ObservationTextsAfter(maxID, 10)
+	if err != nil {
+		t.Fatalf("ObservationTextsAfter after cursor: %v", err)
+	}
+	if len(texts2) != 0 {
+		t.Errorf("expected 0 texts after cursor, got %d", len(texts2))
+	}
+}

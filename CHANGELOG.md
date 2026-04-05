@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.23.0] - 2026-04-04
+
+Observation memory Phase 2. Your bot can now find memories by keyword, track who and what was discussed, show a compact memory index instead of dumping everything, and detect when newer observations supersede older ones.
+
+### Added
+- **FTS5 hybrid search**: keyword search via SQLite FTS5 virtual tables alongside vector search, merged with Reciprocal Rank Fusion (RRF, k=60). Includes `EscapeFTS5Query` for input safety and `RebuildFTS` for index maintenance
+- **Three new observation types**: `commitment` (promises/follow-ups), `discovery` (things learned about user's world), `reference` (external resources mentioned)
+- **Entity extraction**: people, projects, files, and tools extracted alongside observations with canonicalized names, stored in `observation_entities` table with FTS5 search
+- **`search_entities` skill**: keyword search for entities across observations ("what do I know about X?")
+- **Multi-vector indexing**: each observation fact gets its own Qdrant point with deterministic text-hash IDs, per-parent cap in retrieval, and `RebuildObservationIndex` for drift reconciliation
+- **Progressive 3-layer retrieval**: compact index (top 15 titles) + expanded view (top 3 with facts) + on-demand full detail via `get_observation`. Config-gated via `progressive_retrieval`
+- **Observation relations**: advisory supersession system with `observation_relations` table supporting supersedes/refines/contradicts relation types, IDOR-protected, used for ranking boost (not hiding)
+- **Embedding migration integration**: `ObservationVersionedName`, observation dual-write during migration, `ObservationTextsAfter` for backfill
+- **Retrieval instrumentation**: slog metrics for search quality (top scores, dedup rates), extraction stats (type distribution, importance), and injection stats
+
+### Changed
+- **ObservationsConfig**: five new fields (`hybrid_search`, `supersession_threshold`, `progressive_retrieval`, `compact_limit`, `expanded_limit`) with sensible defaults
+- **DeleteObservation**: now cascades to entities and relations in the same transaction
+- **Extraction prompt**: expanded with entity extraction guidance and examples for all 6 observation types
+- **Fact dedup**: reuses facts fetched for Tier 1 injection instead of redundant DB query
+
+### Fixed
+- **MCP skill registration**: observation skills (search, list, get, forget, search_entities) now registered in MCP server subprocess so Claude CLI can discover and call them
+- **Extraction prompt**: strengthened JSON-only instruction for reliable parsing with smaller models (Haiku)
+- **search_entities output**: now returns full observation UUIDs instead of truncated 8-char IDs that get_observation rejected
+- **search_observations output**: now includes observation ID so the bot can follow up with get_observation
+- **Qdrant dimension auto-fix**: detects collection dimension mismatch on startup, deletes stale collection, and reindexes all observations from SQLite with correct embedder
+- **Observation reindex**: loads full observations (with importance, type, facts) from SQLite instead of migration-text format that lost metadata
+- **Per-spawn model override**: SpawnParams.Model allows extraction, summarization, and per-reminder model selection in CLI mode
+
 ## [0.22.0] - 2026-04-04
 
 Observation memory system (Phase 1). The bot now automatically captures decisions, preferences, and project state from conversations and injects them into future sessions. No manual `/remember` needed.

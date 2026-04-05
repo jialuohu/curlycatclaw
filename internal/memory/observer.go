@@ -14,22 +14,29 @@ import (
 const observerSystemPrompt = `You are a memory observer for a personal AI assistant. You watch conversations and extract meaningful events that should be remembered across future sessions.
 
 Extract ONLY meaningful conversational events. Skip routine greetings, transient requests, and small talk. Focus on:
-- decisions: choices made during the conversation
-- preference: user preferences or behavioral patterns expressed
-- project_state: status updates on ongoing work
+- decision: choices made during the conversation ("Agreed to use goroutines for concurrent extraction")
+- preference: user preferences or behavioral patterns expressed ("User prefers concise responses without emojis")
+- project_state: status updates on ongoing work ("Auth module complete, starting payment integration")
+- commitment: promises, follow-ups, or deadlines the user set ("Promised to send the report by Friday")
+- discovery: things learned about the user's world, team, or tools ("User's team uses Kubernetes for deployment")
+- reference: important external references, URLs, or resources mentioned ("Key API docs at docs.example.com/api")
 
 For each observation, return a JSON object with these exact fields:
 {
-  "type": "decision" | "preference" | "project_state",
+  "type": "decision" | "preference" | "project_state" | "commitment" | "discovery" | "reference",
   "title": "one-line summary, max 100 chars",
   "summary": "1-2 sentences describing what happened and why it matters",
   "facts": ["atomic fact 1", "atomic fact 2"],
-  "importance": 5
+  "importance": 5,
+  "entities": [{"name": "entity-name", "type": "person|project|file|tool"}]
 }
+
+entities: Extract mentioned people, projects, files, or tools. Only include entities directly relevant to the observation. Omit if none.
 
 importance scale: 1=trivial preference, 5=standard decision, 8=major project milestone, 10=life-changing decision.
 
-Return a JSON array. If nothing meaningful happened, return [].
+RESPOND WITH ONLY A JSON ARRAY. No explanation, no preamble, no markdown. Start your response with [ and end with ].
+If nothing meaningful happened, return [].
 Do NOT extract the same event twice. Check the "already captured" list below.`
 
 const observerUserPromptTemplate = "Recent conversation segment:\n%s\n\nAlready captured in this conversation (do not duplicate):\n%s"
@@ -147,16 +154,46 @@ func (e *ObservationExtractor) Extract(
 		saved = append(saved, obs)
 	}
 
+	// Instrumentation: log extraction metrics.
+	dupCount := len(raw) - len(saved)
+	typeCounts := make(map[string]int)
+	var totalImportance int
+	for _, o := range saved {
+		typeCounts[o.Type]++
+		totalImportance += o.Importance
+	}
+	slog.Info("observation_extraction",
+		"conv_id", convID,
+		"transcript_runes", len([]rune(transcript)),
+		"parsed", len(raw),
+		"saved", len(saved),
+		"dedup_hits", dupCount,
+		"types", typeCounts,
+		"avg_importance", func() float64 {
+			if len(saved) == 0 {
+				return 0
+			}
+			return float64(totalImportance) / float64(len(saved))
+		}(),
+	)
+
 	return saved, nil
 }
 
 // rawObservation is the JSON shape returned by Claude.
 type rawObservation struct {
-	Type       string   `json:"type"`
-	Title      string   `json:"title"`
-	Summary    string   `json:"summary"`
-	Facts      []string `json:"facts"`
-	Importance int      `json:"importance"`
+	Type       string      `json:"type"`
+	Title      string      `json:"title"`
+	Summary    string      `json:"summary"`
+	Facts      []string    `json:"facts"`
+	Importance int         `json:"importance"`
+	Entities   []rawEntity `json:"entities"`
+}
+
+// rawEntity is the JSON shape for entities returned by Claude.
+type rawEntity struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 // parseObservationJSON extracts a []rawObservation from Claude's response,
@@ -222,13 +259,44 @@ func validateRawObservation(r rawObservation) (Observation, bool) {
 		}
 	}
 
+	// Canonicalize entities (graceful degradation: bad entities are skipped).
+	var entities []Entity
+	for _, e := range r.Entities {
+		name := canonicalizeEntityName(e.Name)
+		if name == "" {
+			continue
+		}
+		if !AllowedEntityTypes[e.Type] {
+			continue
+		}
+		entities = append(entities, Entity{Name: name, Type: e.Type})
+		if len(entities) >= 10 {
+			break
+		}
+	}
+
 	return Observation{
 		Type:       r.Type,
 		Title:      title,
 		Summary:    summary,
 		Facts:      facts,
+		Entities:   entities,
 		Importance: importance,
 	}, true
+}
+
+// canonicalizeEntityName normalizes an entity name: lowercase, trim, collapse
+// spaces, strip control chars, cap at 200 runes.
+func canonicalizeEntityName(name string) string {
+	name = sanitizeObservationString(name)
+	name = strings.ToLower(name)
+	// Collapse multiple spaces.
+	prev := ""
+	for prev != name {
+		prev = name
+		name = strings.ReplaceAll(name, "  ", " ")
+	}
+	return truncateRunes(name, 200)
 }
 
 // observationContentHash returns a deterministic SHA-256 hex digest of the
