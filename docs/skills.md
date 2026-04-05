@@ -37,6 +37,7 @@
 | `load_prompt_skill` | Load a prompt skill's SKILL.md instructions on demand |
 | `set_extension_env` | Set an encrypted env var (API key) for an MCP extension |
 | `unset_extension_env` | Remove an encrypted env var from an MCP extension |
+| `send_file` | Send a file to the user in the current Telegram chat (documents, exports, reports) |
 
 Skills are registered alongside MCP tools -- Claude sees them all and picks the right one. Plugin skills require `cli_path` and `isolated_home` in `[claude]` config. Extensions are persisted to `extensions.json` and survive restarts. Wasm plugins load from `~/.curlycatclaw/skills/*.wasm` when enabled.
 
