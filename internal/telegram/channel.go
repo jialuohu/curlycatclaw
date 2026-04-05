@@ -151,6 +151,16 @@ func (ch *Channel) Run(ctx context.Context) error {
 
 	slog.Info("telegram bot authorised", "username", bot.Self.UserName)
 
+	// Register slash commands so they show in Telegram's autocomplete menu.
+	commands := tgbotapi.NewSetMyCommands(
+		tgbotapi.BotCommand{Command: "effort", Description: "Show or set thinking effort level (low/medium/high/max)"},
+		tgbotapi.BotCommand{Command: "retry", Description: "Replay last message at higher effort"},
+		tgbotapi.BotCommand{Command: "project", Description: "Switch active project context"},
+	)
+	if _, err := bot.Request(commands); err != nil {
+		slog.Warn("telegram: failed to register bot commands", "err", err)
+	}
+
 	ucfg := tgbotapi.NewUpdate(0)
 	ucfg.Timeout = 30
 	tgUpdates := bot.GetUpdatesChan(ucfg)
