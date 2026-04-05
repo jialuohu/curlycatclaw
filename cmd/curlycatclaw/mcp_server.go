@@ -242,6 +242,7 @@ func runMCPServer() error {
 	// Semantic search (optional, requires Qdrant).
 	if cfg.Vector.Enabled {
 		embedder := newEmbedder(cfg.Vector)
+		slog.Info("mcp-server: embedder configured", "name", embedder.Name(), "dim", embedder.Dimension())
 		ctx := context.Background()
 		vs, err := memory.NewVectorStore(ctx, cfg.Vector.QdrantAddr, embedder)
 		if err != nil {

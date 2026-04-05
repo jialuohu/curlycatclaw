@@ -709,6 +709,43 @@ func (vs *VectorStore) HybridSearchObservations(
 	return merged, nil
 }
 
+// CountObservationPoints returns the total point count in the observations collection.
+// Returns 0 if the collection doesn't exist.
+func (vs *VectorStore) CountObservationPoints(ctx context.Context) (int, error) {
+	info, err := vs.client.GetCollectionInfo(ctx, observationsCollection)
+	if err != nil {
+		return 0, nil // collection doesn't exist yet
+	}
+	return int(info.GetPointsCount()), nil
+}
+
+// FixObservationCollectionDimension checks if the observations collection exists
+// with a different dimension than the active embedder. If so, deletes and resets
+// the lazy-create flag so IndexObservation will recreate it correctly.
+// Returns true if the collection was deleted (needs reindex).
+func (vs *VectorStore) FixObservationCollectionDimension(ctx context.Context) bool {
+	info, err := vs.client.GetCollectionInfo(ctx, observationsCollection)
+	if err != nil {
+		return false // doesn't exist, nothing to fix
+	}
+	existingDim := info.GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize()
+	expectedDim := vs.activeEmbedder().Dimension()
+	if existingDim == expectedDim {
+		return false // dimensions match
+	}
+	slog.Warn("observation collection dimension mismatch, recreating",
+		"existing", existingDim, "expected", expectedDim)
+	if err := vs.client.DeleteCollection(ctx, observationsCollection); err != nil {
+		slog.Warn("failed to delete stale observation collection", "err", err)
+		return false
+	}
+	// Reset lazy-create flag so ensureObservationsCollection will recreate.
+	vs.obsCollMu.Lock()
+	vs.obsCollDone = false
+	vs.obsCollMu.Unlock()
+	return true
+}
+
 // DeleteObservationVector deletes an observation's vector from the observations collection.
 func (vs *VectorStore) DeleteObservationVector(ctx context.Context, obsID string) error {
 	// Delete primary vector by point ID.

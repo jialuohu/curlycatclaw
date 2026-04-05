@@ -762,10 +762,20 @@ func (a *Actor) reindexMissingObservations() {
 		return
 	}
 
-	// Try to count Qdrant points. If the counts match, skip.
-	// If they don't match (or Qdrant returns fewer), re-index all.
 	ctx, cancel := context.WithTimeout(a.bgCtx(), 30*time.Second)
 	defer cancel()
+
+	// Check if collection exists with wrong dimension. If so, delete and let
+	// IndexObservation recreate it with the correct dimension.
+	if a.vectorStore.FixObservationCollectionDimension(ctx) {
+		slog.Info("observation collection dimension fixed, reindexing")
+	}
+
+	// Quick check: if Qdrant point count matches SQLite, skip reindex.
+	qdrantCount, _ := a.vectorStore.CountObservationPoints(ctx)
+	if qdrantCount >= len(texts) {
+		return // Qdrant already has all observations.
+	}
 
 	reindexed := 0
 	for _, t := range texts {
@@ -783,7 +793,11 @@ func (a *Actor) reindexMissingObservations() {
 		}
 
 		if err := a.vectorStore.IndexObservation(ctx, obs); err != nil {
-			slog.Warn("reindex observation", "err", err, "obs", t.ID[:8])
+			idShort := t.ID
+			if len(idShort) > 8 {
+				idShort = idShort[:8]
+			}
+			slog.Warn("reindex observation", "err", err, "obs", idShort)
 			break // likely a persistent error, stop
 		}
 		reindexed++

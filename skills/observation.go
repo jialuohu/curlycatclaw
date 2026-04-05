@@ -166,7 +166,7 @@ func makeSearchObservationsExecute(store ObservationStore) func(ctx context.Cont
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Found %d observations for: %s\n\n", len(results), params.Query)
 		for i, r := range results {
-			fmt.Fprintf(&sb, "%d. [%s] (score: %.2f)\n", i+1, r.Type, r.Score)
+			fmt.Fprintf(&sb, "%d. [%s] %s (score: %.2f)\n", i+1, r.Type, r.ID, r.Score)
 			if r.CreatedAt != "" {
 				fmt.Fprintf(&sb, "   Time: %s\n", r.CreatedAt)
 			}
@@ -360,11 +360,7 @@ func makeSearchEntitiesExecute(store EntityStore) func(ctx context.Context, inpu
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Found %d entities:\n\n", len(results))
 		for _, r := range results {
-			obsShort := r.ObservationID
-			if len(obsShort) > 8 {
-				obsShort = obsShort[:8]
-			}
-			fmt.Fprintf(&sb, "- %s (%s) — observation %s\n", r.Name, r.EntityType, obsShort)
+			fmt.Fprintf(&sb, "- %s (%s) — observation %s\n", r.Name, r.EntityType, r.ObservationID)
 		}
 		return sb.String(), nil
 	}
