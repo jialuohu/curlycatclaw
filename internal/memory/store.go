@@ -977,6 +977,33 @@ func (s *Store) GetRecentObservationsByType(userID int64, obsType string, limit 
 	return obs, rows.Err()
 }
 
+// GetRecentObservations returns observations created within the last maxAge for a user.
+// Used to ensure freshly-extracted observations are visible in the current conversation,
+// regardless of semantic search match score.
+func (s *Store) GetRecentObservations(userID int64, maxAge time.Duration, limit int) ([]Observation, error) {
+	cutoff := time.Now().UTC().Add(-maxAge).Format("2006-01-02 15:04:05")
+	rows, err := s.db.Query(
+		`SELECT id, type, title, summary, importance, created_at FROM observations
+		 WHERE user_id = ? AND archived_at IS NULL AND created_at >= ?
+		 ORDER BY created_at DESC LIMIT ?`,
+		userID, cutoff, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get recent observations: %w", err)
+	}
+	defer rows.Close()
+
+	var obs []Observation
+	for rows.Next() {
+		var o Observation
+		if err := rows.Scan(&o.ID, &o.Type, &o.Title, &o.Summary, &o.Importance, &o.CreatedAt); err != nil {
+			return nil, fmt.Errorf("memory: scan recent observation: %w", err)
+		}
+		obs = append(obs, o)
+	}
+	return obs, rows.Err()
+}
+
 // GetExtractionState returns the extraction state for a conversation, or nil if not found.
 func (s *Store) GetExtractionState(convID string) (*ExtractionState, error) {
 	var st ExtractionState

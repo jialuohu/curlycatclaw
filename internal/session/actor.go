@@ -2042,6 +2042,39 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 							results = filtered
 						}
 					}
+
+					// Merge recently-created observations (last 30 min) to ensure
+					// fresh extraction results are visible in the current conversation
+					// even if they don't match the semantic search query.
+					if a.obsStore != nil {
+						recent, err := a.obsStore.GetRecentObservations(userID, 30*time.Minute, 5)
+						if err != nil {
+							slog.Warn("buildSystemPrompt: get recent observations", "err", err)
+						} else if len(recent) > 0 {
+							existing := make(map[string]bool, len(results))
+							for _, r := range results {
+								existing[r.ID] = true
+							}
+							superseded, _ := a.obsStore.GetSupersededObservationIDs(
+								userID, a.cfg.Memory.Observations.SupersessionThreshold,
+							)
+							for _, o := range recent {
+								if existing[o.ID] || superseded[o.ID] {
+									continue
+								}
+								results = append(results, memory.ObservationResult{
+									ID:        o.ID,
+									Type:      o.Type,
+									Title:     o.Title,
+									Summary:   o.Summary,
+									Importance: o.Importance,
+									CreatedAt: o.CreatedAt.Format(time.RFC3339),
+									Score:     0.5, // synthetic score for recent obs
+								})
+								existing[o.ID] = true
+							}
+						}
+					}
 					obsResults = results
 				}
 			}()
@@ -2193,7 +2226,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 			}
 
 			sb.WriteString("</observations>\n")
-			sb.WriteString("\nWhen a user corrects outdated information that matches an observation above, call supersede_observation to update the memory. Don't ask for permission — just update it and the user will be notified. Only call this when you're confident the user is correcting a specific observation, not when they're adding new information.\n")
+			sb.WriteString("\nIMPORTANT: When a user says something that contradicts ANY observation listed above, call supersede_observation immediately with the target_id of the outdated observation. Examples: user says 'actually I switched to X' when observation says Y, user says 'that shipped already' when observation says 'working on', user says 'I don't like X anymore' when observation says 'prefers X'. Don't ask for permission — just update it. The user will be notified and can undo if needed.\n")
 		}
 
 		// Inject summaries (Tier 2).

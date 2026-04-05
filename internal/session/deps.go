@@ -91,6 +91,7 @@ type ObservationStore interface {
 	UpdateObservation(id string, userID int64, title, summary, obsType string, importance int) error
 	DeleteSupersessionRelation(targetID string, userID int64) error
 	GetSupersessionSourceID(targetID string, userID int64) (string, error)
+	GetRecentObservations(userID int64, maxAge time.Duration, limit int) ([]memory.Observation, error)
 }
 
 // CLIClient abstracts the CLI subprocess manager for testing.
