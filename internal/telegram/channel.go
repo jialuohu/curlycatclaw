@@ -394,6 +394,21 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 						"err", retryErr,
 					)
 				}
+			} else if strings.Contains(err.Error(), "Too Many Requests") && msg.HTML {
+				// Rate-limited on the final HTML edit. Wait and retry once
+				// so the user sees formatted text instead of raw markdown.
+				slog.Warn("telegram: rate limited on HTML edit, will retry",
+					"chat_id", msg.ChatID,
+					"message_id", msg.MessageID,
+				)
+				time.Sleep(3 * time.Second)
+				if _, retryErr := bot.Send(edit); retryErr != nil {
+					slog.Warn("telegram: failed to edit message (rate limit retry)",
+						"chat_id", msg.ChatID,
+						"message_id", msg.MessageID,
+						"err", retryErr,
+					)
+				}
 			} else {
 				slog.Warn("telegram: failed to edit message",
 					"chat_id", msg.ChatID,
