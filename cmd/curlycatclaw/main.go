@@ -22,6 +22,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/actor"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
+	"github.com/jialuohu/curlycatclaw/internal/eval"
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
@@ -43,6 +44,8 @@ func main() {
 	mcpServerFlag := flag.Bool("mcp-server", false, "run as MCP stdio server (spawned by claude CLI)")
 	migrateEmbedderFlag := flag.Bool("migrate-embedder", false, "wipe and rebuild vector collections with the configured embedder, then exit")
 	migrateDryRun := flag.Bool("dry-run", false, "with --migrate-embedder: count texts only, do not modify collections")
+	evalExportFlag := flag.Bool("eval-export", false, "export recent conversations for manual quality labeling, then exit")
+	evalExportHours := flag.Int("eval-hours", 168, "with --eval-export: hours of history to export (default: 168 = 1 week)")
 	flag.Parse()
 
 	if *versionFlag {
@@ -59,6 +62,15 @@ func main() {
 	if *mcpServerFlag {
 		if err := runMCPServer(); err != nil {
 			slog.Error("mcp-server fatal", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Eval export mode: dump recent conversations for manual labeling.
+	if *evalExportFlag {
+		if err := runEvalExport(*configPath, *evalExportHours); err != nil {
+			slog.Error("eval-export fatal", "err", err)
 			os.Exit(1)
 		}
 		return
@@ -589,10 +601,32 @@ func run(configPath string) error {
 		}()
 	}
 
+	// Start eval actor if enabled.
+	actors := []actor.Actor{tg, sess, reminderActor}
+	if cfg.Eval.Enabled {
+		reportChatID := cfg.Eval.ReportChatID
+		if reportChatID == 0 && len(cfg.Telegram.AllowedID) > 0 {
+			reportChatID = cfg.Telegram.AllowedID[0]
+		}
+		evalActor, evalErr := eval.NewActor(eval.ActorConfig{
+			DBPath:         cfg.Storage.DBPath,
+			Schedule:       cfg.Eval.Schedule,
+			LookbackHours:  cfg.Eval.LookbackHours,
+			ScoreThreshold: cfg.Eval.ScoreThreshold,
+			ReportChatID:   reportChatID,
+		}, store, tg.Inbox())
+		if evalErr != nil {
+			slog.Error("eval actor creation failed", "err", evalErr)
+		} else {
+			actors = append(actors, evalActor)
+			slog.Info("eval actor enabled", "schedule", cfg.Eval.Schedule)
+		}
+	}
+
 	slog.Info("curlycatclaw started")
 
 	// Run actors under supervision.
-	actor.SuperviseAll(ctx, 30*time.Second, tg, sess, reminderActor)
+	actor.SuperviseAll(ctx, 30*time.Second, actors...)
 	close(shutdownComplete)
 
 	slog.Info("curlycatclaw stopped")
