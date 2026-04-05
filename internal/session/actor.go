@@ -2083,6 +2083,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("Also include these built-in skills: web_search, save_note, search_notes, set_reminder, list_reminders, cancel_reminder, semantic_search, remember_fact, forget_fact, list_facts, list_summaries, delete_summary, load_prompt_skill.\n")
 	sb.WriteString("NEVER answer from memory, conversation history, or previous tool results. EVERY TIME the user asks, you MUST make fresh tool calls, even if you just fetched the same data moments ago. Extensions can change between messages.\n")
 	sb.WriteString("\nWhen using prompt skills (like humanizer, scrapling), call load_prompt_skill directly by name. Do NOT use ToolSearch to find it.\n")
+	sb.WriteString("When browsing or scraping websites, prefer scrapling-mcp tools over fetch. scrapling-mcp renders JavaScript and extracts structured content; fetch only does raw HTTP GET.\n")
 
 	sb.WriteString("\nWhen adding an external tool as an exec extension, the tool MUST speak the curlycatclaw JSON protocol:\n")
 	sb.WriteString("- Input (stdin): {\"input\": <json>, \"context\": {\"user_id\": N, \"chat_id\": N}}\n")
