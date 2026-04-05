@@ -37,7 +37,7 @@ enabled = true                 # enable automatic observation extraction
 # retrieval_limit = 8         # max observations in system prompt (default: 8)
 # hybrid_search = false       # enable FTS5 + vector hybrid search (default: false)
 # progressive_retrieval = false # enable 3-layer compact/expanded/detail retrieval (default: false)
-# supersession_threshold = 0.85 # cosine similarity for observation relation detection (default: 0.85)
+# supersession_threshold = 0.8  # confidence threshold for auto-filtering superseded observations (default: 0.8)
 
 [health]
 enabled = true

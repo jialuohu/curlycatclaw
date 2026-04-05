@@ -8,7 +8,7 @@ Self-healing memory Phase 3. Observations can now be superseded, archived, resto
 - **Supersession wiring**: extraction pipeline now detects when new observations supersede existing project_state observations, creating relations with confidence scores
 - **Superseded observation filtering**: search results exclude observations that have been superseded with confidence >= configured threshold (default 0.8)
 - **`supersede_observation` skill**: Claude calls this when it detects a user correcting outdated information in conversation, creating a replacement observation and archiving the old one
-- **`restore_observation` skill**: un-archives a soft-deleted observation
+- **`restore_observation` skill**: restores a previously archived observation, bringing it back into search results
 - **`update_observation` skill**: edit title, summary, type, or importance of an existing observation (FTS5 index updated via trigger; Qdrant vector unchanged until next extraction)
 - **Soft delete**: `forget_observation` now archives instead of permanently deleting, with restore capability
 - **Inline memory notifications**: Telegram notification when extraction creates supersession relations, with `/keep_both`, `/revert`, `/forget_old` commands
