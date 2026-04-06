@@ -46,6 +46,7 @@ func main() {
 	migrateDryRun := flag.Bool("dry-run", false, "with --migrate-embedder: count texts only, do not modify collections")
 	evalExportFlag := flag.Bool("eval-export", false, "export recent conversations for manual quality labeling, then exit")
 	evalExportHours := flag.Int("eval-hours", 168, "with --eval-export: hours of history to export (default: 168 = 1 week)")
+	evalSeedFlag := flag.Bool("eval-seed", false, "seed database with synthetic conversations for eval validation, then exit")
 	flag.Parse()
 
 	if *versionFlag {
@@ -68,6 +69,14 @@ func main() {
 	}
 
 	// Eval export mode: dump recent conversations for manual labeling.
+	if *evalSeedFlag {
+		if err := runEvalSeed(*configPath); err != nil {
+			slog.Error("eval-seed fatal", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if *evalExportFlag {
 		if err := runEvalExport(*configPath, *evalExportHours); err != nil {
 			slog.Error("eval-export fatal", "err", err)
