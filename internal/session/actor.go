@@ -213,6 +213,8 @@ func (a *Actor) Run(ctx context.Context) error {
 			}
 		case reaction := <-a.tg.Reactions():
 			a.handleReaction(reaction)
+		case cb := <-a.tg.Callbacks():
+			a.handleCallback(cb)
 		}
 	}
 }
@@ -953,9 +955,14 @@ func (ss *streamState) flush() {
 		return
 	}
 
-	// Copy state needed for I/O.
+	// Copy state needed for I/O before releasing the mutex.
 	msgID := ss.msgID
 	chatID := ss.chatID
+	useHTML := ss.htmlMode
+	onFirst := ss.onFirstID
+	if onFirst != nil {
+		ss.onFirstID = nil // prevent double-call
+	}
 
 	// Mark as flushing so concurrent onDelta() just accumulates.
 	ss.flushing = true
@@ -963,8 +970,6 @@ func (ss *streamState) flush() {
 
 	var newMsgID int
 	var gotID bool
-
-	useHTML := ss.htmlMode
 
 	if msgID <= 0 {
 		// First flush (or retry after timeout sentinel -1): send a new message.
@@ -987,9 +992,8 @@ func (ss *streamState) flush() {
 		case id := <-resultCh:
 			newMsgID = id
 			gotID = true
-			if id > 0 && ss.onFirstID != nil {
-				ss.onFirstID(id)
-				ss.onFirstID = nil // call only once
+			if id > 0 && onFirst != nil {
+				onFirst(id)
 			}
 		case <-time.After(5 * time.Second):
 			slog.Warn("timeout waiting for telegram message ID", "chat_id", chatID)
@@ -1660,6 +1664,14 @@ func (a *Actor) handleProjectCommand(msg telegram.IncomingMessage) error {
 		Text:   fmt.Sprintf("Switched to project %q at %s.", found.Name, found.Path),
 	})
 	return nil
+}
+
+// handleCallback processes a Telegram inline keyboard callback.
+// Routes eval approve/reject callbacks to the appropriate handler.
+func (a *Actor) handleCallback(cb telegram.CallbackEvent) {
+	slog.Debug("callback received", "data", cb.Data, "user_id", cb.UserID, "chat_id", cb.ChatID)
+	// Callback data format: "eval:approve:<candidate_id>" or "eval:reject:<candidate_id>"
+	// Phase 2+ will wire this to the eval gate. For now, log it.
 }
 
 // handleReaction processes a Telegram reaction event by storing it in the eval_reactions table.
