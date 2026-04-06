@@ -71,7 +71,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 
 **Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Email Ingest Actor (background email-to-observation processing). Each actor panics safely and restarts with exponential backoff.
 
-**Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control.
+**Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control. Document attachments: PDFs sent as native document blocks (both modes), text files inlined into message (CLI) or as text blocks (API).
 
 **MCP & tools**: MCP Manager holds persistent stdio connections. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
 
@@ -89,6 +89,8 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - `splitAtBoundary()` in actor.go handles message overflow. Searches backward for `\n\n`, detects unclosed code fences.
 - Actor struct maps (`effortOverride`, `lastUserMsg`, `debugOverride`, `obsState`) do NOT need mutexes. `handleMessage` runs in a single goroutine from the actor's `Run()` loop. Only `activeProjects` has a mutex (defense-in-depth, not required).
 - GWS multi-account: `GWS_ACCOUNT_<NAME>_SERVICES` env vars must not collide with account names. `parseAccountsFromEnv()` skips keys ending in `_SERVICES`. Account names validated as `[a-zA-Z0-9_-]+`. `"account"` is in `reservedFlags` to prevent LLM injection as a gws CLI flag. Credential paths must be absolute and exist at startup (fatal otherwise).
+- `send_file` in CLI mode queues to SQLite (`pending_files` table), delivered by session actor after tool loop ends. Direct API mode sends immediately via Telegram. Tool result says "File queued" to prevent Claude retries.
+- CLI subprocess `bufio.Scanner` max is 16MB (for base64 PDF responses in stream-json). Default 64KB would crash on any document attachment.
 
 ## Key Files
 
