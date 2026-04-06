@@ -24,6 +24,7 @@ type Config struct {
 	Logging          LoggingConfig          `toml:"logging"`
 	Health           HealthConfig           `toml:"health"`
 	Voice            VoiceConfig            `toml:"voice"`
+	EmailIngest      EmailIngestConfig      `toml:"email_ingest"`
 	ConfirmTools     []string               `toml:"confirm_tools"`
 	Projects         []ProjectConfig        `toml:"projects"`
 	SkillCollections []SkillCollectionConfig `toml:"skill_collections"`
@@ -152,6 +153,19 @@ type MemoryConfig struct {
 	Observations         ObservationsConfig `toml:"observations"`
 }
 
+// EmailIngestConfig controls background email-to-observation processing.
+type EmailIngestConfig struct {
+	Enabled              bool     `toml:"enabled"`
+	IntervalMinutes      int      `toml:"interval_minutes"`
+	BackfillDays         int      `toml:"backfill_days"`
+	BatchSize            int      `toml:"batch_size"`
+	MaxDailyObservations int      `toml:"max_daily_observations"`
+	MaxDailyLLMCalls     int      `toml:"max_daily_llm_calls"`
+	MinImportance        int      `toml:"min_importance"`
+	Labels               []string `toml:"labels"`
+	SkipSenders          []string `toml:"skip_senders"`
+}
+
 // ObservationsConfig controls automatic observation extraction and retrieval.
 type ObservationsConfig struct {
 	Enabled             bool    `toml:"enabled"`
@@ -255,6 +269,17 @@ func Load(path string) (*Config, error) {
 		Voice: VoiceConfig{
 			Enabled:  false,
 			STTModel: "whisper-1",
+		},
+		EmailIngest: EmailIngestConfig{
+			Enabled:              false,
+			IntervalMinutes:      15,
+			BackfillDays:         30,
+			BatchSize:            20,
+			MaxDailyObservations: 100,
+			MaxDailyLLMCalls:     200,
+			MinImportance:        3,
+			Labels:               []string{"INBOX"},
+			SkipSenders:          []string{"noreply@", "no-reply@", "notifications@", "mailer-daemon@"},
 		},
 		Eval: EvalConfig{
 			Enabled:              false,
@@ -394,6 +419,17 @@ func (c *Config) validate() error {
 	}
 	if c.Voice.Enabled && c.Voice.OpenAIAPIKey == "" {
 		return fmt.Errorf("config: voice.openai_api_key is required when voice is enabled")
+	}
+	if c.EmailIngest.Enabled {
+		if c.EmailIngest.IntervalMinutes < 1 {
+			return fmt.Errorf("config: email_ingest.interval_minutes must be >= 1")
+		}
+		if c.EmailIngest.BackfillDays < 0 {
+			return fmt.Errorf("config: email_ingest.backfill_days must be >= 0")
+		}
+		if c.EmailIngest.MinImportance < 1 || c.EmailIngest.MinImportance > 10 {
+			return fmt.Errorf("config: email_ingest.min_importance must be 1-10")
+		}
 	}
 	for i, sc := range c.SkillCollections {
 		if sc.Path == "" {

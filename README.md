@@ -24,6 +24,8 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - 🧠 **Smart memory** -- four-tier context (user facts, auto-extracted observations with entity tracking and self-healing supersession, conversation summaries via Qdrant, sliding window), FTS5 hybrid search, progressive retrieval, pluggable embeddings, voice messages transcribed via OpenAI Whisper
 
+- 📧 **Email ingest** -- background Gmail polling with two-stage filtering (sender/label pre-filter + Claude importance scoring), automatic observation extraction from important emails
+
 - 🔌 **Extensible** -- Google Workspace (multi-account with per-account service filtering), GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, file delivery, all manageable from chat
 
 - 🧪 **Thinking effort control** -- configure Claude's reasoning depth (`/effort low|medium|high|max`), replay messages at higher effort (`/retry`), extended thinking with budget presets, per-session override via Telegram
@@ -67,33 +69,33 @@ Then message your Telegram bot. Done.
 │                       Supervisor                           │
 │            (panic/recover, backoff, 30s drain)             │
 │                                                            │
-│  ┌──────────┐   ┌───────────┐   ┌───────────┐              │
-│  │ Channel  │◄─►│  Session  │   │ Reminder  │              │
-│  │  Actor   │   │   Actor   │   │   Actor   │              │
-│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘              │
-│       │               │               │                    │
-│       │               ├──► Claude     │                    │
-│       │               │    Direct API (stream+tools)       │
-│       │               │    OR CLI subprocess               │
-│       │               │    + /effort /retry /debug         │
-│       │               │               │                    │
-│       │               ├──► MCP Manager                     │
-│       │               │    ├─ Config servers (gws, github) │
-│       │               │    ├─ Runtime extensions (proxy)   │
-│       │               │    └─ Skills (built-in + Wasm)     │
-│       │               │               │                    │
-│       │               └──► Memory ◄───┘                    │
-│       │                    SQLite / Qdrant / Ollama        │
-│       │                                                    │
-│       │◄── [tool] lines (/debug toggles visibility)        │
-│       │                                                    │
-└───────┼────────────────────────────────────────────────────┘
+│  ┌──────────┐   ┌───────────┐   ┌───────────┐   ┌──────────┐│
+│  │ Channel  │◄─►│  Session  │   │ Reminder  │   │  Email   ││
+│  │  Actor   │   │   Actor   │   │   Actor   │   │  Ingest  ││
+│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘   └────┬─────┘│
+│       │               │               │               │      │
+│       │               ├──► Claude     │          Gmail │      │
+│       │               │    Direct API (stream+tools)  via    │
+│       │               │    OR CLI subprocess         MCP     │
+│       │               │    + /effort /retry /debug     │      │
+│       │               │               │               ▼      │
+│       │               ├──► MCP Manager           Observations│
+│       │               │    ├─ Config servers (gws, github)   │
+│       │               │    ├─ Runtime extensions (proxy)     │
+│       │               │    └─ Skills (built-in + Wasm)       │
+│       │               │               │                      │
+│       │               └──► Memory ◄───┘                      │
+│       │                    SQLite / Qdrant / Ollama          │
+│       │                                                      │
+│       │◄── [tool] lines (/debug toggles visibility)          │
+│       │                                                      │
+└───────┼──────────────────────────────────────────────────────┘
         │
    Telegram
    Bot API
 ```
 
-Everything runs as goroutine-based actors under supervision. The Channel Actor handles Telegram I/O, the Session Actor orchestrates Claude conversations and tool execution, and the Reminder Actor manages scheduled tasks. See [docs/architecture.md](docs/architecture.md) for the full streaming pipeline, memory system, tool execution, and vector search diagrams.
+Everything runs as goroutine-based actors under supervision. The Channel Actor handles Telegram I/O, the Session Actor orchestrates Claude conversations and tool execution, the Reminder Actor manages scheduled tasks, and the Email Ingest Actor polls Gmail for important emails and extracts observations. See [docs/architecture.md](docs/architecture.md) for the full streaming pipeline, memory system, tool execution, and vector search diagrams.
 
 ## Documentation
 

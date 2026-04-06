@@ -57,7 +57,7 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 
 Goroutine-based actor model under supervision. See [docs/architecture.md](docs/architecture.md) for full diagrams and details.
 
-**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), and Eval Actor (background self-evaluation). Each actor panics safely and restarts with exponential backoff.
+**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Email Ingest Actor (background email-to-observation processing). Each actor panics safely and restarts with exponential backoff.
 
 **Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control.
 
@@ -120,6 +120,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/eval/miner.go` | FailureMiner: cluster low-scoring conversations by failure type |
 | `internal/eval/candidate.go` | CandidateGenerator: Claude proposes memory fixes per failure |
 | `internal/eval/gate.go` | CommitGate: confidence-based gating with approve/reject |
+| `internal/email/actor.go` | Email Ingest Actor (background Gmail polling, two-stage filter, Claude extraction to observations) |
 | `skills/send_file.go` | Send file skill (Telegram document delivery) |
 | `cmd/curlycatclaw-gws-mcp/main.go` | GWS MCP server entrypoint, multi-account env parsing (`GWS_ACCOUNT_*`, `_SERVICES`) |
 | `cmd/curlycatclaw-gws-mcp/executor.go` | GWS CLI subprocess runner, account resolution, service validation, per-call env overrides |

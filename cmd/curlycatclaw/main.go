@@ -22,6 +22,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/actor"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
+	emailingest "github.com/jialuohu/curlycatclaw/internal/email"
 	"github.com/jialuohu/curlycatclaw/internal/eval"
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
@@ -481,6 +482,26 @@ func run(configPath string) error {
 	// Create reminder actor.
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh, cronRunner)
 
+	// Create email ingest actor (background email-to-observation processing).
+	var emailActor *emailingest.Actor
+	if cfg.EmailIngest.Enabled && claudeClient != nil && len(cfg.Telegram.AllowedID) > 0 {
+		ownerUID := cfg.Telegram.AllowedID[0]
+		var emailVS emailingest.VectorIndexer
+		if vectorStore != nil {
+			emailVS = vectorStore
+		}
+		emailActor = emailingest.New(
+			cfg.EmailIngest,
+			claudeClient,
+			mcpMgr,
+			store,
+			emailVS,
+			ownerUID,
+			ownerUID, // chatID same as userID for private chats
+		)
+		slog.Info("email ingest actor enabled", "interval_min", cfg.EmailIngest.IntervalMinutes)
+	}
+
 	// Create session actor.
 	// Pass explicit nil interfaces (not typed nil pointers) when components
 	// are disabled, so that session.Actor's nil checks work correctly.
@@ -627,7 +648,6 @@ func run(configPath string) error {
 			evalLLM = eval.NewCLILLMCaller(cliManager)
 			slog.Info("eval: using CLI mode for LLM-as-judge")
 		}
-
 		evalActor, evalErr := eval.NewActor(eval.ActorConfig{
 			DBPath:              cfg.Storage.DBPath,
 			Schedule:            cfg.Eval.Schedule,
@@ -645,6 +665,11 @@ func run(configPath string) error {
 	}
 
 	slog.Info("curlycatclaw started")
+
+	// Add email ingest actor if enabled.
+	if emailActor != nil {
+		actors = append(actors, emailActor)
+	}
 
 	// Run actors under supervision.
 	actor.SuperviseAll(ctx, 30*time.Second, actors...)
