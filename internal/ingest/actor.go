@@ -133,8 +133,14 @@ func (a *Actor) Run(ctx context.Context) error {
 		return fmt.Errorf("ingest: schedule job: %w", err)
 	}
 
-	// Run first cycle immediately.
-	go a.runCycle(ctx)
+	// Run first cycle after a brief delay to let MCP servers finish tool discovery.
+	go func() {
+		select {
+		case <-time.After(10 * time.Second):
+			a.runCycle(ctx)
+		case <-ctx.Done():
+		}
+	}()
 
 	// Periodic cleanup of old processed items.
 	cleanupTicker := time.NewTicker(24 * time.Hour)
