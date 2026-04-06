@@ -209,6 +209,9 @@ func (m *mockTelegram) Updates() <-chan telegram.IncomingMessage { return m.upda
 func (m *mockTelegram) Reactions() <-chan telegram.ReactionEvent {
 	return make(chan telegram.ReactionEvent)
 }
+func (m *mockTelegram) Callbacks() <-chan telegram.CallbackEvent {
+	return make(chan telegram.CallbackEvent)
+}
 func (m *mockTelegram) SendTyping(_ int64)                       {}
 func (m *mockTelegram) SendDocument(_ int64, _ string, _ []byte, _ string) error { return nil }
 

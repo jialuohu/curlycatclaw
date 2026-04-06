@@ -619,12 +619,13 @@ func run(configPath string) error {
 			reportChatID = cfg.Telegram.AllowedID[0]
 		}
 		evalActor, evalErr := eval.NewActor(eval.ActorConfig{
-			DBPath:         cfg.Storage.DBPath,
-			Schedule:       cfg.Eval.Schedule,
-			LookbackHours:  cfg.Eval.LookbackHours,
-			ScoreThreshold: cfg.Eval.ScoreThreshold,
-			ReportChatID:   reportChatID,
-		}, store, tg.Inbox())
+			DBPath:              cfg.Storage.DBPath,
+			Schedule:            cfg.Eval.Schedule,
+			LookbackHours:       cfg.Eval.LookbackHours,
+			ScoreThreshold:      cfg.Eval.ScoreThreshold,
+			ReportChatID:        reportChatID,
+			MaxCandidatesPerRun: cfg.Eval.MaxCandidatesPerRun,
+		}, store, tg.Inbox(), nil)
 		if evalErr != nil {
 			slog.Error("eval actor creation failed", "err", evalErr)
 		} else {

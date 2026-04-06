@@ -143,7 +143,7 @@ func runEvalSeed(configPath string) error {
 		for j, m := range s.messages {
 			msgTime := convTime.Add(time.Duration(j) * time.Minute)
 			content, _ := json.Marshal(m.text)
-			store.DB().Exec(
+			store.DB().Exec( //nolint:errcheck // seed tool, best-effort
 				`INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)`,
 				convID, m.role, string(content), msgTime,
 			)
@@ -156,7 +156,7 @@ func runEvalSeed(configPath string) error {
 			if isErr {
 				output = "error: operation failed"
 			}
-			store.DB().Exec(
+			store.DB().Exec( //nolint:errcheck // seed tool, best-effort
 				`INSERT INTO tool_calls (id, conversation_id, name, input, output, is_error, created_at) VALUES (?, ?, ?, '{}', ?, ?, ?)`,
 				newSeedID(), convID, "test_tool", output, isErr, convTime.Add(time.Duration(j)*30*time.Second),
 			)
@@ -164,10 +164,10 @@ func runEvalSeed(configPath string) error {
 
 		// Insert interaction events.
 		for j := 0; j < s.retries; j++ {
-			store.LogInteractionEvent(convID, 2069204235, 2069204235, "retry", "")
+			store.LogInteractionEvent(convID, 2069204235, 2069204235, "retry", "") //nolint:errcheck
 		}
 		for j := 0; j < s.efforts; j++ {
-			store.LogInteractionEvent(convID, 2069204235, 2069204235, "effort_override", "max")
+			store.LogInteractionEvent(convID, 2069204235, 2069204235, "effort_override", "max") //nolint:errcheck
 		}
 
 		fmt.Fprintf(os.Stderr, "  [%2d] %-40s signals: tools=%d/%d corr=%d retry=%d effort=%d  suggested=%s\n",

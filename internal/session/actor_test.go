@@ -97,6 +97,9 @@ func (m *mockTelegramTransport) SendTyping(_ int64) {}
 func (m *mockTelegramTransport) Reactions() <-chan telegram.ReactionEvent {
 	return make(chan telegram.ReactionEvent)
 }
+func (m *mockTelegramTransport) Callbacks() <-chan telegram.CallbackEvent {
+	return make(chan telegram.CallbackEvent)
+}
 
 // typingRecorder is a TelegramTransport mock that records SendTyping calls.
 type typingRecorder struct {

@@ -77,14 +77,21 @@ func (m IncomingMessage) Photos() []Attachment {
 	return out
 }
 
+// InlineButton represents a single button in a Telegram inline keyboard.
+type InlineButton struct {
+	Text         string // button label
+	CallbackData string // data sent back when pressed
+}
+
 // OutgoingMessage represents a message to be sent to a Telegram chat.
 type OutgoingMessage struct {
 	ChatID    int64
 	Text      string
-	ReplyTo   int     // 0 means no reply
-	MessageID int     // nonzero = edit existing message instead of sending new
-	ResultCh  chan int // if non-nil, the created/edited MessageID is sent back
-	HTML      bool    // if true, convert markdown to Telegram HTML before sending
+	ReplyTo   int            // 0 means no reply
+	MessageID int            // nonzero = edit existing message instead of sending new
+	ResultCh  chan int        // if non-nil, the created/edited MessageID is sent back
+	HTML      bool           // if true, convert markdown to Telegram HTML before sending
+	Buttons   [][]InlineButton // inline keyboard rows (nil = no keyboard)
 }
 
 // ReactionEvent represents a reaction update from Telegram.
@@ -93,6 +100,15 @@ type ReactionEvent struct {
 	UserID    int64
 	MessageID int
 	Emoji     string // e.g. "👍", "👎"
+}
+
+// CallbackEvent represents a callback query from an inline keyboard button press.
+type CallbackEvent struct {
+	ID        string // callback query ID (for answering)
+	ChatID    int64
+	UserID    int64
+	MessageID int
+	Data      string // callback_data from the button
 }
 
 // Channel is the Telegram transport actor. It bridges the Telegram Bot API
@@ -106,6 +122,7 @@ type Channel struct {
 	typing    chan int64           // chat IDs to send typing action to
 	docSend   chan docSendRequest  // document send requests
 	reactions chan ReactionEvent   // reaction updates from telegram
+	callbacks chan CallbackEvent   // callback query events from inline keyboards
 }
 
 // docSendRequest is an internal request to send a document.
@@ -138,6 +155,7 @@ func NewChannel(cfg config.TGConfig) (*Channel, error) {
 		typing:    make(chan int64, channelBuffer),
 		docSend:   make(chan docSendRequest, 8),
 		reactions: make(chan ReactionEvent, channelBuffer),
+		callbacks: make(chan CallbackEvent, channelBuffer),
 	}, nil
 }
 
@@ -154,6 +172,9 @@ func (ch *Channel) Updates() <-chan IncomingMessage { return ch.updates }
 
 // Reactions returns a receive-only channel for Telegram reaction events.
 func (ch *Channel) Reactions() <-chan ReactionEvent { return ch.reactions }
+
+// Callbacks returns a receive-only channel for inline keyboard callback events.
+func (ch *Channel) Callbacks() <-chan CallbackEvent { return ch.callbacks }
 
 // Run implements actor.Actor. It connects to the Telegram Bot API using the
 // go-telegram/bot library with handler-based update routing. Incoming messages
@@ -226,8 +247,13 @@ func (ch *Channel) Run(ctx context.Context) error {
 }
 
 // defaultHandler processes all incoming updates. It dispatches messages to the
-// updates channel and reactions to the reactions channel.
+// updates channel, reactions to the reactions channel, and callbacks to the callbacks channel.
 func (ch *Channel) defaultHandler(ctx context.Context, b *bot.Bot, upd *models.Update) {
+	if upd.CallbackQuery != nil {
+		ch.handleCallback(ctx, b, upd.CallbackQuery)
+		return
+	}
+
 	if upd.MessageReaction != nil {
 		ch.handleReaction(upd.MessageReaction)
 		return
@@ -350,6 +376,35 @@ func (ch *Channel) handleReaction(reaction *models.MessageReactionUpdated) {
 				slog.Warn("telegram: reaction channel full, dropping", "chat_id", reaction.Chat.ID)
 			}
 		}
+	}
+}
+
+// handleCallback processes a Telegram callback query from an inline keyboard button press.
+func (ch *Channel) handleCallback(ctx context.Context, b *bot.Bot, cq *models.CallbackQuery) {
+	if !ch.isAllowed(cq.From.ID) {
+		return
+	}
+
+	// Answer the callback to dismiss the loading indicator.
+	b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cq.ID}) //nolint:errcheck
+
+	msgID := 0
+	chatID := int64(0)
+	if cq.Message.Message != nil {
+		msgID = cq.Message.Message.ID
+		chatID = cq.Message.Message.Chat.ID
+	}
+
+	select {
+	case ch.callbacks <- CallbackEvent{
+		ID:        cq.ID,
+		ChatID:    chatID,
+		UserID:    cq.From.ID,
+		MessageID: msgID,
+		Data:      cq.Data,
+	}:
+	default:
+		slog.Warn("telegram: callback channel full, dropping", "data", cq.Data)
 	}
 }
 
@@ -509,6 +564,11 @@ func (ch *Channel) sendMessage(ctx context.Context, b *bot.Bot, msg OutgoingMess
 			params.ReplyParameters = &models.ReplyParameters{
 				MessageID: msg.ReplyTo,
 			}
+		}
+
+		// Attach inline keyboard to the last chunk only.
+		if i == len(chunks)-1 && len(msg.Buttons) > 0 {
+			params.ReplyMarkup = buildInlineKeyboard(msg.Buttons)
 		}
 
 		sent, err := b.SendMessage(ctx, params)
@@ -684,4 +744,20 @@ func runeOffsetToByteOffset(s string, n int) int {
 		offset += size
 	}
 	return offset
+}
+
+// buildInlineKeyboard converts rows of InlineButton to a Telegram InlineKeyboardMarkup.
+func buildInlineKeyboard(rows [][]InlineButton) *models.InlineKeyboardMarkup {
+	var keyboard [][]models.InlineKeyboardButton
+	for _, row := range rows {
+		var kbRow []models.InlineKeyboardButton
+		for _, btn := range row {
+			kbRow = append(kbRow, models.InlineKeyboardButton{
+				Text:         btn.Text,
+				CallbackData: btn.CallbackData,
+			})
+		}
+		keyboard = append(keyboard, kbRow)
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: keyboard}
 }

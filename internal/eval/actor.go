@@ -16,27 +16,30 @@ import (
 
 // ActorConfig holds the configuration for the EvalActor.
 type ActorConfig struct {
-	DBPath          string  // path to SQLite database
-	Schedule        string  // cron expression (5-field)
-	LookbackHours   int     // hours of history per run
-	ScoreThreshold  float64 // below this triggers failure mining
-	ReportChatID    int64   // Telegram chat ID for eval reports
+	DBPath             string  // path to SQLite database
+	Schedule           string  // cron expression (5-field)
+	LookbackHours      int     // hours of history per run
+	ScoreThreshold     float64 // below this triggers failure mining
+	ReportChatID       int64   // Telegram chat ID for eval reports
+	MaxCandidatesPerRun int    // cap on memory candidates per run
 }
 
 // Actor is a supervised actor that runs the self-evaluation pipeline on a schedule.
 // It follows the same pattern as ReminderActor: internal gocron scheduler,
 // implements actor.Actor interface (Name + Run).
 type Actor struct {
-	cfg      ActorConfig
-	store    *memory.Store
-	db       *sql.DB // separate read-only connection for scanning
-	scorer   *Scorer
-	miner    *Miner
-	reporter *Reporter
+	cfg          ActorConfig
+	store        *memory.Store
+	db           *sql.DB // separate read-only connection for scanning
+	scorer       *Scorer
+	miner        *Miner
+	reporter     *Reporter
+	candidateGen *CandidateGenerator // nil if no LLM configured
+	gate         *Gate
 }
 
-// NewActor creates an EvalActor.
-func NewActor(cfg ActorConfig, store *memory.Store, tg chan<- telegram.OutgoingMessage) (*Actor, error) {
+// NewActor creates an EvalActor. llm may be nil to skip candidate generation.
+func NewActor(cfg ActorConfig, store *memory.Store, tg chan<- telegram.OutgoingMessage, llm LLMCaller) (*Actor, error) {
 	// Open a separate read-only connection for scanning (WAL mode allows concurrent reads).
 	readDB, err := sql.Open("sqlite", cfg.DBPath+"?mode=ro")
 	if err != nil {
@@ -44,13 +47,25 @@ func NewActor(cfg ActorConfig, store *memory.Store, tg chan<- telegram.OutgoingM
 	}
 	readDB.SetMaxOpenConns(1)
 
+	maxCandidates := cfg.MaxCandidatesPerRun
+	if maxCandidates <= 0 {
+		maxCandidates = 5
+	}
+
+	var cg *CandidateGenerator
+	if llm != nil {
+		cg = NewCandidateGenerator(llm, maxCandidates)
+	}
+
 	return &Actor{
-		cfg:      cfg,
-		store:    store,
-		db:       readDB,
-		scorer:   NewScorer(readDB),
-		miner:    NewMiner(readDB),
-		reporter: NewReporter(tg),
+		cfg:          cfg,
+		store:        store,
+		db:           readDB,
+		scorer:       NewScorer(readDB),
+		miner:        NewMiner(readDB),
+		reporter:     NewReporter(tg),
+		candidateGen: cg,
+		gate:         NewGate(store.DB(), false), // Phase 2: no auto-commit
 	}, nil
 }
 
@@ -195,18 +210,35 @@ func (a *Actor) runPipeline(ctx context.Context) {
 		}
 	}
 
-	// 4. REPORT — send summary to Telegram.
+	// 4. PROPOSE — generate memory candidates for failure clusters.
+	var candidates []MemoryCandidate
+	if a.candidateGen != nil && len(clusters) > 0 {
+		candidates = a.candidateGen.GenerateCandidates(ctx, runID, clusters)
+		if len(candidates) > 0 {
+			results := a.gate.Process(candidates)
+			var pending int
+			for _, r := range results {
+				if r.Action == "pending" {
+					pending++
+				}
+			}
+			slog.Info("eval: candidates processed", "total", len(candidates), "pending", pending)
+		}
+	}
+
+	// 5. REPORT — send summary to Telegram.
 	run := EvalRun{
 		ID:                   runID,
 		StartedAt:            now,
 		ConversationsScanned: len(convs),
 		FailuresFound:        len(clusters),
+		CandidatesGenerated:  len(candidates),
 	}
 	if a.cfg.ReportChatID != 0 {
 		a.reporter.SendReport(a.cfg.ReportChatID, run, scores, clusters)
 	}
 
-	a.completeRun(runID, "completed", len(convs), len(clusters), 0, "")
+	a.completeRun(runID, "completed", len(convs), len(clusters), len(candidates), "")
 	slog.Info("eval: pipeline completed",
 		"run_id", runID,
 		"conversations", len(convs),

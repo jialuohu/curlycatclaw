@@ -67,6 +67,7 @@ type TelegramTransport interface {
 	Inbox() chan<- telegram.OutgoingMessage
 	Updates() <-chan telegram.IncomingMessage
 	Reactions() <-chan telegram.ReactionEvent
+	Callbacks() <-chan telegram.CallbackEvent
 	SendTyping(chatID int64)
 	SendDocument(chatID int64, fileName string, data []byte, caption string) error
 }
