@@ -73,6 +73,9 @@ func (s *GmailSource) Discover(ctx context.Context, cursor json.RawMessage) ([]I
 		return nil, cursor, fmt.Errorf("gmail triage: %w", err)
 	}
 
+	preview := result
+	if len(preview) > 500 { preview = preview[:500] }
+	slog.Info("gmail triage raw response", "len", len(result), "preview", preview)
 	refs := parseGmailSearchResult(result)
 	var items []ItemRef
 	for _, ref := range refs {
@@ -181,25 +184,28 @@ type gmailMessage struct {
 }
 
 func parseGmailSearchResult(result string) []gmailMessageRef {
-	var messages []struct {
+	// MCP CallTool may wrap the response in {"text": "..."} — unwrap it.
+	raw := result
+	var textEnvelope struct{ Text string `json:"text"` }
+	if json.Unmarshal([]byte(raw), &textEnvelope) == nil && textEnvelope.Text != "" {
+		raw = textEnvelope.Text
+	}
+
+	type triageMsg struct {
 		ID      string   `json:"id"`
 		From    string   `json:"from"`
 		Subject string   `json:"subject"`
+		Date    string   `json:"date"`
 		Snippet string   `json:"snippet"`
 		Labels  []string `json:"labelIds"`
 	}
-	if err := json.Unmarshal([]byte(result), &messages); err != nil {
+	var messages []triageMsg
+	if err := json.Unmarshal([]byte(raw), &messages); err != nil {
 		var wrapper struct {
-			Messages []struct {
-				ID      string   `json:"id"`
-				From    string   `json:"from"`
-				Subject string   `json:"subject"`
-				Snippet string   `json:"snippet"`
-				Labels  []string `json:"labelIds"`
-			} `json:"messages"`
+			Messages []triageMsg `json:"messages"`
 		}
-		if err := json.Unmarshal([]byte(result), &wrapper); err != nil {
-			slog.Warn("ingest: failed to parse gmail search result", "err", err)
+		if err := json.Unmarshal([]byte(raw), &wrapper); err != nil {
+			slog.Warn("ingest: failed to parse gmail triage result", "err", err)
 			return nil
 		}
 		messages = wrapper.Messages
@@ -219,6 +225,13 @@ func parseGmailSearchResult(result string) []gmailMessageRef {
 }
 
 func parseGmailReadResult(result, account, messageID string) gmailMessage {
+	// Unwrap MCP {"text": "..."} envelope.
+	raw := result
+	var textEnvelope struct{ Text string `json:"text"` }
+	if json.Unmarshal([]byte(raw), &textEnvelope) == nil && textEnvelope.Text != "" {
+		raw = textEnvelope.Text
+	}
+
 	var msg struct {
 		ID       string   `json:"id"`
 		ThreadID string   `json:"threadId"`
@@ -229,7 +242,7 @@ func parseGmailReadResult(result, account, messageID string) gmailMessage {
 		Body     string   `json:"body"`
 		Labels   []string `json:"labelIds"`
 	}
-	if err := json.Unmarshal([]byte(result), &msg); err != nil {
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
 		return gmailMessage{id: messageID, body: result}
 	}
 
