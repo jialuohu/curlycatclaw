@@ -139,4 +139,17 @@ port    = 8080
 # openai_api_key = ""
 # stt_model = "whisper-1"
 
+# Background email-to-observation processing.
+# Requires GWS MCP server with Gmail-enabled accounts.
+[email_ingest]
+enabled = false
+interval_minutes = 15       # poll interval for new emails
+backfill_days = 30           # days of history to backfill on first run
+batch_size = 20              # emails per backfill batch
+max_daily_observations = 100 # per-account daily cap
+max_daily_llm_calls = 200    # cost circuit breaker
+min_importance = 3           # minimum importance to index (1-10)
+labels = ["INBOX"]           # Gmail labels to process
+skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
+
 # Encrypted MCP credentials: set CURLYCATCLAW_MASTER_KEY env var (64 hex chars).
