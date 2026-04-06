@@ -79,8 +79,10 @@ func (s *Scorer) ScoreConversation(convID string) (*ConversationSignals, error) 
 	rows, err := s.db.Query(
 		`SELECT event_type FROM interaction_events
 		 WHERE conversation_id = ?
-		    OR (conversation_id = '' AND user_id = ? AND chat_id = ?)`,
+		    OR (conversation_id = '' AND user_id = ? AND chat_id = ?
+		        AND created_at BETWEEN ? AND ?)`,
 		convID, sig.UserID, sig.ChatID,
+		firstAt.String, lastAt.String,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("eval: query interaction events: %w", err)

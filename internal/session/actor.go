@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -211,6 +213,8 @@ func (a *Actor) Run(ctx context.Context) error {
 			}
 		case reaction := <-a.tg.Reactions():
 			a.handleReaction(reaction)
+		case cb := <-a.tg.Callbacks():
+			a.handleCallback(cb)
 		}
 	}
 }
@@ -862,14 +866,14 @@ func (a *Actor) reindexMissingObservations() {
 	}
 }
 
-// streamDebounce is the minimum interval between Telegram message edits
-// during streaming. This prevents hitting Telegram's rate limits.
-const streamDebounce = 500 * time.Millisecond
+// streamDebounce is the minimum interval between draft updates during streaming.
+const streamDebounce = 300 * time.Millisecond
 
 // streamState tracks the state of a streaming response to Telegram.
 type streamState struct {
 	chatID    int64
 	msgID     int // Telegram message ID being edited (0 = not started, -1 = timeout sentinel)
+	draftID   string          // non-empty = use sendMessageDraft instead of edit-loop
 	buf       strings.Builder // accumulated text so far
 	runeCount int             // rune count of buf (avoids repeated conversion)
 	lastFlush time.Time
@@ -936,9 +940,29 @@ func (ss *streamState) flush() {
 	}
 	ss.lastFlush = time.Now()
 
-	// Copy state needed for I/O.
+	// Draft mode (Bot API 9.3+): fire-and-forget draft preview.
+	// Much simpler than the edit-loop — no message ID tracking needed.
+	if ss.draftID != "" && !ss.htmlMode {
+		select {
+		case ss.tg.Inbox() <- telegram.OutgoingMessage{
+			ChatID:  ss.chatID,
+			DraftID: ss.draftID,
+			Text:    text,
+		}:
+		default:
+			slog.Debug("telegram inbox full, skipping draft", "chat_id", ss.chatID)
+		}
+		return
+	}
+
+	// Copy state needed for I/O before releasing the mutex.
 	msgID := ss.msgID
 	chatID := ss.chatID
+	useHTML := ss.htmlMode
+	onFirst := ss.onFirstID
+	if onFirst != nil {
+		ss.onFirstID = nil // prevent double-call
+	}
 
 	// Mark as flushing so concurrent onDelta() just accumulates.
 	ss.flushing = true
@@ -946,8 +970,6 @@ func (ss *streamState) flush() {
 
 	var newMsgID int
 	var gotID bool
-
-	useHTML := ss.htmlMode
 
 	if msgID <= 0 {
 		// First flush (or retry after timeout sentinel -1): send a new message.
@@ -970,9 +992,8 @@ func (ss *streamState) flush() {
 		case id := <-resultCh:
 			newMsgID = id
 			gotID = true
-			if id > 0 && ss.onFirstID != nil {
-				ss.onFirstID(id)
-				ss.onFirstID = nil // call only once
+			if id > 0 && onFirst != nil {
+				onFirst(id)
 			}
 		case <-time.After(5 * time.Second):
 			slog.Warn("timeout waiting for telegram message ID", "chat_id", chatID)
@@ -1092,9 +1113,16 @@ func (ss *streamState) reset() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.msgID = 0
+	ss.draftID = newStreamDraftID()
 	ss.buf.Reset()
 	ss.runeCount = 0
 	ss.lastFlush = time.Time{}
+}
+
+func newStreamDraftID() string {
+	b := make([]byte, 8)
+	crand.Read(b) //nolint:errcheck
+	return hex.EncodeToString(b)
 }
 
 func (a *Actor) toolUseLoop(
@@ -1107,7 +1135,7 @@ func (a *Actor) toolUseLoop(
 	tools []anthropic.ToolUnionParam,
 	effort config.Effort,
 ) error {
-	ss := &streamState{chatID: chatID, tg: a.tg, onFirstID: func(tgMsgID int) {
+	ss := &streamState{chatID: chatID, draftID: newStreamDraftID(), tg: a.tg, onFirstID: func(tgMsgID int) {
 		if a.store != nil {
 			if err := a.store.MapTelegramMessage(chatID, tgMsgID, convID); err != nil {
 				slog.Debug("eval: failed to map bot message", "err", err)
@@ -1318,7 +1346,7 @@ func (a *Actor) handleWithCLI(
 	systemPrompt string,
 	effort string,
 ) error {
-	ss := &streamState{chatID: chatID, tg: a.tg, onFirstID: func(tgMsgID int) {
+	ss := &streamState{chatID: chatID, draftID: newStreamDraftID(), tg: a.tg, onFirstID: func(tgMsgID int) {
 		if a.store != nil {
 			if err := a.store.MapTelegramMessage(chatID, tgMsgID, convID); err != nil {
 				slog.Debug("eval: failed to map bot message", "err", err)
@@ -1636,6 +1664,14 @@ func (a *Actor) handleProjectCommand(msg telegram.IncomingMessage) error {
 		Text:   fmt.Sprintf("Switched to project %q at %s.", found.Name, found.Path),
 	})
 	return nil
+}
+
+// handleCallback processes a Telegram inline keyboard callback.
+// Routes eval approve/reject callbacks to the appropriate handler.
+func (a *Actor) handleCallback(cb telegram.CallbackEvent) {
+	slog.Debug("callback received", "data", cb.Data, "user_id", cb.UserID, "chat_id", cb.ChatID)
+	// Callback data format: "eval:approve:<candidate_id>" or "eval:reject:<candidate_id>"
+	// Phase 2+ will wire this to the eval gate. For now, log it.
 }
 
 // handleReaction processes a Telegram reaction event by storing it in the eval_reactions table.

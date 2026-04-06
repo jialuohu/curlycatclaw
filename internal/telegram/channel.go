@@ -87,10 +87,11 @@ type InlineButton struct {
 type OutgoingMessage struct {
 	ChatID    int64
 	Text      string
-	ReplyTo   int            // 0 means no reply
-	MessageID int            // nonzero = edit existing message instead of sending new
-	ResultCh  chan int        // if non-nil, the created/edited MessageID is sent back
-	HTML      bool           // if true, convert markdown to Telegram HTML before sending
+	ReplyTo   int              // 0 means no reply
+	MessageID int              // nonzero = edit existing message instead of sending new
+	DraftID   string           // non-empty = send as draft (streaming preview, Bot API 9.3+)
+	ResultCh  chan int          // if non-nil, the created/edited MessageID is sent back
+	HTML      bool             // if true, convert markdown to Telegram HTML before sending
 	Buttons   [][]InlineButton // inline keyboard rows (nil = no keyboard)
 }
 
@@ -484,6 +485,24 @@ func (ch *Channel) isAllowed(userID int64) bool {
 // set, it sends the message ID of the created/edited message back.
 // For new messages that exceed 4096 runes, it splits into chunks.
 func (ch *Channel) sendMessage(ctx context.Context, b *bot.Bot, msg OutgoingMessage, rateTick *time.Ticker) {
+	// Draft message (streaming preview via Bot API 9.3+ sendMessageDraft).
+	// Fire-and-forget: drafts show a typing preview that gets replaced by the final sendMessage.
+	if msg.DraftID != "" {
+		text := msg.Text
+		if utf8.RuneCountInString(text) > maxMessageLen {
+			r := []rune(text)
+			text = string(r[:maxMessageLen-3]) + "..."
+		}
+		if _, err := b.SendMessageDraft(ctx, &bot.SendMessageDraftParams{
+			ChatID:  msg.ChatID,
+			DraftID: msg.DraftID,
+			Text:    text,
+		}); err != nil {
+			slog.Debug("telegram: draft send failed", "chat_id", msg.ChatID, "err", err)
+		}
+		return
+	}
+
 	// Edit existing message (streaming update path).
 	if msg.MessageID != 0 {
 		// Telegram edit limit is 4096 runes; truncate if needed.

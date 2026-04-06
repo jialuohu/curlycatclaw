@@ -97,9 +97,3 @@ func (s ConversationSignals) Score() float64 {
 	return 0.35*toolScore + 0.30*correctionScore + 0.20*retryScore + 0.15*effortScore
 }
 
-func min(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
-}

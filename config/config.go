@@ -34,13 +34,15 @@ type Config struct {
 
 // EvalConfig controls the self-evaluation pipeline.
 type EvalConfig struct {
-	Enabled            bool   `toml:"enabled"`
-	Schedule           string `toml:"schedule"`             // cron expression (5-field), default "0 3 * * *"
-	LookbackHours      int    `toml:"lookback_hours"`       // hours of history per run, default 24
-	ScoreThreshold     float64 `toml:"score_threshold"`     // below this triggers failure mining, default 0.6
-	AutoCommitConfidence float64 `toml:"auto_commit_confidence"` // Phase 3: above this auto-commits, default 0.9
-	MaxCandidatesPerRun int    `toml:"max_candidates_per_run"` // prevent flooding memory, default 5
-	ReportChatID       int64  `toml:"report_chat_id"`       // Telegram chat ID for eval reports (0 = use first allowed user)
+	Enabled              bool    `toml:"enabled"`
+	Schedule             string  `toml:"schedule"`               // cron expression (5-field), default "0 3 * * *"
+	LookbackHours        int     `toml:"lookback_hours"`         // hours of history per run, default 24
+	ScoreThreshold       float64 `toml:"score_threshold"`        // below this triggers failure mining, default 0.6
+	AutoCommit           bool    `toml:"auto_commit"`            // Phase 3: enable auto-commit for high-confidence candidates
+	AutoCommitConfidence float64 `toml:"auto_commit_confidence"` // above this auto-commits, default 0.9
+	MaxCandidatesPerRun  int     `toml:"max_candidates_per_run"` // prevent flooding memory, default 5
+	CandidateExpiryDays  int     `toml:"candidate_expiry_days"`  // pending candidates expire after N days, default 7
+	ReportChatID         int64   `toml:"report_chat_id"`         // Telegram chat ID for eval reports
 }
 
 // SkillCollectionConfig defines a directory of external skills.
@@ -351,8 +353,10 @@ func Load(path string) (*Config, error) {
 			Schedule:             "0 3 * * *",
 			LookbackHours:        24,
 			ScoreThreshold:       0.6,
+			AutoCommit:           false,
 			AutoCommitConfidence: 0.9,
 			MaxCandidatesPerRun:  5,
+			CandidateExpiryDays:  7,
 		},
 	}
 
@@ -521,6 +525,17 @@ func (c *Config) validate() error {
 		case "", "llm", "passthrough", "hybrid":
 		default:
 			return fmt.Errorf("config: ingest.sources[%d].extraction must be llm, passthrough, or hybrid; got %q", i, src.Extraction)
+		}
+	}
+	if c.Eval.Enabled {
+		if c.Eval.LookbackHours < 1 {
+			return fmt.Errorf("config: eval.lookback_hours must be >= 1")
+		}
+		if c.Eval.ScoreThreshold < 0 || c.Eval.ScoreThreshold > 1.0 {
+			return fmt.Errorf("config: eval.score_threshold must be 0.0-1.0")
+		}
+		if c.Eval.MaxCandidatesPerRun < 1 {
+			return fmt.Errorf("config: eval.max_candidates_per_run must be >= 1")
 		}
 	}
 	for i, sc := range c.SkillCollections {

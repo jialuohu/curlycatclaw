@@ -1773,8 +1773,9 @@ func (s *Store) LookupConversationByTelegramMessage(chatID int64, tgMsgID int) (
 // LogEvalReaction records a Telegram reaction (thumbs up/down) on a bot message.
 func (s *Store) LogEvalReaction(convID string, userID, chatID int64, tgMsgID int, reaction string) error {
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO eval_reactions (conversation_id, user_id, chat_id, telegram_message_id, reaction, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO eval_reactions (conversation_id, user_id, chat_id, telegram_message_id, reaction, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, chat_id, telegram_message_id) DO UPDATE SET reaction = excluded.reaction, created_at = excluded.created_at`,
 		convID, userID, chatID, tgMsgID, reaction, time.Now().UTC(),
 	)
 	if err != nil {
@@ -1797,7 +1798,7 @@ type InteractionEvent struct {
 // GetInteractionEvents returns interaction events for a conversation, ordered by time.
 func (s *Store) GetInteractionEvents(convID string) ([]InteractionEvent, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conversation_id, user_id, chat_id, event_type, payload, created_at
+		`SELECT id, conversation_id, user_id, chat_id, event_type, COALESCE(payload, ''), created_at
 		 FROM interaction_events WHERE conversation_id = ? ORDER BY created_at ASC`,
 		convID,
 	)
@@ -1823,7 +1824,7 @@ func (s *Store) GetInteractionEvents(convID string) ([]InteractionEvent, error) 
 // These are events logged before conversation lookup (e.g., /effort, /retry commands).
 func (s *Store) GetInteractionEventsByUser(userID, chatID int64) ([]InteractionEvent, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conversation_id, user_id, chat_id, event_type, payload, created_at
+		`SELECT id, conversation_id, user_id, chat_id, event_type, COALESCE(payload, ''), created_at
 		 FROM interaction_events WHERE conversation_id = '' AND user_id = ? AND chat_id = ? ORDER BY created_at ASC`,
 		userID, chatID,
 	)
