@@ -1,11 +1,15 @@
 package claude
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
 func TestParseStreamEvent_SystemInit(t *testing.T) {
@@ -469,5 +473,437 @@ func TestNewCLIManager_EmptyEffort(t *testing.T) {
 	mgr := NewCLIManager("/usr/bin/claude", "claude-sonnet-4-6-20250514", "", "tok")
 	if mgr.effort != "" {
 		t.Errorf("effort = %q, want empty", mgr.effort)
+	}
+}
+
+// --- extractUserText tests ---
+
+func TestExtractUserText_SingleMessage(t *testing.T) {
+	params := SendParams{
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("hello world")),
+		},
+	}
+	got := extractUserText(params)
+	if got != "hello world" {
+		t.Errorf("extractUserText = %q, want %q", got, "hello world")
+	}
+}
+
+func TestExtractUserText_Empty(t *testing.T) {
+	got := extractUserText(SendParams{})
+	if got != "" {
+		t.Errorf("extractUserText = %q, want empty", got)
+	}
+}
+
+func TestExtractUserText_SkipsAssistant(t *testing.T) {
+	params := SendParams{
+		Messages: []anthropic.MessageParam{
+			anthropic.NewAssistantMessage(anthropic.NewTextBlock("I am assistant")),
+			anthropic.NewUserMessage(anthropic.NewTextBlock("user text")),
+		},
+	}
+	got := extractUserText(params)
+	if got != "user text" {
+		t.Errorf("extractUserText = %q, want %q", got, "user text")
+	}
+}
+
+// --- responseFromEvents tests ---
+
+func TestResponseFromEvents_AssistantMessage(t *testing.T) {
+	events := []CLIEvent{
+		AssistantMessageEvent{TextContent: "extracted result"},
+		ResultEvent{Subtype: "success"},
+	}
+	resp, err := responseFromEvents(events)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.TextContent != "extracted result" {
+		t.Errorf("TextContent = %q, want %q", resp.TextContent, "extracted result")
+	}
+}
+
+func TestResponseFromEvents_FallbackToResult(t *testing.T) {
+	events := []CLIEvent{
+		ResultEvent{Subtype: "success", Result: "fallback text"},
+	}
+	resp, err := responseFromEvents(events)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.TextContent != "fallback text" {
+		t.Errorf("TextContent = %q, want %q", resp.TextContent, "fallback text")
+	}
+}
+
+func TestResponseFromEvents_Error(t *testing.T) {
+	events := []CLIEvent{
+		ResultEvent{Subtype: "error_max_turns", IsError: true, Errors: []string{"max turns exceeded"}},
+	}
+	_, err := responseFromEvents(events)
+	if err == nil {
+		t.Fatal("expected error for IsError result")
+	}
+	if !strings.Contains(err.Error(), "max turns exceeded") {
+		t.Errorf("error = %q, want to contain 'max turns exceeded'", err.Error())
+	}
+}
+
+func TestResponseFromEvents_MultipleAssistant(t *testing.T) {
+	events := []CLIEvent{
+		AssistantMessageEvent{TextContent: "part1"},
+		AssistantMessageEvent{TextContent: "part2"},
+		ResultEvent{Subtype: "success"},
+	}
+	resp, err := responseFromEvents(events)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.TextContent != "part1\npart2" {
+		t.Errorf("TextContent = %q, want %q", resp.TextContent, "part1\npart2")
+	}
+}
+
+func TestResponseFromEvents_Empty(t *testing.T) {
+	resp, err := responseFromEvents(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.TextContent != "" {
+		t.Errorf("TextContent = %q, want empty", resp.TextContent)
+	}
+}
+
+// --- PersistentCLISender tests ---
+
+// mockIngestCLI tracks GetOrCreate/Remove calls for testing.
+type mockIngestCLI struct {
+	mu          sync.Mutex
+	getOrCreate func(ctx context.Context, userID, chatID int64, params SpawnParams) (*CLIProcess, bool, error)
+	removes     []int64 // chatIDs passed to Remove
+}
+
+func (m *mockIngestCLI) GetOrCreate(ctx context.Context, userID, chatID int64, params SpawnParams) (*CLIProcess, bool, error) {
+	return m.getOrCreate(ctx, userID, chatID, params)
+}
+
+func (m *mockIngestCLI) Remove(userID, chatID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.removes = append(m.removes, chatID)
+}
+
+// newTestCLIProcess creates a CLIProcess with a pre-loaded scanCh for testing.
+// Set isNew=true to simulate a freshly spawned process (initMsgSent=true,
+// so Send() skips the stdin write).
+func newTestCLIProcess(isNew bool, events ...[]byte) *CLIProcess {
+	scanCh := make(chan ScanResult, len(events))
+	for _, ev := range events {
+		scanCh <- ScanResult{Line: ev, OK: true}
+	}
+	done := make(chan struct{})
+	// Provide a writable stdin so Send() doesn't panic on reused processes.
+	r, w, _ := os.Pipe()
+	return &CLIProcess{
+		scanCh:      scanCh,
+		done:        done,
+		stdin:       w,
+		stdout:      r,
+		initMsgSent: isNew,
+	}
+}
+
+func TestPersistentCLISender_Send_Success(t *testing.T) {
+	assistantLine := []byte(`{"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"{\"valuable\":true}"}],"stop_reason":"end_turn"}}`)
+	resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"result":""}`)
+
+	proc := newTestCLIProcess(true, assistantLine, resultLine)
+
+	mock := &mockIngestCLI{
+		getOrCreate: func(_ context.Context, _, _ int64, _ SpawnParams) (*CLIProcess, bool, error) {
+			return proc, true, nil
+		},
+	}
+
+	sender := &PersistentCLISender{
+		mgr:      mock,
+		model:    "test-model",
+		maxTurns: 20,
+		turns:    make(map[int64]int),
+	}
+
+	resp, err := sender.Send(context.Background(), SendParams{
+		SystemPrompt: "You are an email analyst",
+		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("test email"))},
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	if resp.TextContent != `{"valuable":true}` {
+		t.Errorf("TextContent = %q, want %q", resp.TextContent, `{"valuable":true}`)
+	}
+}
+
+func TestPersistentCLISender_Send_TrustSeparation(t *testing.T) {
+	resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"result":"ok"}`)
+
+	var gotChatIDs []int64
+	mock := &mockIngestCLI{
+		getOrCreate: func(_ context.Context, _, chatID int64, _ SpawnParams) (*CLIProcess, bool, error) {
+			gotChatIDs = append(gotChatIDs, chatID)
+			proc := newTestCLIProcess(true, resultLine)
+			return proc, true, nil
+		},
+	}
+
+	sender := &PersistentCLISender{
+		mgr:      mock,
+		model:    "test-model",
+		maxTurns: 20,
+		turns:    make(map[int64]int),
+	}
+
+	// Untrusted (email) prompt → chatID=-1
+	_, err := sender.Send(context.Background(), SendParams{
+		SystemPrompt: "You are an email analyst for a personal AI assistant.",
+		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("email"))},
+	})
+	if err != nil {
+		t.Fatalf("untrusted Send failed: %v", err)
+	}
+
+	// Trusted (notes) prompt → chatID=-2
+	_, err = sender.Send(context.Background(), SendParams{
+		SystemPrompt: "You are a knowledge extraction agent for a personal AI assistant.",
+		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("note"))},
+	})
+	if err != nil {
+		t.Fatalf("trusted Send failed: %v", err)
+	}
+
+	if len(gotChatIDs) != 2 {
+		t.Fatalf("expected 2 GetOrCreate calls, got %d", len(gotChatIDs))
+	}
+	if gotChatIDs[0] != ingestUntrustedChatID {
+		t.Errorf("first call chatID = %d, want %d", gotChatIDs[0], ingestUntrustedChatID)
+	}
+	if gotChatIDs[1] != ingestTrustedChatID {
+		t.Errorf("second call chatID = %d, want %d", gotChatIDs[1], ingestTrustedChatID)
+	}
+}
+
+func TestPersistentCLISender_Send_Recycle(t *testing.T) {
+	resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"result":"ok"}`)
+
+	callCount := 0
+	mock := &mockIngestCLI{
+		getOrCreate: func(_ context.Context, _, _ int64, _ SpawnParams) (*CLIProcess, bool, error) {
+			callCount++
+			// First call is a fresh spawn (isNew=true). All subsequent are
+			// reuse (isNew=false) until Remove is called, after which the
+			// next call is another fresh spawn.
+			isNew := callCount == 1 || callCount == 4 // call 4 = after Remove + re-create
+			proc := newTestCLIProcess(isNew, resultLine)
+			return proc, isNew, nil
+		},
+	}
+
+	sender := &PersistentCLISender{
+		mgr:      mock,
+		model:    "test-model",
+		maxTurns: 2,
+		turns:    make(map[int64]int),
+	}
+
+	params := SendParams{
+		SystemPrompt: "You are an email analyst for a personal AI assistant.",
+		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("email"))},
+	}
+
+	// Call 1: isNew=true, turns 0→1 (isNew doesn't reset because turns was 0)
+	if _, err := sender.Send(context.Background(), params); err != nil {
+		t.Fatalf("Send 0 failed: %v", err)
+	}
+	// Call 2: isNew=false, turns 1→2
+	if _, err := sender.Send(context.Background(), params); err != nil {
+		t.Fatalf("Send 1 failed: %v", err)
+	}
+	// Call 3: turns=2 >= maxTurns=2 → Remove called, turns reset to 0.
+	// Then GetOrCreate is call 3 (isNew=false), turns 0→1.
+	if _, err := sender.Send(context.Background(), params); err != nil {
+		t.Fatalf("Send 2 failed: %v", err)
+	}
+
+	mock.mu.Lock()
+	removeCount := len(mock.removes)
+	mock.mu.Unlock()
+
+	if removeCount != 1 {
+		t.Errorf("Remove called %d times, want 1", removeCount)
+	}
+}
+
+func TestPersistentCLISender_Send_ErrorRecovery(t *testing.T) {
+	callCount := 0
+	mock := &mockIngestCLI{
+		getOrCreate: func(_ context.Context, _, _ int64, _ SpawnParams) (*CLIProcess, bool, error) {
+			callCount++
+			if callCount == 1 {
+				// First call: return a process whose scanCh is closed (simulates death).
+				proc := newTestCLIProcess(true)
+				close(proc.done)
+				return proc, true, nil
+			}
+			// Second call: return a working process.
+			resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"result":"recovered"}`)
+			return newTestCLIProcess(true, resultLine), true, nil
+		},
+	}
+
+	sender := &PersistentCLISender{
+		mgr:      mock,
+		model:    "test-model",
+		maxTurns: 20,
+		turns:    make(map[int64]int),
+	}
+
+	params := SendParams{
+		SystemPrompt: "You are an email analyst for a personal AI assistant.",
+		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("test"))},
+	}
+
+	// First call should fail (process is dead).
+	_, err := sender.Send(context.Background(), params)
+	if err == nil {
+		t.Fatal("expected error from dead process")
+	}
+
+	// Remove should have been called.
+	mock.mu.Lock()
+	if len(mock.removes) != 1 {
+		t.Errorf("Remove called %d times, want 1", len(mock.removes))
+	}
+	mock.mu.Unlock()
+
+	// Second call should succeed with fresh process.
+	resp, err := sender.Send(context.Background(), params)
+	if err != nil {
+		t.Fatalf("recovery Send failed: %v", err)
+	}
+	if resp.TextContent != "recovered" {
+		t.Errorf("TextContent = %q, want %q", resp.TextContent, "recovered")
+	}
+}
+
+func TestPersistentCLISender_Send_ExternalKill(t *testing.T) {
+	resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"result":"ok"}`)
+
+	isNewSequence := []bool{false, true} // second call: process was killed externally
+	callIdx := 0
+	mock := &mockIngestCLI{
+		getOrCreate: func(_ context.Context, _, _ int64, _ SpawnParams) (*CLIProcess, bool, error) {
+			isNew := isNewSequence[callIdx]
+			callIdx++
+			proc := newTestCLIProcess(isNew, resultLine)
+			return proc, isNew, nil
+		},
+	}
+
+	sender := &PersistentCLISender{
+		mgr:      mock,
+		model:    "test-model",
+		maxTurns: 20,
+		turns:    make(map[int64]int),
+	}
+
+	chatID := ingestUntrustedChatID
+	// Simulate existing turns from before the external kill.
+	sender.turns[chatID] = 15
+
+	params := SendParams{
+		SystemPrompt: "You are an email analyst for a personal AI assistant.",
+		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("test"))},
+	}
+
+	// First call: isNew=false, turns stay at 15, then incremented to 16.
+	if _, err := sender.Send(context.Background(), params); err != nil {
+		t.Fatalf("Send 0 failed: %v", err)
+	}
+	if sender.turns[chatID] != 16 {
+		t.Errorf("turns after first send = %d, want 16", sender.turns[chatID])
+	}
+
+	// Second call: isNew=true (externally killed), turns should reset then increment to 1.
+	if _, err := sender.Send(context.Background(), params); err != nil {
+		t.Fatalf("Send 1 failed: %v", err)
+	}
+	if sender.turns[chatID] != 1 {
+		t.Errorf("turns after external kill = %d, want 1", sender.turns[chatID])
+	}
+}
+
+func TestPersistentCLISender_Send_NoUserText(t *testing.T) {
+	sender := &PersistentCLISender{
+		mgr:      &mockIngestCLI{},
+		maxTurns: 20,
+		turns:    make(map[int64]int),
+	}
+
+	_, err := sender.Send(context.Background(), SendParams{})
+	if err == nil {
+		t.Fatal("expected error for empty messages")
+	}
+	if !strings.Contains(err.Error(), "no user text") {
+		t.Errorf("error = %q, want to contain 'no user text'", err.Error())
+	}
+}
+
+func TestNewPersistentCLISender_DefaultMaxTurns(t *testing.T) {
+	mgr := NewCLIManager("/usr/bin/claude", "model", "", "tok")
+	sender := NewPersistentCLISender(mgr, "model", 0)
+	if sender.maxTurns != defaultMaxTurns {
+		t.Errorf("maxTurns = %d, want %d", sender.maxTurns, defaultMaxTurns)
+	}
+}
+
+func TestSpawn_SafeMode(t *testing.T) {
+	// We can't easily test spawn() directly (requires a real CLI binary),
+	// but we can verify SpawnParams.SafeMode is plumbed through by checking
+	// that PersistentCLISender passes SafeMode: true in SpawnParams.
+	var gotParams SpawnParams
+	mock := &mockIngestCLI{
+		getOrCreate: func(_ context.Context, _, _ int64, params SpawnParams) (*CLIProcess, bool, error) {
+			gotParams = params
+			resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"result":"ok"}`)
+			return newTestCLIProcess(true, resultLine), true, nil
+		},
+	}
+
+	sender := &PersistentCLISender{
+		mgr:      mock,
+		model:    "test-model",
+		maxTurns: 20,
+		turns:    make(map[int64]int),
+	}
+
+	_, err := sender.Send(context.Background(), SendParams{
+		SystemPrompt: "test prompt",
+		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("test"))},
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	if !gotParams.SafeMode {
+		t.Error("SpawnParams.SafeMode = false, want true")
+	}
+	if gotParams.SystemPrompt != "test prompt" {
+		t.Errorf("SpawnParams.SystemPrompt = %q, want %q", gotParams.SystemPrompt, "test prompt")
+	}
+	if gotParams.Model != "test-model" {
+		t.Errorf("SpawnParams.Model = %q, want %q", gotParams.Model, "test-model")
 	}
 }

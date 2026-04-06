@@ -244,6 +244,7 @@ type SpawnParams struct {
 	HomeDir      string          // if set, HOME env var is replaced with this path
 	Model        string          // if set, overrides CLIManager.model for this spawn
 	Effort       string          // if set, overrides CLIManager.effort for this spawn
+	SafeMode     bool            // if true, omit --dangerously-skip-permissions (for untrusted content)
 }
 
 // GetOrCreate returns the existing CLI process for a user or spawns a new one.
@@ -372,7 +373,9 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 		"--verbose",
 		"--no-session-persistence",
 		"--replay-user-messages",
-		"--dangerously-skip-permissions",
+	}
+	if !params.SafeMode {
+		args = append(args, "--dangerously-skip-permissions")
 	}
 
 	if params.SystemPrompt != "" {
@@ -860,21 +863,7 @@ type CLISender struct {
 
 // Send runs a one-shot claude CLI call and returns the text response.
 func (c *CLISender) Send(ctx context.Context, params SendParams) (*Response, error) {
-	// Extract user text from the first user message.
-	var userText string
-	for _, msg := range params.Messages {
-		if msg.Role == "user" {
-			for _, block := range msg.Content {
-				if t := block.GetText(); t != nil {
-					userText = *t
-					break
-				}
-			}
-			if userText != "" {
-				break
-			}
-		}
-	}
+	userText := extractUserText(params)
 	if userText == "" {
 		return nil, fmt.Errorf("cli sender: no user text in messages")
 	}
@@ -904,4 +893,148 @@ func (c *CLISender) Send(ctx context.Context, params SendParams) (*Response, err
 	}
 
 	return &Response{TextContent: strings.TrimSpace(stdout.String())}, nil
+}
+
+// extractUserText returns the text from the first user message in params.
+func extractUserText(params SendParams) string {
+	for _, msg := range params.Messages {
+		if msg.Role == "user" {
+			for _, block := range msg.Content {
+				if t := block.GetText(); t != nil {
+					return *t
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// Dedicated process keys for ingest extraction. Negative chatIDs never
+// collide with real Telegram chat IDs (which are positive).
+const (
+	ingestUserID          int64 = 0
+	ingestUntrustedChatID int64 = -1
+	ingestTrustedChatID   int64 = -2
+	defaultMaxTurns             = 20
+)
+
+// ingestCLI is the subset of CLIManager used by PersistentCLISender.
+// Defined as an interface for testability.
+type ingestCLI interface {
+	GetOrCreate(ctx context.Context, userID, chatID int64, params SpawnParams) (*CLIProcess, bool, error)
+	Remove(userID, chatID int64)
+}
+
+// PersistentCLISender implements ingest.LLMClient by reusing long-lived CLI
+// subprocesses managed by CLIManager. Amortizes Node.js startup and OAuth auth
+// overhead across many extraction calls. Maintains separate processes for
+// trusted and untrusted content to prevent cross-contamination.
+type PersistentCLISender struct {
+	mgr      ingestCLI
+	model    string
+	maxTurns int
+	mu       sync.Mutex
+	turns    map[int64]int // per-chatID turn counter
+}
+
+// NewPersistentCLISender creates a PersistentCLISender backed by the given
+// CLIManager. maxTurns controls how many extractions per process before
+// recycling (0 defaults to 20).
+func NewPersistentCLISender(mgr *CLIManager, model string, maxTurns int) *PersistentCLISender {
+	if maxTurns <= 0 {
+		maxTurns = defaultMaxTurns
+	}
+	return &PersistentCLISender{
+		mgr:      mgr,
+		model:    model,
+		maxTurns: maxTurns,
+		turns:    make(map[int64]int),
+	}
+}
+
+// Send implements ingest.LLMClient. Routes trusted and untrusted extraction to
+// separate persistent processes with proper system prompts. Spawns processes in
+// SafeMode (no --dangerously-skip-permissions) to prevent tool execution with
+// untrusted content.
+func (p *PersistentCLISender) Send(ctx context.Context, params SendParams) (*Response, error) {
+	userText := extractUserText(params)
+	if userText == "" {
+		return nil, fmt.Errorf("persistent cli sender: no user text in messages")
+	}
+
+	// Route to separate processes based on system prompt. Default is
+	// untrusted (safe default). Only known trusted prompts get the
+	// trusted process, so new source types fail safe to untrusted.
+	chatID := ingestUntrustedChatID
+	if strings.HasPrefix(params.SystemPrompt, "You are a knowledge extraction") {
+		chatID = ingestTrustedChatID
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Recycle process if turn limit reached.
+	if p.turns[chatID] >= p.maxTurns {
+		p.mgr.Remove(ingestUserID, chatID)
+		p.turns[chatID] = 0
+	}
+
+	msg := BuildUserMessage(userText)
+
+	proc, isNew, err := p.mgr.GetOrCreate(ctx, ingestUserID, chatID, SpawnParams{
+		SystemPrompt: params.SystemPrompt,
+		InitialMsg:   msg,
+		Model:        p.model,
+		SafeMode:     true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persistent cli sender: spawn: %w", err)
+	}
+
+	// If the process was externally killed (by Cleanup) and re-spawned,
+	// reset the turn counter to match actual process state.
+	if isNew && p.turns[chatID] > 0 {
+		p.turns[chatID] = 0
+	}
+
+	events, err := proc.Send(ctx, msg, nil, nil)
+	if err != nil {
+		p.mgr.Remove(ingestUserID, chatID)
+		p.turns[chatID] = 0
+		return nil, fmt.Errorf("persistent cli sender: send: %w", err)
+	}
+
+	p.turns[chatID]++
+
+	return responseFromEvents(events)
+}
+
+// responseFromEvents builds a Response from CLI stream events, following the
+// same pattern as the session actor: accumulate AssistantMessageEvent text,
+// fall back to ResultEvent.Result.
+func responseFromEvents(events []CLIEvent) (*Response, error) {
+	var text strings.Builder
+	for _, ev := range events {
+		switch e := ev.(type) {
+		case AssistantMessageEvent:
+			if e.TextContent != "" {
+				if text.Len() > 0 {
+					text.WriteString("\n")
+				}
+				text.WriteString(e.TextContent)
+			}
+		case ResultEvent:
+			if e.IsError {
+				errMsg := strings.Join(e.Errors, "; ")
+				if errMsg == "" {
+					errMsg = e.Subtype
+				}
+				return nil, fmt.Errorf("persistent cli sender: %s", errMsg)
+			}
+			if text.Len() == 0 && e.Result != "" {
+				text.WriteString(e.Result)
+			}
+		}
+	}
+	return &Response{TextContent: strings.TrimSpace(text.String())}, nil
 }
