@@ -849,3 +849,60 @@ func NewTestProcess(stdin io.WriteCloser, stdout io.ReadCloser, scanCh chan Scan
 		done:     done,
 	}
 }
+
+// CLISender implements ingest.LLMClient by running the claude CLI in one-shot
+// print mode. Used when no API key is available (CLI subscription auth).
+type CLISender struct {
+	CLIPath    string // path to claude binary
+	OAuthToken string // CLAUDE_CODE_OAUTH_TOKEN
+	Model      string // e.g. "claude-sonnet-4-6"
+}
+
+// Send runs a one-shot claude CLI call and returns the text response.
+func (c *CLISender) Send(ctx context.Context, params SendParams) (*Response, error) {
+	// Extract user text from the first user message.
+	var userText string
+	for _, msg := range params.Messages {
+		if msg.Role == "user" {
+			for _, block := range msg.Content {
+				if t := block.GetText(); t != nil {
+					userText = *t
+					break
+				}
+			}
+			if userText != "" {
+				break
+			}
+		}
+	}
+	if userText == "" {
+		return nil, fmt.Errorf("cli sender: no user text in messages")
+	}
+
+	args := []string{
+		"--print",
+		"--bare",
+		"--no-session-persistence",
+		"--output-format", "text",
+	}
+	if params.SystemPrompt != "" {
+		args = append(args, "--system-prompt", params.SystemPrompt)
+	}
+	if c.Model != "" {
+		args = append(args, "--model", c.Model)
+	}
+	args = append(args, userText)
+
+	cmd := exec.CommandContext(ctx, c.CLIPath, args...)
+	cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+c.OAuthToken)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("cli sender: %w (stderr: %s)", err, stderr.String())
+	}
+
+	return &Response{TextContent: strings.TrimSpace(stdout.String())}, nil
+}

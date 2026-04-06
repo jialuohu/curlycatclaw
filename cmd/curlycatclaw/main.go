@@ -483,8 +483,20 @@ func run(configPath string) error {
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh, cronRunner)
 
 	// Create generic ingest actor (background knowledge source processing).
+	// Uses direct API client if available, falls back to CLI one-shot mode.
 	var ingestActor *ingest.Actor
-	if len(cfg.Ingest.Sources) > 0 && claudeClient != nil && len(cfg.Telegram.AllowedID) > 0 {
+	var ingestLLM ingest.LLMClient
+	if claudeClient != nil {
+		ingestLLM = claudeClient
+	} else if cfg.Claude.CLIPath != "" && cfg.Claude.OAuthToken != "" {
+		ingestLLM = &claude.CLISender{
+			CLIPath:    cfg.Claude.CLIPath,
+			OAuthToken: cfg.Claude.OAuthToken,
+			Model:      string(cfg.Claude.Model),
+		}
+		slog.Info("ingest: using CLI mode for LLM extraction")
+	}
+	if len(cfg.Ingest.Sources) > 0 && ingestLLM != nil && len(cfg.Telegram.AllowedID) > 0 {
 		ownerUID := cfg.Telegram.AllowedID[0]
 		var ingestVS ingest.VectorIndexer
 		if vectorStore != nil {
@@ -495,7 +507,7 @@ func run(configPath string) error {
 		if err != nil {
 			slog.Error("failed to build ingest sources", "err", err)
 		} else if len(sources) > 0 {
-			ingestActor = ingest.New(sources, claudeClient, store, ingestVS, ownerUID, ownerUID)
+			ingestActor = ingest.New(sources, ingestLLM, store, ingestVS, ownerUID, ownerUID)
 			// Set extractors now that actor exists (needs LLM sender).
 			llmExtractor := ingestActor.MakeLLMExtractor()
 			passthrough := &ingest.PassthroughExtractor{}
