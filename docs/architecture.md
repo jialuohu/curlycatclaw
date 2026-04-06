@@ -7,33 +7,33 @@
 │                       Supervisor                           │
 │            (panic/recover, backoff, 30s drain)             │
 │                                                            │
-│  ┌──────────┐   ┌───────────┐   ┌───────────┐              │
-│  │ Channel  │◄─►│  Session  │   │ Reminder  │              │
-│  │  Actor   │   │   Actor   │   │   Actor   │              │
-│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘              │
-│       │               │               │                    │
-│       │               ├──► Claude     │                    │
-│       │               │    Direct API (stream+tools)       │
-│       │               │    OR CLI subprocess               │
-│       │               │    + /effort /retry /debug         │
-│       │               │               │                    │
-│       │               ├──► MCP Manager                     │
-│       │               │    ├─ Config servers (gws, github) │
-│       │               │    ├─ Runtime extensions (proxy)   │
-│       │               │    └─ Skills (built-in + Wasm)     │
-│       │               │               │                    │
-│       │               └──► Memory ◄───┘                    │
-│       │                    SQLite / Qdrant / Ollama        │
-│       │                                                    │
-│       │◄── [tool] lines (/debug toggles visibility)        │
-│       │                                                    │
-└───────┼────────────────────────────────────────────────────┘
+│  ┌──────────┐   ┌───────────┐   ┌───────────┐   ┌──────────┐│
+│  │ Channel  │◄─►│  Session  │   │ Reminder  │   │  Email   ││
+│  │  Actor   │   │   Actor   │   │   Actor   │   │  Ingest  ││
+│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘   └────┬─────┘│
+│       │               │               │               │      │
+│       │               ├──► Claude     │          Gmail │      │
+│       │               │    Direct API (stream+tools)  via    │
+│       │               │    OR CLI subprocess         MCP     │
+│       │               │    + /effort /retry /debug     │      │
+│       │               │               │               ▼      │
+│       │               ├──► MCP Manager           Observations│
+│       │               │    ├─ Config servers (gws, github)   │
+│       │               │    ├─ Runtime extensions (proxy)     │
+│       │               │    └─ Skills (built-in + Wasm)       │
+│       │               │               │                      │
+│       │               └──► Memory ◄───┘                      │
+│       │                    SQLite / Qdrant / Ollama          │
+│       │                                                      │
+│       │◄── [tool] lines (/debug toggles visibility)          │
+│       │                                                      │
+└───────┼──────────────────────────────────────────────────────┘
         │
    Telegram
    Bot API
 ```
 
-Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s -> 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit.
+Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s -> 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit. The Email Ingest Actor (optional, `[email_ingest]` config) polls Gmail via the GWS MCP server, applies a two-stage filter (sender/label pre-filter, then Claude importance scoring), and extracts observations from important emails into SQLite + Qdrant.
 
 The MCP Manager maintains persistent stdio connections to configured servers (Google Workspace, GitHub) and runtime extensions (scrapling-mcp, fetch, etc.). In CLI mode, extensions are proxied through the curlycatclaw-skills MCP subprocess with hot-reload via `AddTool()`/`RemoveTools()`. Environment variables pass through a three-layer allowlist (subprocess -> MCP server -> extension) to prevent secret leakage while allowing necessary config like `PLAYWRIGHT_BROWSERS_PATH`. The GWS MCP server supports multi-account mode via `GWS_ACCOUNT_*` env vars, with per-call credential switching (`cmd.Env` override) and optional per-account service filtering (`GWS_ACCOUNT_<NAME>_SERVICES`). A `gws_list_accounts` tool lets Claude discover available accounts and their service permissions.
 

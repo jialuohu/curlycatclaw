@@ -45,6 +45,23 @@ enabled = true
 port    = 8080
 ```
 
+## Email Ingest (optional)
+
+Background email-to-observation processing. Polls Gmail via the GWS MCP server, scores emails by importance with Claude, and extracts observations from important ones. Requires a GWS MCP server with Gmail-enabled accounts.
+
+```toml
+[email_ingest]
+enabled = false
+interval_minutes = 15       # poll interval for new emails
+backfill_days = 30           # days of history to backfill on first run
+batch_size = 20              # emails per backfill batch
+max_daily_observations = 100 # per-account daily cap
+max_daily_llm_calls = 200    # cost circuit breaker
+min_importance = 3           # minimum importance to index (1-10)
+labels = ["INBOX"]           # Gmail labels to process
+skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
+```
+
 ## Google Workspace (optional)
 
 Add Gmail, Calendar, Drive, Sheets, Docs, Tasks access. On a machine with a browser:
