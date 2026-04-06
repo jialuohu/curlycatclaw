@@ -894,7 +894,7 @@ func (c *CLISender) Send(ctx context.Context, params SendParams) (*Response, err
 	args = append(args, "--", userText)
 
 	cmd := exec.CommandContext(ctx, c.CLIPath, args...)
-	cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+c.OAuthToken)
+	cmd.Env = append(filteredSpawnEnv(), "CLAUDE_CODE_OAUTH_TOKEN="+c.OAuthToken)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
