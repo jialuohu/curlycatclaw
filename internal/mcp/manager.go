@@ -181,12 +181,18 @@ func (m *Manager) Tools() []ToolDef {
 // a _user_context map is injected into the arguments so MCP servers can
 // implement per-user access control.
 func (m *Manager) CallTool(ctx context.Context, serverTool string, arguments map[string]any, userID, chatID int64) (string, error) {
+	// Clone arguments to avoid mutating the caller's map.
+	args := make(map[string]any, len(arguments)+1)
+	for k, v := range arguments {
+		args[k] = v
+	}
 	if userID != 0 {
-		arguments["_user_context"] = map[string]any{
+		args["_user_context"] = map[string]any{
 			"user_id": userID,
 			"chat_id": chatID,
 		}
 	}
+	arguments = args
 	serverName, rawTool, ok := splitToolName(serverTool)
 	if !ok {
 		return "", fmt.Errorf("mcp: invalid tool name %q (expected server%stool)", serverTool, sep)
@@ -220,13 +226,23 @@ func (m *Manager) CallTool(ctx context.Context, serverTool string, arguments map
 // Pass nil envResolver when env values are already resolved (e.g. runtime
 // extensions with plaintext env vars).
 func (m *Manager) AddServer(ctx context.Context, cfg config.MCPServerConfig, envResolver func(string) (string, error)) error {
-	m.mu.RLock()
+	m.mu.Lock()
 	_, exists := m.servers[cfg.Name]
-	m.mu.RUnlock()
 	if exists {
+		m.mu.Unlock()
 		return fmt.Errorf("mcp: server %q already exists", cfg.Name)
 	}
+	// Reserve the name to prevent concurrent AddServer races.
+	m.servers[cfg.Name] = nil
+	m.mu.Unlock()
+
 	if err := m.startServer(ctx, cfg, envResolver); err != nil {
+		// Remove the reservation on failure.
+		m.mu.Lock()
+		if m.servers[cfg.Name] == nil {
+			delete(m.servers, cfg.Name)
+		}
+		m.mu.Unlock()
 		return err
 	}
 	slog.Info("mcp: server added dynamically", "server", cfg.Name)

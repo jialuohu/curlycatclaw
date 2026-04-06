@@ -362,7 +362,12 @@ func (ch *Channel) handleMessage(ctx context.Context, b *bot.Bot, msg *models.Me
 		}
 	}
 
-	ch.updates <- incoming
+	select {
+	case ch.updates <- incoming:
+	default:
+		slog.Warn("telegram: updates channel full, dropping message",
+			"chat_id", incoming.ChatID, "user_id", incoming.UserID)
+	}
 }
 
 // handleReaction processes a Telegram reaction update and forwards it to the reactions channel.
