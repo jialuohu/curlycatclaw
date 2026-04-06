@@ -76,6 +76,15 @@ func TestParseGmailReadResult_ValidJSON(t *testing.T) {
 	if msg.From != "alice@test.com" {
 		t.Errorf("expected From alice@test.com, got %s", msg.From)
 	}
+	if msg.Subject != "Hello" {
+		t.Errorf("expected Subject Hello, got %s", msg.Subject)
+	}
+	if msg.To != "me@test.com" {
+		t.Errorf("expected To me@test.com, got %s", msg.To)
+	}
+	if msg.Date != "2026-01-01" {
+		t.Errorf("expected Date 2026-01-01, got %s", msg.Date)
+	}
 	if msg.Body != "Email body here" {
 		t.Errorf("expected body 'Email body here', got %s", msg.Body)
 	}

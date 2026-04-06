@@ -2,6 +2,7 @@ package eval
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -163,15 +164,26 @@ func TestMineToolErrors(t *testing.T) {
 		t.Fatalf("expected 2 tool error clusters, got %d", len(clusters))
 	}
 
-	// Find the web_search cluster (2 errors).
+	// Verify both clusters.
 	for _, c := range clusters {
 		if c.ClusterType != "tool_error" {
 			t.Errorf("expected cluster type tool_error, got %s", c.ClusterType)
 		}
 		if len(c.ToolCallIDs) == 2 {
-			// web_search cluster
+			// web_search cluster (2 errors)
 			if c.Severity != 6 { // clamp(2*3, 1, 10) = 6
 				t.Errorf("expected severity 6 for 2 errors, got %d", c.Severity)
+			}
+			if c.Frequency != 2 {
+				t.Errorf("expected frequency 2 for web_search, got %d", c.Frequency)
+			}
+		} else if len(c.ToolCallIDs) == 1 {
+			// read_file cluster (1 error)
+			if c.Severity != 3 { // clamp(1*3, 1, 10) = 3
+				t.Errorf("expected severity 3 for 1 error, got %d", c.Severity)
+			}
+			if c.Frequency != 1 {
+				t.Errorf("expected frequency 1 for read_file, got %d", c.Frequency)
 			}
 		}
 	}
@@ -209,9 +221,58 @@ func TestMineToolErrors_LongOutputTruncated(t *testing.T) {
 	if len(clusters) != 1 {
 		t.Fatalf("expected 1 cluster, got %d", len(clusters))
 	}
-	// Description should contain truncated output (200 chars + "...")
-	if len(clusters[0].Description) > 250 {
-		t.Errorf("description should be truncated, got %d chars", len(clusters[0].Description))
+	// Description should contain truncated output (200 chars + "...").
+	desc := clusters[0].Description
+	if len(desc) > 250 {
+		t.Errorf("description should be truncated, got %d chars", len(desc))
+	}
+	if len(desc) < 200 {
+		t.Errorf("description should include ~200 chars of output, got %d chars", len(desc))
+	}
+	if !strings.Contains(desc, "...") {
+		t.Error("truncated description should contain '...' marker")
+	}
+}
+
+func TestMineFailures_AtExactThreshold(t *testing.T) {
+	db := testDB(t)
+	m := NewMiner(db)
+	scores := []EvalScore{
+		{ConversationID: "c1", OverallScore: 0.6, CorrectionCount: 5, RetryCount: 3, EffortOverrideCount: 2},
+	}
+	clusters, err := m.MineFailures("run1", scores, 0.6)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Score == threshold uses >=, so it should be skipped (not a failure).
+	if len(clusters) != 0 {
+		t.Errorf("expected 0 clusters at exact threshold, got %d", len(clusters))
+	}
+}
+
+func TestMineFailures_MultipleSignalTypes(t *testing.T) {
+	db := testDB(t)
+	m := NewMiner(db)
+	scores := []EvalScore{
+		{ConversationID: "c1", OverallScore: 0.3, CorrectionCount: 3, RetryCount: 4, EffortOverrideCount: 2},
+	}
+	clusters, err := m.MineFailures("run1", scores, 0.5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should produce all three cluster types (independent if blocks, not else-if).
+	types := make(map[string]bool)
+	for _, c := range clusters {
+		types[c.ClusterType] = true
+	}
+	if !types["correction"] {
+		t.Error("expected correction cluster")
+	}
+	if !types["user_retry"] {
+		t.Error("expected user_retry cluster")
+	}
+	if !types["effort_override"] {
+		t.Error("expected effort_override cluster")
 	}
 }
 
