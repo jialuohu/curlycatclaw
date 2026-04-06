@@ -1605,7 +1605,274 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("memory: create email ingest tables: %w", err)
 	}
 
+	// Eval Phase 0: event model tables for self-evaluation pipeline.
+	const evalEventSchema = `
+	CREATE TABLE IF NOT EXISTS interaction_events (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		conversation_id TEXT NOT NULL,
+		user_id         INTEGER NOT NULL,
+		chat_id         INTEGER NOT NULL,
+		event_type      TEXT NOT NULL,
+		payload         TEXT,
+		created_at      DATETIME NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_interaction_events_conv
+		ON interaction_events (conversation_id, created_at);
+	CREATE INDEX IF NOT EXISTS idx_interaction_events_type
+		ON interaction_events (event_type, created_at);
+
+	CREATE TABLE IF NOT EXISTS telegram_message_map (
+		chat_id              INTEGER NOT NULL,
+		telegram_message_id  INTEGER NOT NULL,
+		conversation_id      TEXT NOT NULL,
+		created_at           DATETIME NOT NULL
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_msg_map_lookup
+		ON telegram_message_map (chat_id, telegram_message_id);
+
+	CREATE TABLE IF NOT EXISTS eval_reactions (
+		id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+		conversation_id     TEXT NOT NULL,
+		user_id             INTEGER NOT NULL,
+		chat_id             INTEGER NOT NULL,
+		telegram_message_id INTEGER NOT NULL,
+		reaction            TEXT NOT NULL,
+		created_at          DATETIME NOT NULL
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_reactions_user_msg
+		ON eval_reactions (user_id, chat_id, telegram_message_id);
+	CREATE INDEX IF NOT EXISTS idx_eval_reactions_conv
+		ON eval_reactions (conversation_id, created_at);
+	`
+	if _, err := s.db.Exec(evalEventSchema); err != nil {
+		return fmt.Errorf("memory: create eval event tables: %w", err)
+	}
+
+	// Time-based indexes for eval scanning queries.
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages (created_at)`)       //nolint:errcheck
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tool_calls_created_at ON tool_calls (created_at)`)   //nolint:errcheck
+
+	// Eval Phase 1: pipeline state tables.
+	const evalPipelineSchema = `
+	CREATE TABLE IF NOT EXISTS eval_runs (
+		id TEXT PRIMARY KEY,
+		started_at DATETIME NOT NULL,
+		completed_at DATETIME,
+		conversations_scanned INTEGER DEFAULT 0,
+		failures_found INTEGER DEFAULT 0,
+		candidates_generated INTEGER DEFAULT 0,
+		candidates_committed INTEGER DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'running',
+		summary TEXT
+	);
+
+	CREATE TABLE IF NOT EXISTS failure_clusters (
+		id TEXT PRIMARY KEY,
+		eval_run_id TEXT NOT NULL REFERENCES eval_runs(id),
+		cluster_type TEXT NOT NULL,
+		description TEXT NOT NULL,
+		conversation_ids TEXT NOT NULL,
+		message_rowids TEXT NOT NULL DEFAULT '[]',
+		tool_call_ids TEXT,
+		severity INTEGER NOT NULL,
+		frequency INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_failure_clusters_run ON failure_clusters(eval_run_id);
+
+	CREATE TABLE IF NOT EXISTS memory_candidates (
+		id TEXT PRIMARY KEY,
+		eval_run_id TEXT NOT NULL REFERENCES eval_runs(id),
+		failure_cluster_id TEXT REFERENCES failure_clusters(id),
+		candidate_type TEXT NOT NULL,
+		title TEXT NOT NULL,
+		content TEXT NOT NULL,
+		evidence TEXT NOT NULL,
+		confidence REAL NOT NULL,
+		predicted_impact TEXT,
+		status TEXT NOT NULL DEFAULT 'pending',
+		replay_score REAL,
+		committed_observation_id TEXT,
+		user_id INTEGER NOT NULL DEFAULT 0,
+		chat_id INTEGER NOT NULL DEFAULT 0,
+		reviewed_at DATETIME,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_memory_candidates_run ON memory_candidates(eval_run_id);
+	CREATE INDEX IF NOT EXISTS idx_memory_candidates_status ON memory_candidates(status);
+
+	CREATE TABLE IF NOT EXISTS eval_scores (
+		id TEXT PRIMARY KEY,
+		conversation_id TEXT NOT NULL,
+		eval_run_id TEXT NOT NULL REFERENCES eval_runs(id),
+		overall_score REAL NOT NULL,
+		tool_success_rate REAL,
+		correction_count INTEGER DEFAULT 0,
+		retry_count INTEGER DEFAULT 0,
+		effort_override_count INTEGER DEFAULT 0,
+		llm_quality_score REAL,
+		details TEXT,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_eval_scores_conv ON eval_scores(conversation_id);
+	CREATE INDEX IF NOT EXISTS idx_eval_scores_run ON eval_scores(eval_run_id);
+	`
+	if _, err := s.db.Exec(evalPipelineSchema); err != nil {
+		return fmt.Errorf("memory: create eval pipeline tables: %w", err)
+	}
+
 	return nil
+}
+
+// LogInteractionEvent records a user interaction event (e.g., /effort, /retry, /debug).
+func (s *Store) LogInteractionEvent(convID string, userID, chatID int64, eventType, payload string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO interaction_events (conversation_id, user_id, chat_id, event_type, payload, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		convID, userID, chatID, eventType, payload, time.Now().UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("memory: log interaction event: %w", err)
+	}
+	return nil
+}
+
+// MapTelegramMessage records the association between a Telegram message ID and a conversation.
+// This allows looking up which conversation a Telegram reaction belongs to.
+func (s *Store) MapTelegramMessage(chatID int64, tgMsgID int, convID string) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO telegram_message_map (chat_id, telegram_message_id, conversation_id, created_at)
+		 VALUES (?, ?, ?, ?)`,
+		chatID, tgMsgID, convID, time.Now().UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("memory: map telegram message: %w", err)
+	}
+	return nil
+}
+
+// LookupConversationByTelegramMessage returns the conversation ID for a Telegram message.
+func (s *Store) LookupConversationByTelegramMessage(chatID int64, tgMsgID int) (string, error) {
+	var convID string
+	err := s.db.QueryRow(
+		`SELECT conversation_id FROM telegram_message_map WHERE chat_id = ? AND telegram_message_id = ?`,
+		chatID, tgMsgID,
+	).Scan(&convID)
+	if err != nil {
+		return "", fmt.Errorf("memory: lookup telegram message: %w", err)
+	}
+	return convID, nil
+}
+
+// LogEvalReaction records a Telegram reaction (thumbs up/down) on a bot message.
+func (s *Store) LogEvalReaction(convID string, userID, chatID int64, tgMsgID int, reaction string) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO eval_reactions (conversation_id, user_id, chat_id, telegram_message_id, reaction, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		convID, userID, chatID, tgMsgID, reaction, time.Now().UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("memory: log eval reaction: %w", err)
+	}
+	return nil
+}
+
+// InteractionEvent represents a recorded user interaction event.
+type InteractionEvent struct {
+	ID             int64
+	ConversationID string
+	UserID         int64
+	ChatID         int64
+	EventType      string
+	Payload        string
+	CreatedAt      time.Time
+}
+
+// GetInteractionEvents returns interaction events for a conversation, ordered by time.
+func (s *Store) GetInteractionEvents(convID string) ([]InteractionEvent, error) {
+	rows, err := s.db.Query(
+		`SELECT id, conversation_id, user_id, chat_id, event_type, payload, created_at
+		 FROM interaction_events WHERE conversation_id = ? ORDER BY created_at ASC`,
+		convID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get interaction events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []InteractionEvent
+	for rows.Next() {
+		var e InteractionEvent
+		var ts string
+		if err := rows.Scan(&e.ID, &e.ConversationID, &e.UserID, &e.ChatID, &e.EventType, &e.Payload, &ts); err != nil {
+			return nil, fmt.Errorf("memory: scan interaction event: %w", err)
+		}
+		e.CreatedAt, _ = parseTimeStr(ts)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// GetInteractionEventsByUser returns events with empty conversation_id for a user/chat pair.
+// These are events logged before conversation lookup (e.g., /effort, /retry commands).
+func (s *Store) GetInteractionEventsByUser(userID, chatID int64) ([]InteractionEvent, error) {
+	rows, err := s.db.Query(
+		`SELECT id, conversation_id, user_id, chat_id, event_type, payload, created_at
+		 FROM interaction_events WHERE conversation_id = '' AND user_id = ? AND chat_id = ? ORDER BY created_at ASC`,
+		userID, chatID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get interaction events by user: %w", err)
+	}
+	defer rows.Close()
+
+	var events []InteractionEvent
+	for rows.Next() {
+		var e InteractionEvent
+		var ts string
+		if err := rows.Scan(&e.ID, &e.ConversationID, &e.UserID, &e.ChatID, &e.EventType, &e.Payload, &ts); err != nil {
+			return nil, fmt.Errorf("memory: scan interaction event: %w", err)
+		}
+		e.CreatedAt, _ = parseTimeStr(ts)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// ConversationMeta holds lightweight metadata for a conversation.
+type ConversationMeta struct {
+	ID        string
+	UserID    int64
+	ChatID    int64
+	UpdatedAt time.Time
+}
+
+// GetConversationsSince returns conversations that had messages after the given time.
+func (s *Store) GetConversationsSince(after time.Time) ([]ConversationMeta, error) {
+	rows, err := s.db.Query(
+		`SELECT DISTINCT c.id, c.user_id, c.chat_id, c.updated_at
+		 FROM conversations c
+		 JOIN messages m ON m.conversation_id = c.id
+		 WHERE m.created_at > ?
+		 ORDER BY c.updated_at DESC`,
+		after.UTC(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: get conversations since: %w", err)
+	}
+	defer rows.Close()
+
+	var convs []ConversationMeta
+	for rows.Next() {
+		var c ConversationMeta
+		var ts string
+		if err := rows.Scan(&c.ID, &c.UserID, &c.ChatID, &ts); err != nil {
+			return nil, fmt.Errorf("memory: scan conversation: %w", err)
+		}
+		c.UpdatedAt, _ = parseTimeStr(ts)
+		convs = append(convs, c)
+	}
+	return convs, rows.Err()
 }
 
 // parseTimeStr attempts to parse a time string returned by SQLite in various formats.

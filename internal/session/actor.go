@@ -209,6 +209,8 @@ func (a *Actor) Run(ctx context.Context) error {
 					Text:   "Sorry, something went wrong. Please try again.",
 				})
 			}
+		case reaction := <-a.tg.Reactions():
+			a.handleReaction(reaction)
 		}
 	}
 }
@@ -289,6 +291,13 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	userContent, _ := json.Marshal(msg.Text) // Marshal cannot fail for a Go string.
 	if err := a.store.AppendMessage(convID, "user", userContent); err != nil {
 		return fmt.Errorf("store user message: %w", err)
+	}
+
+	// Map the Telegram message ID to conversation for reaction joining.
+	if msg.MessageID != 0 {
+		if err := a.store.MapTelegramMessage(msg.ChatID, msg.MessageID, convID); err != nil {
+			slog.Warn("failed to map telegram message", "err", err)
+		}
 	}
 
 	// Index user message in vector store asynchronously.
@@ -868,6 +877,7 @@ type streamState struct {
 	htmlMode  bool // when true, flush() sets HTML=true on outgoing messages (used by finalFlush)
 	mu        sync.Mutex
 	tg        TelegramTransport
+	onFirstID func(tgMsgID int) // called once when first Telegram message ID is obtained
 }
 
 // onDelta handles a text delta from Claude's stream. It accumulates text
@@ -960,6 +970,10 @@ func (ss *streamState) flush() {
 		case id := <-resultCh:
 			newMsgID = id
 			gotID = true
+			if id > 0 && ss.onFirstID != nil {
+				ss.onFirstID(id)
+				ss.onFirstID = nil // call only once
+			}
 		case <-time.After(5 * time.Second):
 			slog.Warn("timeout waiting for telegram message ID", "chat_id", chatID)
 			// Set a sentinel to prevent duplicate new-message sends on retry.
@@ -1093,7 +1107,13 @@ func (a *Actor) toolUseLoop(
 	tools []anthropic.ToolUnionParam,
 	effort config.Effort,
 ) error {
-	ss := &streamState{chatID: chatID, tg: a.tg}
+	ss := &streamState{chatID: chatID, tg: a.tg, onFirstID: func(tgMsgID int) {
+		if a.store != nil {
+			if err := a.store.MapTelegramMessage(chatID, tgMsgID, convID); err != nil {
+				slog.Debug("eval: failed to map bot message", "err", err)
+			}
+		}
+	}}
 
 	for i := 0; i < maxToolRounds; i++ {
 		// Reset stream state for each new Claude call (new message per round).
@@ -1298,7 +1318,13 @@ func (a *Actor) handleWithCLI(
 	systemPrompt string,
 	effort string,
 ) error {
-	ss := &streamState{chatID: chatID, tg: a.tg}
+	ss := &streamState{chatID: chatID, tg: a.tg, onFirstID: func(tgMsgID int) {
+		if a.store != nil {
+			if err := a.store.MapTelegramMessage(chatID, tgMsgID, convID); err != nil {
+				slog.Debug("eval: failed to map bot message", "err", err)
+			}
+		}
+	}}
 
 	// Defensive: check for reload signal from a previous turn's plugin change.
 	// Normally handled at end of the previous handleWithCLI call, but this
@@ -1612,6 +1638,21 @@ func (a *Actor) handleProjectCommand(msg telegram.IncomingMessage) error {
 	return nil
 }
 
+// handleReaction processes a Telegram reaction event by storing it in the eval_reactions table.
+func (a *Actor) handleReaction(r telegram.ReactionEvent) {
+	if a.store == nil {
+		return
+	}
+	convID, err := a.store.LookupConversationByTelegramMessage(r.ChatID, r.MessageID)
+	if err != nil {
+		slog.Debug("eval: reaction on unmapped message", "chat_id", r.ChatID, "message_id", r.MessageID, "err", err)
+		return
+	}
+	if err := a.store.LogEvalReaction(convID, r.UserID, r.ChatID, r.MessageID, r.Emoji); err != nil {
+		slog.Warn("eval: failed to log reaction", "err", err)
+	}
+}
+
 // handleEffortCommand processes /effort commands for thinking effort override.
 func (a *Actor) handleEffortCommand(msg telegram.IncomingMessage) {
 	text := strings.TrimSpace(msg.Text)
@@ -1662,6 +1703,13 @@ func (a *Actor) handleEffortCommand(msg telegram.IncomingMessage) {
 	}
 
 	a.effortOverride[key] = effort
+
+	// Log the effort override as an interaction event for eval scoring.
+	if a.store != nil {
+		if err := a.store.LogInteractionEvent("", msg.UserID, msg.ChatID, "effort_override", string(effort)); err != nil {
+			slog.Warn("failed to log effort event", "err", err)
+		}
+	}
 
 	// In CLI mode, kill+respawn so the new effort takes effect (--effort is spawn-time).
 	if a.cliMgr != nil {
@@ -1715,6 +1763,13 @@ func (a *Actor) handleRetryCommand(ctx context.Context, msg telegram.IncomingMes
 		}()
 		if a.cliMgr != nil {
 			a.cliMgr.Remove(msg.UserID, msg.ChatID)
+		}
+	}
+
+	// Log the retry as an interaction event for eval scoring.
+	if a.store != nil {
+		if err := a.store.LogInteractionEvent("", msg.UserID, msg.ChatID, "retry", arg); err != nil {
+			slog.Warn("failed to log retry event", "err", err)
 		}
 	}
 

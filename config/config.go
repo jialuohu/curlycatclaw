@@ -28,6 +28,18 @@ type Config struct {
 	ConfirmTools     []string               `toml:"confirm_tools"`
 	Projects         []ProjectConfig        `toml:"projects"`
 	SkillCollections []SkillCollectionConfig `toml:"skill_collections"`
+	Eval             EvalConfig             `toml:"eval"`
+}
+
+// EvalConfig controls the self-evaluation pipeline.
+type EvalConfig struct {
+	Enabled            bool   `toml:"enabled"`
+	Schedule           string `toml:"schedule"`             // cron expression (5-field), default "0 3 * * *"
+	LookbackHours      int    `toml:"lookback_hours"`       // hours of history per run, default 24
+	ScoreThreshold     float64 `toml:"score_threshold"`     // below this triggers failure mining, default 0.6
+	AutoCommitConfidence float64 `toml:"auto_commit_confidence"` // Phase 3: above this auto-commits, default 0.9
+	MaxCandidatesPerRun int    `toml:"max_candidates_per_run"` // prevent flooding memory, default 5
+	ReportChatID       int64  `toml:"report_chat_id"`       // Telegram chat ID for eval reports (0 = use first allowed user)
 }
 
 // SkillCollectionConfig defines a directory of external skills.
@@ -268,6 +280,14 @@ func Load(path string) (*Config, error) {
 			MinImportance:        3,
 			Labels:               []string{"INBOX"},
 			SkipSenders:          []string{"noreply@", "no-reply@", "notifications@", "mailer-daemon@"},
+		},
+		Eval: EvalConfig{
+			Enabled:              false,
+			Schedule:             "0 3 * * *",
+			LookbackHours:        24,
+			ScoreThreshold:       0.6,
+			AutoCommitConfidence: 0.9,
+			MaxCandidatesPerRun:  5,
 		},
 	}
 

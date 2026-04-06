@@ -7,7 +7,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-co-op/gocron/v2 v2.19.1
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/go-telegram/bot v1.20.0
 	github.com/modelcontextprotocol/go-sdk v0.8.0
 	github.com/qdrant/go-client v1.17.1
 	github.com/robfig/cron/v3 v3.0.1
