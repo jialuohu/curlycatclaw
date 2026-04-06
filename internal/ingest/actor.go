@@ -256,6 +256,10 @@ func (a *Actor) runBackfill(ctx context.Context, entry SourceEntry, cursor strin
 	var cursorJSON json.RawMessage
 	if cursor != "" {
 		cursorJSON, _ = json.Marshal(cursor)
+	} else if entry.BackfillDays > 0 {
+		// First backfill run: set cursor to N days ago so Discover fetches historical data.
+		backfillDate := time.Now().AddDate(0, 0, -entry.BackfillDays).Format("2006/01/02")
+		cursorJSON, _ = json.Marshal(backfillDate)
 	}
 
 	items, newCursor, err := src.Discover(ctx, cursorJSON)
