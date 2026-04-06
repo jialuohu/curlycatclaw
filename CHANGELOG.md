@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.28.0] - 2026-04-05
+
+Generic knowledge source ingest framework. curlycatclaw can now ingest knowledge from Gmail, Obsidian vaults, and Notion workspaces through a single pluggable pipeline. Each source has its own cursor, daily caps, and trust level. Adding a future source is config, not code.
+
+### Added
+- **Generic ingest pipeline**: `internal/ingest/` package with Source interface, per-source scheduling, and extraction
+- **GmailSource**: multi-account Gmail via GWS MCP (replaces dedicated EmailIngestActor)
+- **FileSource**: Obsidian vault ingestion via directory walker with mtime cursor, YAML front matter parsing, and symlink escape prevention
+- **NotionSource**: Notion workspace via official MCP server
+- **Trusted/untrusted extraction prompts**: email (untrusted) blocks preference/commitment types at validation layer; personal notes (trusted) allow all types with wiki-link entity extraction
+- **Passthrough extractor**: structured Obsidian notes with YAML front matter skip LLM entirely, parsed directly into observations
+- **Hybrid extractor**: passthrough for notes with front matter, LLM fallback for notes without
+- **Content fingerprint tracking**: mutable sources (Obsidian, Notion) detect edits and re-extract changed content
+- **`[[ingest.sources]]` config**: per-source name, type, interval, trust level, extraction mode, daily caps, and prefilter rules
+
+### Changed
+- **Config**: `[email_ingest]` deprecated but auto-migrates to first `[[ingest.sources]]` entry for backward compatibility
+- **SQLite schema**: `email_ingest_state` and `email_processed_messages` renamed to generic `ingest_state` and `ingest_processed_items` with source+partition keys; legacy data auto-migrated
+- **Stale state recovery**: ingest actor resets stuck "running" states on startup (prevents permanent source skipping after crash)
+
+### Removed
+- **`internal/email/` package**: replaced entirely by `internal/ingest/`
+
 ## [0.27.0] - 2026-04-05
 
 Background email-to-observation processing. curlycatclaw now automatically reads your Gmail inbox, filters out noise, and extracts valuable information into durable observations. Email context becomes ambient knowledge the agent can reference in any future conversation.
