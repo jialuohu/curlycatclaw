@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.29.0] - 2026-04-06
+
+Persistent CLI subprocesses for ingest extraction. Email processing drops from ~12s to ~0.6s per email by reusing a long-lived Claude process instead of spawning a new one each time. Separate processes for trusted and untrusted content prevent cross-contamination. Gmail account filtering lets you choose which accounts to ingest from.
+
+### Added
+- **PersistentCLISender**: reuses CLI subprocesses for ingest extraction, amortizing Node.js startup + OAuth overhead across batches
+- **Trust-level separation**: untrusted emails and trusted notes route to separate persistent processes with proper system prompts
+- **SafeMode spawn**: new `SpawnParams.SafeMode` omits `--dangerously-skip-permissions` for background extraction processes handling untrusted content
+- **Gmail account filtering**: `accounts` field in `[[ingest.sources]]` config restricts which Google accounts are ingested
+- **MCP account discovery fix**: `DiscoverGmailAccounts` now unwraps the MCP text envelope, enabling multi-account discovery
+
+### Changed
+- Ingest extraction model configurable via `extraction_model` (defaults to `claude-sonnet-4-5` instead of main model)
+- Dockerfile NodeSource install uses GPG key + apt repo instead of curl-pipe-bash
+
+### Fixed
+- Trust routing defaults to untrusted (safe default) instead of routing unknown prompts to trusted process
+- MCP SDK upgraded v0.8.0 -> v1.4.1 (fixes cross-site tool execution vulnerability GO-2026-4773)
+- golang.org/x/net upgraded v0.50.0 -> v0.52.0 (fixes HTTP/2 panic GO-2026-4559)
+
 ## [0.28.0] - 2026-04-05
 
 Generic knowledge source ingest framework. curlycatclaw can now ingest knowledge from Gmail, Obsidian vaults, and Notion workspaces through a single pluggable pipeline. Each source has its own cursor, daily caps, and trust level. Adding a future source is config, not code.
