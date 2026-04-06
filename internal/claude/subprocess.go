@@ -891,7 +891,7 @@ func (c *CLISender) Send(ctx context.Context, params SendParams) (*Response, err
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
 	}
-	args = append(args, userText)
+	args = append(args, "--", userText)
 
 	cmd := exec.CommandContext(ctx, c.CLIPath, args...)
 	cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+c.OAuthToken)
