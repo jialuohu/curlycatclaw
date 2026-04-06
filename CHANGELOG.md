@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.27.0] - 2026-04-05
+
+Background email-to-observation processing. curlycatclaw now automatically reads your Gmail inbox, filters out noise, and extracts valuable information into durable observations. Email context becomes ambient knowledge the agent can reference in any future conversation.
+
+### Added
+- **EmailIngestActor**: supervised background actor that processes Gmail via existing GWS MCP tools
+- **Two-stage filter**: cheap Gmail label/sender prefilter removes 60-80% of volume before LLM triage
+- **Incremental sync**: polls for new emails every N minutes (default 15), deduplicates via processed messages table
+- **Resumable backfill**: date-range windowed historical import with cursor persistence, configurable depth (default 30 days)
+- **Cost controls**: per-account daily observation cap (100), LLM call circuit breaker (200/day), 7-day processed message cleanup
+- **Prompt injection defense**: `preference` and `commitment` observation types blocked at validation layer for email-sourced content
+- **`[email_ingest]` config section**: enabled, interval, backfill depth, batch size, label filters, sender skip patterns
+- **SQLite tables**: `email_ingest_state` (per-account cursor/stats), `email_processed_messages` (dedup with retry separation)
+- **Account discovery**: uses `gws_list_accounts` MCP tool at startup for multi-account support
+
+### Changed
+- **`store.go`**: added `EnsureConversation` helper for FK-safe synthetic conversation rows
+- **`main.go`**: EmailIngestActor wired into supervisor alongside ReminderActor
+
 ## [0.26.0] - 2026-04-05
 
 Multi-account Google Workspace. Use multiple Google accounts through a single GWS MCP server with per-account service restrictions. Claude picks the right account for each operation.
