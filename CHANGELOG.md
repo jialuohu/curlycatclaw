@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.1] - 2026-04-05
+
+### Added
+- Test coverage for Gmail JSON parsing (array and wrapped object formats, fallback handling)
+- Test coverage for eval failure miner (correction, retry, effort override clustering, tool error grouping, output truncation)
+- Test coverage for eval reporter (formatting, WARN/OK markers, list truncation, full channel handling)
+- Test coverage for eval export extractText (string, content blocks, mixed blocks, invalid JSON)
+
 ## [0.27.0] - 2026-04-05
 
 Background email-to-observation processing. curlycatclaw now automatically reads your Gmail inbox, filters out noise, and extracts valuable information into durable observations. Email context becomes ambient knowledge the agent can reference in any future conversation.
