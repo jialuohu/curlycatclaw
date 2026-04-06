@@ -77,6 +77,17 @@ func (m IncomingMessage) Photos() []Attachment {
 	return out
 }
 
+// Documents returns document attachments.
+func (m IncomingMessage) Documents() []Attachment {
+	var out []Attachment
+	for _, a := range m.Attachments {
+		if a.Kind == AttachDocument {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // InlineButton represents a single button in a Telegram inline keyboard.
 type InlineButton struct {
 	Text         string // button label

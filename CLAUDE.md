@@ -36,6 +36,8 @@ go test ./... -count=1   # must all pass
 
 If `golangci-lint` is not installed, at minimum run `go vet ./...`. But CI uses `golangci-lint v2` with errcheck, staticcheck, and unused enabled, so `go vet` alone is not sufficient. Install it: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
 
+CI also runs `govulncheck ./...` (continue-on-error) and tests with `-race` flag.
+
 Test expectations:
 - When writing new functions, write a corresponding test
 - When fixing a bug, write a regression test
@@ -53,6 +55,16 @@ Version is tracked in the `VERSION` file (currently source of truth). Follows se
 
 Goreleaser injects the version into the binary via `-X main.version={{.Version}}` from git tags. Update `VERSION` and `CHANGELOG.md` when releasing.
 
+## CLI Subcommands
+
+```bash
+curlycatclaw --config PATH       # path to config.toml (default: ~/.curlycatclaw/config.toml)
+curlycatclaw --version            # print version and exit
+curlycatclaw --mcp-server         # run as MCP stdio server (spawned by claude CLI)
+curlycatclaw --migrate-embedder   # wipe and rebuild vector collections with configured embedder
+curlycatclaw --migrate-embedder --dry-run  # count texts only, no modifications
+```
+
 ## Architecture
 
 Goroutine-based actor model under supervision. See [docs/architecture.md](docs/architecture.md) for full diagrams and details.
@@ -61,7 +73,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 
 **Ingest pipeline**: Generic `IngestActor` processes configured knowledge sources (Gmail via MCP, Obsidian via filesystem, Notion via MCP). Config-driven via `[[ingest.sources]]`. Each source implements `Source` interface (Discover/Read/Prefilter). Three extractors: LLM (trusted/untrusted prompts), Passthrough (YAML front matter), Hybrid. Per-source cursors, daily caps, trust levels. Content fingerprint tracking for mutable-source re-extraction. Stale "running" state recovery on startup. Deprecated `[email_ingest]` auto-migrates.
 
-**Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control.
+**Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control. Document attachments: PDFs sent as native document blocks (both modes), text files inlined into message (CLI) or as text blocks (API).
 
 **MCP & tools**: MCP Manager holds persistent stdio connections. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
 
@@ -79,6 +91,8 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - `splitAtBoundary()` in actor.go handles message overflow. Searches backward for `\n\n`, detects unclosed code fences.
 - Actor struct maps (`effortOverride`, `lastUserMsg`, `debugOverride`, `obsState`) do NOT need mutexes. `handleMessage` runs in a single goroutine from the actor's `Run()` loop. Only `activeProjects` has a mutex (defense-in-depth, not required).
 - GWS multi-account: `GWS_ACCOUNT_<NAME>_SERVICES` env vars must not collide with account names. `parseAccountsFromEnv()` skips keys ending in `_SERVICES`. Account names validated as `[a-zA-Z0-9_-]+`. `"account"` is in `reservedFlags` to prevent LLM injection as a gws CLI flag. Credential paths must be absolute and exist at startup (fatal otherwise).
+- `send_file` in CLI mode queues to SQLite (`pending_files` table), delivered by session actor after tool loop ends. Direct API mode sends immediately via Telegram. Tool result says "File queued" to prevent Claude retries.
+- CLI subprocess `bufio.Scanner` max is 16MB (for base64 PDF responses in stream-json). Default 64KB would crash on any document attachment.
 
 ## Key Files
 
@@ -127,6 +141,9 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/eval/miner.go` | FailureMiner: cluster low-scoring conversations by failure type |
 | `internal/eval/candidate.go` | CandidateGenerator: Claude proposes memory fixes per failure |
 | `internal/eval/gate.go` | CommitGate: confidence-based gating with approve/reject |
+| `internal/security/credential.go` | AES-256-GCM encrypted credential store for MCP server secrets |
+| `internal/memory/context.go` | Memory context builder for conversation priming |
+| `skills/note.go` | Note management skills (create, list, read, delete) |
 | `skills/send_file.go` | Send file skill (Telegram document delivery) |
 | `cmd/curlycatclaw-gws-mcp/main.go` | GWS MCP server entrypoint, multi-account env parsing (`GWS_ACCOUNT_*`, `_SERVICES`) |
 | `cmd/curlycatclaw-gws-mcp/executor.go` | GWS CLI subprocess runner, account resolution, service validation, per-call env overrides |
@@ -146,6 +163,8 @@ For Google Workspace, export credentials on a machine with a browser (`gws auth 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 
 For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
+
+Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format.
 
 ## gstack
 

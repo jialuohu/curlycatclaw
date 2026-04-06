@@ -102,6 +102,9 @@ type Actor struct {
 	// debugOverride stores per-user session-level debug toggle set via /debug.
 	// nil = use config default, non-nil = override.
 	debugOverride map[userKey]bool
+
+	// fileDrainer drains pending outbound files queued by send_file in MCP mode.
+	fileDrainer *memory.Store
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -154,6 +157,7 @@ func New(
 		effortOverride: make(map[userKey]config.Effort),
 		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
 		debugOverride:  make(map[userKey]bool),
+		fileDrainer:    store,
 	}
 }
 
@@ -339,7 +343,9 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// CLI subprocess mode: delegate to claude CLI which handles the agent loop.
 	if a.cliMgr != nil {
 		effKey := userKey{UserID: msg.UserID, ChatID: msg.ChatID}
-		return a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos(), systemPrompt, string(a.getEffectiveEffort(effKey)))
+		err = a.handleWithCLI(ctx, msg.UserID, msg.ChatID, convID, msg.Text, msg.Photos(), msg.Documents(), systemPrompt, string(a.getEffectiveEffort(effKey)))
+		a.drainPendingFiles()
+		return err
 	}
 
 	// Direct API mode: build context and run the tool_use loop.
@@ -351,10 +357,11 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// Convert memory messages to Anthropic SDK messages.
 	messages := toAnthropicMessages(history)
 
-	// Replace the last user message with one that includes image blocks
-	// from the current message (images in history are too expensive to replay).
+	// Replace the last user message with one that includes image/document blocks
+	// from the current message (attachments in history are too expensive to replay).
 	photoAttachments := msg.Photos()
-	if len(photoAttachments) > 0 && len(messages) > 0 {
+	docAttachments := msg.Documents()
+	if (len(photoAttachments) > 0 || len(docAttachments) > 0) && len(messages) > 0 {
 		var blocks []anthropic.ContentBlockParamUnion
 		if msg.Text != "" {
 			blocks = append(blocks, anthropic.NewTextBlock(msg.Text))
@@ -364,6 +371,9 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 				photo.MimeType,
 				base64.StdEncoding.EncodeToString(photo.Data),
 			))
+		}
+		for _, doc := range docAttachments {
+			blocks = append(blocks, documentToBlock(doc))
 		}
 		// Replace the last user message with our multimodal one.
 		messages[len(messages)-1] = anthropic.NewUserMessage(blocks...)
@@ -384,7 +394,29 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	effort := a.getEffectiveEffort(effKey)
 
 	// Run the tool_use loop.
-	return a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools, effort)
+	err = a.toolUseLoop(ctx, msg.UserID, msg.ChatID, convID, messages, systemPrompt, tools, effort)
+
+	// Drain any pending outbound files queued by send_file (MCP mode).
+	a.drainPendingFiles()
+
+	return err
+}
+
+// drainPendingFiles sends any files queued by the send_file skill in MCP mode.
+func (a *Actor) drainPendingFiles() {
+	if a.fileDrainer == nil {
+		return
+	}
+	files, err := a.fileDrainer.DrainPendingFiles()
+	if err != nil {
+		slog.Warn("drain pending files failed", "err", err)
+		return
+	}
+	for _, f := range files {
+		if err := a.tg.SendDocument(f.ChatID, f.FileName, f.Data, ""); err != nil {
+			slog.Warn("send queued file failed", "file", f.FileName, "err", err)
+		}
+	}
 }
 
 // typingRefreshInterval is the interval between "typing..." indicator refreshes.
@@ -1343,6 +1375,7 @@ func (a *Actor) handleWithCLI(
 	convID string,
 	userMsg string,
 	photos []telegram.Attachment,
+	docs []telegram.Attachment,
 	systemPrompt string,
 	effort string,
 ) error {
@@ -1376,9 +1409,33 @@ func (a *Actor) handleWithCLI(
 	timePrefix := fmt.Sprintf("[Current time: %s]\n", now.Format("2006-01-02 15:04 MST"))
 	userMsg = timePrefix + userMsg
 
+	// Separate documents into those that can be sent as content blocks
+	// (PDFs) vs those that need text inlining (text files, unknown binary).
+	var docBlocks []claude.DocumentBlock
+	for _, doc := range docs {
+		mime := doc.MimeType
+		switch {
+		case mime == "application/pdf":
+			docBlocks = append(docBlocks, claude.DocumentBlock{
+				MediaType: mime,
+				Data:      base64.StdEncoding.EncodeToString(doc.Data),
+				FileName:  doc.FileName,
+			})
+		case strings.HasPrefix(mime, "text/") ||
+			mime == "application/json" ||
+			mime == "application/xml" ||
+			mime == "application/x-yaml" ||
+			mime == "application/toml" ||
+			mime == "application/javascript":
+			userMsg += fmt.Sprintf("\n\n[Document: %s]\n%s", doc.FileName, string(doc.Data))
+		default:
+			userMsg += fmt.Sprintf("\n\n[Attached file: %s (%s, %d bytes)]", doc.FileName, mime, len(doc.Data))
+		}
+	}
+
 	// Build the user message for the CLI's stream-json input.
 	var userJSON json.RawMessage
-	if len(photos) > 0 {
+	if len(photos) > 0 || len(docBlocks) > 0 {
 		var images []claude.ImageBlock
 		for _, photo := range photos {
 			images = append(images, claude.ImageBlock{
@@ -1386,7 +1443,7 @@ func (a *Actor) handleWithCLI(
 				Data:      base64.StdEncoding.EncodeToString(photo.Data),
 			})
 		}
-		userJSON = claude.BuildImageMessage(userMsg, images)
+		userJSON = claude.BuildMultimodalMessage(userMsg, images, docBlocks)
 	} else {
 		userJSON = claude.BuildUserMessage(userMsg)
 	}
@@ -2720,6 +2777,30 @@ type storedToolResult struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
+}
+
+// documentToBlock converts a document attachment to an Anthropic content block.
+// PDFs use the native document block; text-like files are inlined as text;
+// other binary files get a placeholder description.
+func documentToBlock(doc telegram.Attachment) anthropic.ContentBlockParamUnion {
+	mime := doc.MimeType
+	switch {
+	case mime == "application/pdf":
+		return anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+			Data: base64.StdEncoding.EncodeToString(doc.Data),
+		})
+	case strings.HasPrefix(mime, "text/") ||
+		mime == "application/json" ||
+		mime == "application/xml" ||
+		mime == "application/x-yaml" ||
+		mime == "application/toml" ||
+		mime == "application/javascript":
+		header := fmt.Sprintf("[Document: %s]\n", doc.FileName)
+		return anthropic.NewTextBlock(header + string(doc.Data))
+	default:
+		// Binary file that can't be inlined — describe it.
+		return anthropic.NewTextBlock(fmt.Sprintf("[Attached file: %s (%s, %d bytes)]", doc.FileName, mime, len(doc.Data)))
+	}
 }
 
 // toAnthropicMessages converts memory Messages to Anthropic SDK MessageParam.

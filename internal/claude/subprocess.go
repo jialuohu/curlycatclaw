@@ -461,7 +461,7 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 	}()
 
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024) // up to 1MB lines
+	scanner.Buffer(make([]byte, 0, 256*1024), 16*1024*1024) // up to 16MB lines (base64 PDFs)
 
 	scanCh := make(chan ScanResult, 1)
 	go func() {
@@ -726,6 +726,49 @@ func BuildImageMessage(text string, images []ImageBlock) json.RawMessage {
 type ImageBlock struct {
 	MediaType string // e.g. "image/jpeg"
 	Data      string // base64 encoded
+}
+
+// DocumentBlock holds base64-encoded document data (e.g., PDF) for multimodal messages.
+type DocumentBlock struct {
+	MediaType string // e.g. "application/pdf"
+	Data      string // base64 encoded
+	FileName  string // original filename
+}
+
+// BuildMultimodalMessage creates stream-json input for a message with text, images, and documents.
+func BuildMultimodalMessage(text string, images []ImageBlock, documents []DocumentBlock) json.RawMessage {
+	content := []map[string]any{
+		{"type": "text", "text": text},
+	}
+	for _, img := range images {
+		content = append(content, map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": img.MediaType,
+				"data":       img.Data,
+			},
+		})
+	}
+	for _, doc := range documents {
+		content = append(content, map[string]any{
+			"type": "document",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": doc.MediaType,
+				"data":       doc.Data,
+			},
+		})
+	}
+	msg := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": content,
+		},
+	}
+	data, _ := json.Marshal(msg) //nolint:errcheck
+	return data
 }
 
 // limitWriter wraps a writer and stops writing after max bytes.

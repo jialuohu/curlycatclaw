@@ -993,37 +993,33 @@ func (vs *VectorStore) ensureObservationsCollection(ctx context.Context) error {
 }
 
 // ensureCollection creates a collection if it does not already exist.
+// If the collection exists but has a different vector dimension than the
+// active embedder, it is deleted and recreated (auto-heal).
 func (vs *VectorStore) ensureCollection(ctx context.Context, name string) error {
+	wantDim := vs.activeEmbedder().Dimension()
+
 	exists, err := vs.client.CollectionExists(ctx, name)
 	if err != nil {
 		return fmt.Errorf("vectorstore: check collection %s: %w", name, err)
 	}
 	if exists {
-		// Check dimension matches the active embedder. If not, the collection
-		// was created with an old embedder and must be recreated.
-		info, infoErr := vs.client.GetCollectionInfo(ctx, name)
-		if infoErr == nil {
-			existingDim := info.GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize()
-			expectedDim := vs.activeEmbedder().Dimension()
-			if existingDim != expectedDim {
-				slog.Warn("collection dimension mismatch, recreating",
-					"collection", name, "existing", existingDim, "expected", expectedDim)
-				if delErr := vs.client.DeleteCollection(ctx, name); delErr != nil {
-					return fmt.Errorf("vectorstore: delete stale collection %s: %w", name, delErr)
-				}
-				// Fall through to create with correct dimension.
-			} else {
-				return nil // exists with correct dimension
+		// Check dimension matches the active embedder.
+		if gotDim, dimErr := vs.collectionDimension(ctx, name); dimErr == nil && gotDim != wantDim {
+			slog.Warn("dimension mismatch detected, recreating collection",
+				"collection", name, "got", gotDim, "want", wantDim)
+			if delErr := vs.client.DeleteCollection(ctx, name); delErr != nil {
+				return fmt.Errorf("vectorstore: delete mismatched collection %s: %w", name, delErr)
 			}
+			// Fall through to create with correct dimension.
 		} else {
-			return nil // can't check, assume OK
+			return nil
 		}
 	}
 
 	err = vs.client.CreateCollection(ctx, &qdrant.CreateCollection{
 		CollectionName: name,
 		VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
-			Size:     vs.activeEmbedder().Dimension(),
+			Size:     wantDim,
 			Distance: qdrant.Distance_Cosine,
 		}),
 	})
@@ -1031,6 +1027,31 @@ func (vs *VectorStore) ensureCollection(ctx context.Context, name string) error 
 		return fmt.Errorf("vectorstore: create collection %s: %w", name, err)
 	}
 	return nil
+}
+
+// collectionDimension returns the vector size of an existing collection.
+func (vs *VectorStore) collectionDimension(ctx context.Context, name string) (uint64, error) {
+	info, err := vs.client.GetCollectionInfo(ctx, name)
+	if err != nil {
+		return 0, err
+	}
+	cfg := info.GetConfig()
+	if cfg == nil {
+		return 0, fmt.Errorf("no config")
+	}
+	params := cfg.GetParams()
+	if params == nil {
+		return 0, fmt.Errorf("no params")
+	}
+	vc := params.GetVectorsConfig()
+	if vc == nil {
+		return 0, fmt.Errorf("no vectors config")
+	}
+	vp := vc.GetParams()
+	if vp == nil {
+		return 0, fmt.Errorf("no vector params")
+	}
+	return vp.GetSize(), nil
 }
 
 // collectionForSource returns the collection name for a given source type.

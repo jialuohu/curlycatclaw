@@ -44,7 +44,14 @@ func InitNoteSkills(db *sql.DB) ([]*Skill, error) {
 		Execute:     makeSearchNotesExecute(db),
 	}
 
-	return []*Skill{saveSkill, searchSkill}, nil
+	deleteSkill := &Skill{
+		Name:        "delete_note",
+		Description: "Delete a saved note by its exact title.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"Exact title of the note to delete"}},"required":["title"]}`),
+		Execute:     makeDeleteNoteExecute(db),
+	}
+
+	return []*Skill{saveSkill, searchSkill, deleteSkill}, nil
 }
 
 type saveNoteInput struct {
@@ -83,6 +90,36 @@ func makeSaveNoteExecute(db *sql.DB) func(ctx context.Context, input json.RawMes
 		}
 
 		return "Note saved: " + params.Title, nil
+	}
+}
+
+type deleteNoteInput struct {
+	Title string `json:"title"`
+}
+
+func makeDeleteNoteExecute(db *sql.DB) func(ctx context.Context, input json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		var params deleteNoteInput
+		if err := json.Unmarshal(input, &params); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
+		}
+		if params.Title == "" {
+			return "", fmt.Errorf("title is required")
+		}
+
+		user := GetUser(ctx)
+		result, err := db.ExecContext(ctx,
+			`DELETE FROM notes WHERE user_id = ? AND title = ?`,
+			user.UserID, params.Title,
+		)
+		if err != nil {
+			return "", fmt.Errorf("delete note: %w", err)
+		}
+		n, _ := result.RowsAffected()
+		if n == 0 {
+			return fmt.Sprintf("No note found with title '%s'", params.Title), nil
+		}
+		return fmt.Sprintf("Note deleted: %s", params.Title), nil
 	}
 }
 

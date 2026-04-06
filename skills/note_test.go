@@ -43,8 +43,8 @@ func TestInitNoteSkills_CreatesTable(t *testing.T) {
 		t.Fatalf("InitNoteSkills: %v", err)
 	}
 
-	if len(skills) != 2 {
-		t.Fatalf("expected 2 skills, got %d", len(skills))
+	if len(skills) != 3 {
+		t.Fatalf("expected 3 skills, got %d", len(skills))
 	}
 
 	// Verify the notes table exists by querying sqlite_master.
@@ -316,5 +316,97 @@ func TestNotes_UserScoped(t *testing.T) {
 	}
 	if strings.Contains(resultB, "User A Secret") {
 		t.Errorf("userB search should NOT contain userA's note, got %q", resultB)
+	}
+}
+
+func TestDeleteNote_ExistingNote(t *testing.T) {
+	db := newTestDB(t)
+	skills := initNoteSkillsForTest(t, db)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	// Save a note, then delete it.
+	saveInput, _ := json.Marshal(saveNoteInput{Title: "To Delete", Content: "temp"})
+	if _, err := skills["save_note"].Execute(ctx, saveInput); err != nil {
+		t.Fatalf("save_note: %v", err)
+	}
+
+	delInput, _ := json.Marshal(deleteNoteInput{Title: "To Delete"})
+	result, err := skills["delete_note"].Execute(ctx, delInput)
+	if err != nil {
+		t.Fatalf("delete_note: %v", err)
+	}
+	if result != "Note deleted: To Delete" {
+		t.Errorf("result = %q, want %q", result, "Note deleted: To Delete")
+	}
+
+	// Verify it's gone.
+	searchInput, _ := json.Marshal(searchNotesInput{Query: "To Delete"})
+	searchResult, err := skills["search_notes"].Execute(ctx, searchInput)
+	if err != nil {
+		t.Fatalf("search_notes: %v", err)
+	}
+	if !strings.Contains(searchResult, "No notes found") {
+		t.Errorf("deleted note should not appear in search, got %q", searchResult)
+	}
+}
+
+func TestDeleteNote_NotFound(t *testing.T) {
+	db := newTestDB(t)
+	skills := initNoteSkillsForTest(t, db)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	delInput, _ := json.Marshal(deleteNoteInput{Title: "nonexistent"})
+	result, err := skills["delete_note"].Execute(ctx, delInput)
+	if err != nil {
+		t.Fatalf("delete_note: %v", err)
+	}
+	if !strings.Contains(result, "No note found") {
+		t.Errorf("result = %q, want it to contain %q", result, "No note found")
+	}
+}
+
+func TestDeleteNote_EmptyTitle(t *testing.T) {
+	db := newTestDB(t)
+	skills := initNoteSkillsForTest(t, db)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	delInput, _ := json.Marshal(deleteNoteInput{Title: ""})
+	_, err := skills["delete_note"].Execute(ctx, delInput)
+	if err == nil {
+		t.Fatal("expected error for empty title, got nil")
+	}
+}
+
+func TestDeleteNote_UserScoped(t *testing.T) {
+	db := newTestDB(t)
+	skills := initNoteSkillsForTest(t, db)
+
+	// User A saves a note.
+	ctxA := WithUser(context.Background(), UserInfo{UserID: 100, ChatID: 1})
+	saveInput, _ := json.Marshal(saveNoteInput{Title: "Shared Title", Content: "User A content"})
+	if _, err := skills["save_note"].Execute(ctxA, saveInput); err != nil {
+		t.Fatalf("save_note(userA): %v", err)
+	}
+
+	// User B tries to delete User A's note — should not find it.
+	ctxB := WithUser(context.Background(), UserInfo{UserID: 200, ChatID: 1})
+	delInput, _ := json.Marshal(deleteNoteInput{Title: "Shared Title"})
+	result, err := skills["delete_note"].Execute(ctxB, delInput)
+	if err != nil {
+		t.Fatalf("delete_note(userB): %v", err)
+	}
+	if !strings.Contains(result, "No note found") {
+		t.Errorf("userB should not be able to delete userA's note, got %q", result)
+	}
+
+	// User A's note should still exist.
+	searchInput, _ := json.Marshal(searchNotesInput{Query: "Shared Title"})
+	searchResult, err := skills["search_notes"].Execute(ctxA, searchInput)
+	if err != nil {
+		t.Fatalf("search_notes(userA): %v", err)
+	}
+	if !strings.Contains(searchResult, "Shared Title") {
+		t.Errorf("userA's note should still exist, got %q", searchResult)
 	}
 }

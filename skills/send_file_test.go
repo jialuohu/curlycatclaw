@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -44,8 +45,8 @@ func TestSendFileSkill_Success(t *testing.T) {
 	if string(sender.lastData) != "a,b,c\n1,2,3" {
 		t.Errorf("data = %q, want %q", string(sender.lastData), "a,b,c\n1,2,3")
 	}
-	if result != "File sent: report.csv (11 bytes)" {
-		t.Errorf("result = %q, want %q", result, "File sent: report.csv (11 bytes)")
+	if !strings.Contains(result, "File queued: report.csv (11 bytes)") {
+		t.Errorf("result = %q, want it to contain %q", result, "File queued: report.csv (11 bytes)")
 	}
 }
 
