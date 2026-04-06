@@ -881,7 +881,6 @@ func (c *CLISender) Send(ctx context.Context, params SendParams) (*Response, err
 
 	args := []string{
 		"--print",
-		"--bare",
 		"--no-session-persistence",
 		"--output-format", "text",
 	}
