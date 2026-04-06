@@ -639,6 +639,15 @@ func run(configPath string) error {
 		if reportChatID == 0 && len(cfg.Telegram.AllowedID) > 0 {
 			reportChatID = cfg.Telegram.AllowedID[0]
 		}
+		// Create LLM caller for eval: prefer API mode, fall back to CLI mode.
+		var evalLLM eval.LLMCaller
+		if claudeClient != nil {
+			evalLLM = eval.NewAPILLMCaller(claudeClient)
+			slog.Info("eval: using API mode for LLM-as-judge")
+		} else if cliManager != nil {
+			evalLLM = eval.NewCLILLMCaller(cliManager)
+			slog.Info("eval: using CLI mode for LLM-as-judge")
+		}
 		evalActor, evalErr := eval.NewActor(eval.ActorConfig{
 			DBPath:              cfg.Storage.DBPath,
 			Schedule:            cfg.Eval.Schedule,
@@ -646,7 +655,7 @@ func run(configPath string) error {
 			ScoreThreshold:      cfg.Eval.ScoreThreshold,
 			ReportChatID:        reportChatID,
 			MaxCandidatesPerRun: cfg.Eval.MaxCandidatesPerRun,
-		}, store, tg.Inbox(), nil)
+		}, store, tg.Inbox(), evalLLM)
 		if evalErr != nil {
 			slog.Error("eval actor creation failed", "err", evalErr)
 		} else {

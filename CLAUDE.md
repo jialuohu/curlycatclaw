@@ -57,13 +57,15 @@ Goreleaser injects the version into the binary via `-X main.version={{.Version}}
 
 Goroutine-based actor model under supervision. See [docs/architecture.md](docs/architecture.md) for full diagrams and details.
 
-**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), and Email Ingest Actor (background email-to-observation processing). Each actor panics safely and restarts with exponential backoff.
+**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Email Ingest Actor (background email-to-observation processing). Each actor panics safely and restarts with exponential backoff.
 
 **Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control.
 
 **MCP & tools**: MCP Manager holds persistent stdio connections. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
 
 **Memory**: Four tiers: user facts (always), observations (Qdrant + FTS5 hybrid search), conversation summaries (Qdrant), sliding window (25 turns). Observation extraction auto-triggers after idle. Self-healing supersession detects stale project_state. Soft delete with archive/restore.
+
+**Eval pipeline**: Background self-evaluation via EvalActor (gocron scheduler). Scores conversations using deterministic signals (tool errors, corrections, retries, effort overrides). Mines failure patterns. Generates memory candidates via Claude (read-only, no tools). Human approval via Telegram inline keyboards. Enabled via `[eval]` config section.
 
 **Streaming**: Text deltas -> Telegram message edits (500ms debounce). Overflow splits at paragraph boundaries, closes/reopens code fences. Rate-limited HTML edits retry once. `flushing` flag prevents lock contention.
 
@@ -87,7 +89,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/claude/client.go` | Claude API streaming + non-streaming client (direct mode) |
 | `internal/claude/subprocess.go` | CLI subprocess manager + stream-json parser (CLI mode) |
 | `cmd/curlycatclaw/mcp_server.go` | MCP stdio server exposing built-in skills + proxy for runtime MCP extensions |
-| `internal/telegram/channel.go` | Telegram channel actor |
+| `internal/telegram/channel.go` | Telegram channel actor (go-telegram/bot v1.20.0, Bot API 9.5) |
 | `internal/memory/store.go` | SQLite storage |
 | `internal/mcp/manager.go` | MCP server lifecycle |
 | `internal/memory/embedder.go` | Embedder interface + FNV/Ollama/Voyage implementations |
@@ -111,6 +113,13 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/skillloader/loader.go` | External skill collection loader (exec adapter) |
 | `internal/memory/migration.go` | Background embedding migration manager (backfill, catch-up, alias swap) |
 | `cmd/curlycatclaw/migrate.go` | CLI embedder migration tool (manual fallback, versioned collections + aliases) |
+| `cmd/curlycatclaw/eval_export.go` | CLI eval export tool (conversation quality labeling) |
+| `cmd/curlycatclaw/eval_seed.go` | CLI eval seeder (synthetic conversations for validation) |
+| `internal/eval/actor.go` | EvalActor: supervised background eval with gocron scheduler |
+| `internal/eval/scorer.go` | ConversationScorer: deterministic quality signals from SQLite |
+| `internal/eval/miner.go` | FailureMiner: cluster low-scoring conversations by failure type |
+| `internal/eval/candidate.go` | CandidateGenerator: Claude proposes memory fixes per failure |
+| `internal/eval/gate.go` | CommitGate: confidence-based gating with approve/reject |
 | `internal/email/actor.go` | Email Ingest Actor (background Gmail polling, two-stage filter, Claude extraction to observations) |
 | `skills/send_file.go` | Send file skill (Telegram document delivery) |
 | `cmd/curlycatclaw-gws-mcp/main.go` | GWS MCP server entrypoint, multi-account env parsing (`GWS_ACCOUNT_*`, `_SERVICES`) |
@@ -129,6 +138,8 @@ Auth modes: `cli_path` + `oauth_token` (Claude subscription via CLI subprocess) 
 For Google Workspace, export credentials on a machine with a browser (`gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json`). Single-account: set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` in `[mcp.servers.env]`. Multi-account: use `GWS_ACCOUNT_<NAME>` env vars with optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions and `GWS_DEFAULT_ACCOUNT`. See `config.toml.example`.
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
+
+For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
 
 ## gstack
 
