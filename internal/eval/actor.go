@@ -16,12 +16,14 @@ import (
 
 // ActorConfig holds the configuration for the EvalActor.
 type ActorConfig struct {
-	DBPath             string  // path to SQLite database
-	Schedule           string  // cron expression (5-field)
-	LookbackHours      int     // hours of history per run
-	ScoreThreshold     float64 // below this triggers failure mining
-	ReportChatID       int64   // Telegram chat ID for eval reports
-	MaxCandidatesPerRun int    // cap on memory candidates per run
+	DBPath              string  // path to SQLite database
+	Schedule            string  // cron expression (5-field)
+	LookbackHours       int     // hours of history per run
+	ScoreThreshold      float64 // below this triggers failure mining
+	ReportChatID        int64   // Telegram chat ID for eval reports
+	MaxCandidatesPerRun int     // cap on memory candidates per run
+	AutoCommit          bool    // Phase 3: enable auto-commit for high-confidence candidates
+	CandidateExpiryDays int     // pending candidates expire after N days (0 = no expiry)
 }
 
 // Actor is a supervised actor that runs the self-evaluation pipeline on a schedule.
@@ -65,7 +67,7 @@ func NewActor(cfg ActorConfig, store *memory.Store, tg chan<- telegram.OutgoingM
 		miner:        NewMiner(readDB),
 		reporter:     NewReporter(tg),
 		candidateGen: cg,
-		gate:         NewGate(store.DB(), false), // Phase 2: no auto-commit
+		gate:         NewGate(store.DB(), cfg.AutoCommit),
 	}, nil
 }
 
@@ -106,6 +108,19 @@ func (a *Actor) Run(ctx context.Context) error {
 
 // runPipeline executes one full evaluation cycle: scan → score → mine → report.
 func (a *Actor) runPipeline(ctx context.Context) {
+	// Expire old pending candidates before running.
+	if a.cfg.CandidateExpiryDays > 0 {
+		result, err := a.store.DB().Exec(
+			`UPDATE memory_candidates SET status = 'expired', reviewed_at = ? WHERE status = 'pending' AND created_at < ?`,
+			time.Now().UTC(), time.Now().UTC().Add(-time.Duration(a.cfg.CandidateExpiryDays)*24*time.Hour),
+		)
+		if err == nil {
+			if n, _ := result.RowsAffected(); n > 0 {
+				slog.Info("eval: expired stale candidates", "count", n)
+			}
+		}
+	}
+
 	// Overlap guard: check if a run is already in progress.
 	var running int
 	a.store.DB().QueryRow(`SELECT COUNT(*) FROM eval_runs WHERE status = 'running'`).Scan(&running) //nolint:errcheck

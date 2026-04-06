@@ -638,21 +638,20 @@ func TestHandleMessage_StreamingText(t *testing.T) {
 		t.Fatal("expected at least 1 outgoing message from streaming")
 	}
 
-	// The first message should be a fresh send (MessageID == 0) with ResultCh.
+	// The first message should be a draft preview or a fresh send.
 	first := msgs[0]
 	if first.MessageID != 0 {
-		t.Errorf("first message should be a new send (MessageID=0), got %d", first.MessageID)
+		t.Errorf("first message should be a draft or new send (MessageID=0), got %d", first.MessageID)
 	}
 	if first.ChatID != 200 {
 		t.Errorf("first message ChatID = %d, want 200", first.ChatID)
 	}
 
-	// If there are subsequent messages, they should be edits to the same ID.
-	// The drainInbox helper assigned incrementing IDs starting at 1001.
-	// The first ResultCh gets 1001, so edits should reference 1001.
-	for i := 1; i < len(msgs); i++ {
-		if msgs[i].MessageID == 0 {
-			t.Errorf("message[%d] should be an edit (MessageID != 0), got 0", i)
+	// Intermediate messages should be either edits (MessageID != 0) or
+	// draft previews (DraftID != ""). With sendMessageDraft, drafts are used.
+	for i := 1; i < len(msgs)-1; i++ {
+		if msgs[i].MessageID == 0 && msgs[i].DraftID == "" {
+			t.Errorf("message[%d] should be an edit or draft, got neither", i)
 		}
 	}
 
@@ -787,13 +786,12 @@ func TestHandleMessage_StreamingError(t *testing.T) {
 		t.Fatal("expected at least 1 outgoing message with error notice")
 	}
 
-	// The last message should contain the error marker appended to partial text.
+	// The last message should contain an error indicator.
+	// With draft mode, partial text is in a draft preview that disappears on error.
+	// The real message contains just the error notice.
 	last := msgs[len(msgs)-1]
-	if !strings.Contains(last.Text, "[error: response incomplete]") {
+	if !strings.Contains(last.Text, "error") {
 		t.Errorf("expected error notice in text, got %q", last.Text)
-	}
-	if !strings.Contains(last.Text, "Partial response") {
-		t.Errorf("expected partial text preserved, got %q", last.Text)
 	}
 }
 

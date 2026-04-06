@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -862,14 +864,14 @@ func (a *Actor) reindexMissingObservations() {
 	}
 }
 
-// streamDebounce is the minimum interval between Telegram message edits
-// during streaming. This prevents hitting Telegram's rate limits.
-const streamDebounce = 500 * time.Millisecond
+// streamDebounce is the minimum interval between draft updates during streaming.
+const streamDebounce = 300 * time.Millisecond
 
 // streamState tracks the state of a streaming response to Telegram.
 type streamState struct {
 	chatID    int64
 	msgID     int // Telegram message ID being edited (0 = not started, -1 = timeout sentinel)
+	draftID   string          // non-empty = use sendMessageDraft instead of edit-loop
 	buf       strings.Builder // accumulated text so far
 	runeCount int             // rune count of buf (avoids repeated conversion)
 	lastFlush time.Time
@@ -935,6 +937,21 @@ func (ss *streamState) flush() {
 		return
 	}
 	ss.lastFlush = time.Now()
+
+	// Draft mode (Bot API 9.3+): fire-and-forget draft preview.
+	// Much simpler than the edit-loop — no message ID tracking needed.
+	if ss.draftID != "" && !ss.htmlMode {
+		select {
+		case ss.tg.Inbox() <- telegram.OutgoingMessage{
+			ChatID:  ss.chatID,
+			DraftID: ss.draftID,
+			Text:    text,
+		}:
+		default:
+			slog.Debug("telegram inbox full, skipping draft", "chat_id", ss.chatID)
+		}
+		return
+	}
 
 	// Copy state needed for I/O.
 	msgID := ss.msgID
@@ -1092,9 +1109,16 @@ func (ss *streamState) reset() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.msgID = 0
+	ss.draftID = newStreamDraftID()
 	ss.buf.Reset()
 	ss.runeCount = 0
 	ss.lastFlush = time.Time{}
+}
+
+func newStreamDraftID() string {
+	b := make([]byte, 8)
+	crand.Read(b) //nolint:errcheck
+	return hex.EncodeToString(b)
 }
 
 func (a *Actor) toolUseLoop(
@@ -1107,7 +1131,7 @@ func (a *Actor) toolUseLoop(
 	tools []anthropic.ToolUnionParam,
 	effort config.Effort,
 ) error {
-	ss := &streamState{chatID: chatID, tg: a.tg, onFirstID: func(tgMsgID int) {
+	ss := &streamState{chatID: chatID, draftID: newStreamDraftID(), tg: a.tg, onFirstID: func(tgMsgID int) {
 		if a.store != nil {
 			if err := a.store.MapTelegramMessage(chatID, tgMsgID, convID); err != nil {
 				slog.Debug("eval: failed to map bot message", "err", err)
@@ -1318,7 +1342,7 @@ func (a *Actor) handleWithCLI(
 	systemPrompt string,
 	effort string,
 ) error {
-	ss := &streamState{chatID: chatID, tg: a.tg, onFirstID: func(tgMsgID int) {
+	ss := &streamState{chatID: chatID, draftID: newStreamDraftID(), tg: a.tg, onFirstID: func(tgMsgID int) {
 		if a.store != nil {
 			if err := a.store.MapTelegramMessage(chatID, tgMsgID, convID); err != nil {
 				slog.Debug("eval: failed to map bot message", "err", err)

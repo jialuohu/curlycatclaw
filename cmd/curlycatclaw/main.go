@@ -655,6 +655,8 @@ func run(configPath string) error {
 			ScoreThreshold:      cfg.Eval.ScoreThreshold,
 			ReportChatID:        reportChatID,
 			MaxCandidatesPerRun: cfg.Eval.MaxCandidatesPerRun,
+			AutoCommit:          cfg.Eval.AutoCommit,
+			CandidateExpiryDays: cfg.Eval.CandidateExpiryDays,
 		}, store, tg.Inbox(), evalLLM)
 		if evalErr != nil {
 			slog.Error("eval actor creation failed", "err", evalErr)
