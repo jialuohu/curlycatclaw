@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.26.1] - 2026-04-05
+
+Self-evaluation pipeline foundation and Telegram library modernization. The bot can now track interaction events, receive reactions, and run background evaluation on conversation quality.
+
+### Added
+- **Eval pipeline (Phase 0+1)**: EvalActor with gocron scheduler, ConversationScorer (deterministic signals), FailureMiner (failure clustering), TelegramReporter (plain text summaries)
+- **Interaction event logging**: `/effort` and `/retry` commands persisted as events for eval scoring
+- **Telegram message mapping**: bot response messages mapped to conversations for reaction joining
+- **Reaction support**: Telegram thumbs up/down reactions captured and stored with dedup
+- **Eval export CLI**: `--eval-export` flag for manual conversation quality labeling
+- **EvalConfig**: `[eval]` config section with schedule, lookback, threshold settings
+- **New SQLite tables**: interaction_events, telegram_message_map, eval_reactions, eval_runs, failure_clusters, memory_candidates, eval_scores
+- **Time-based indexes** on messages.created_at and tool_calls.created_at for eval scanning
+
+### Changed
+- **Telegram library migrated**: go-telegram-bot-api/v5 (dead, Dec 2021) replaced with go-telegram/bot v1.20.0 (Bot API 9.5)
+- **Handler-based architecture**: bot.Start(ctx) with defaultHandler dispatching messages and reactions
+- **context.Context on all Telegram API calls**
+- **MessageStore interface extended** with eval methods (LogInteractionEvent, MapTelegramMessage, LogEvalReaction)
+
 ## [0.26.0] - 2026-04-05
 
 Multi-account Google Workspace. Use multiple Google accounts through a single GWS MCP server with per-account service restrictions. Claude picks the right account for each operation.

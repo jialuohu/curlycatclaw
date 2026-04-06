@@ -29,6 +29,10 @@ type MessageStore interface {
 	RecoverableSummarizations() ([]string, error)
 	GetSummaryText(convID string) (string, error)
 	GetMaxMessageRowid(convID string) (int64, error)
+	LogInteractionEvent(convID string, userID, chatID int64, eventType, payload string) error
+	MapTelegramMessage(chatID int64, tgMsgID int, convID string) error
+	LookupConversationByTelegramMessage(chatID int64, tgMsgID int) (string, error)
+	LogEvalReaction(convID string, userID, chatID int64, tgMsgID int, reaction string) error
 }
 
 // FactProvider abstracts user fact retrieval for the session actor.
@@ -62,6 +66,8 @@ type VectorIndexer interface {
 type TelegramTransport interface {
 	Inbox() chan<- telegram.OutgoingMessage
 	Updates() <-chan telegram.IncomingMessage
+	Reactions() <-chan telegram.ReactionEvent
+	Callbacks() <-chan telegram.CallbackEvent
 	SendTyping(chatID int64)
 	SendDocument(chatID int64, fileName string, data []byte, caption string) error
 }

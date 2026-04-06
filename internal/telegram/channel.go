@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,7 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/mdhtml"
@@ -75,14 +77,38 @@ func (m IncomingMessage) Photos() []Attachment {
 	return out
 }
 
+// InlineButton represents a single button in a Telegram inline keyboard.
+type InlineButton struct {
+	Text         string // button label
+	CallbackData string // data sent back when pressed
+}
+
 // OutgoingMessage represents a message to be sent to a Telegram chat.
 type OutgoingMessage struct {
 	ChatID    int64
 	Text      string
-	ReplyTo   int      // 0 means no reply
-	MessageID int      // nonzero = edit existing message instead of sending new
-	ResultCh  chan int  // if non-nil, the created/edited MessageID is sent back
-	HTML      bool     // if true, convert markdown to Telegram HTML before sending
+	ReplyTo   int            // 0 means no reply
+	MessageID int            // nonzero = edit existing message instead of sending new
+	ResultCh  chan int        // if non-nil, the created/edited MessageID is sent back
+	HTML      bool           // if true, convert markdown to Telegram HTML before sending
+	Buttons   [][]InlineButton // inline keyboard rows (nil = no keyboard)
+}
+
+// ReactionEvent represents a reaction update from Telegram.
+type ReactionEvent struct {
+	ChatID    int64
+	UserID    int64
+	MessageID int
+	Emoji     string // e.g. "👍", "👎"
+}
+
+// CallbackEvent represents a callback query from an inline keyboard button press.
+type CallbackEvent struct {
+	ID        string // callback query ID (for answering)
+	ChatID    int64
+	UserID    int64
+	MessageID int
+	Data      string // callback_data from the button
 }
 
 // Channel is the Telegram transport actor. It bridges the Telegram Bot API
@@ -91,10 +117,12 @@ type Channel struct {
 	cfg     config.TGConfig
 	allowed map[int64]struct{} // empty map means allow all
 
-	inbox   chan OutgoingMessage  // session -> telegram
-	updates chan IncomingMessage  // telegram -> session
-	typing  chan int64            // chat IDs to send typing action to
-	docSend chan docSendRequest   // document send requests
+	inbox     chan OutgoingMessage // session -> telegram
+	updates   chan IncomingMessage // telegram -> session
+	typing    chan int64           // chat IDs to send typing action to
+	docSend   chan docSendRequest  // document send requests
+	reactions chan ReactionEvent   // reaction updates from telegram
+	callbacks chan CallbackEvent   // callback query events from inline keyboards
 }
 
 // docSendRequest is an internal request to send a document.
@@ -120,12 +148,14 @@ func NewChannel(cfg config.TGConfig) (*Channel, error) {
 	}
 
 	return &Channel{
-		cfg:     cfg,
-		allowed: allowed,
-		inbox:   make(chan OutgoingMessage, channelBuffer),
-		updates: make(chan IncomingMessage, channelBuffer),
-		typing:  make(chan int64, channelBuffer),
-		docSend: make(chan docSendRequest, 8),
+		cfg:       cfg,
+		allowed:   allowed,
+		inbox:     make(chan OutgoingMessage, channelBuffer),
+		updates:   make(chan IncomingMessage, channelBuffer),
+		typing:    make(chan int64, channelBuffer),
+		docSend:   make(chan docSendRequest, 8),
+		reactions: make(chan ReactionEvent, channelBuffer),
+		callbacks: make(chan CallbackEvent, channelBuffer),
 	}, nil
 }
 
@@ -140,30 +170,49 @@ func (ch *Channel) Inbox() chan<- OutgoingMessage { return ch.inbox }
 // get incoming user messages.
 func (ch *Channel) Updates() <-chan IncomingMessage { return ch.updates }
 
-// Run implements actor.Actor. It connects to the Telegram Bot API, fans
-// incoming updates into the Updates channel, and sends outgoing messages
-// from the Inbox channel. It blocks until ctx is cancelled.
+// Reactions returns a receive-only channel for Telegram reaction events.
+func (ch *Channel) Reactions() <-chan ReactionEvent { return ch.reactions }
+
+// Callbacks returns a receive-only channel for inline keyboard callback events.
+func (ch *Channel) Callbacks() <-chan CallbackEvent { return ch.callbacks }
+
+// Run implements actor.Actor. It connects to the Telegram Bot API using the
+// go-telegram/bot library with handler-based update routing. Incoming messages
+// and reactions are dispatched via registered handlers. Outgoing messages are
+// processed from the Inbox channel. Blocks until ctx is cancelled.
 func (ch *Channel) Run(ctx context.Context) error {
-	bot, err := tgbotapi.NewBotAPI(ch.cfg.Token)
+	b, err := bot.New(ch.cfg.Token,
+		bot.WithDefaultHandler(ch.defaultHandler),
+		bot.WithAllowedUpdates(bot.AllowedUpdates{
+			models.AllowedUpdateMessage,
+			models.AllowedUpdateMessageReaction,
+			models.AllowedUpdateCallbackQuery,
+		}),
+	)
 	if err != nil {
 		return fmt.Errorf("telegram: create bot: %w", err)
 	}
 
-	slog.Info("telegram bot authorised", "username", bot.Self.UserName)
+	me, err := b.GetMe(ctx)
+	if err != nil {
+		return fmt.Errorf("telegram: get bot info: %w", err)
+	}
+	slog.Info("telegram bot authorised", "username", me.Username)
 
 	// Register slash commands so they show in Telegram's autocomplete menu.
-	commands := tgbotapi.NewSetMyCommands(
-		tgbotapi.BotCommand{Command: "effort", Description: "Show or set thinking effort level (low/medium/high/max)"},
-		tgbotapi.BotCommand{Command: "retry", Description: "Replay last message at higher effort"},
-		tgbotapi.BotCommand{Command: "debug", Description: "Toggle tool call visibility (on/off)"},
-	)
-	if _, err := bot.Request(commands); err != nil {
+	_, err = b.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+		Commands: []models.BotCommand{
+			{Command: "effort", Description: "Show or set thinking effort level (low/medium/high/max)"},
+			{Command: "retry", Description: "Replay last message at higher effort"},
+			{Command: "debug", Description: "Toggle tool call visibility (on/off)"},
+		},
+	})
+	if err != nil {
 		slog.Warn("telegram: failed to register bot commands", "err", err)
 	}
 
-	ucfg := tgbotapi.NewUpdate(0)
-	ucfg.Timeout = 30
-	tgUpdates := bot.GetUpdatesChan(ucfg)
+	// Start polling in a background goroutine. The library handles long polling internally.
+	go b.Start(ctx)
 
 	rateTick := time.NewTicker(sendInterval)
 	defer rateTick.Stop()
@@ -171,105 +220,110 @@ func (ch *Channel) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			bot.StopReceivingUpdates()
-			// Do not close(ch.updates) here — the session actor's select
-			// may still be reading from it, and closing would race with
-			// sends from handleUpdate. The GC will collect the channel
-			// once all references are dropped.
 			return ctx.Err()
 
-		case upd, ok := <-tgUpdates:
-			if !ok {
-				return fmt.Errorf("telegram: update channel closed")
-			}
-			ch.handleUpdate(upd, bot)
-
 		case msg := <-ch.inbox:
-			ch.sendMessage(bot, msg, rateTick)
+			ch.sendMessage(ctx, b, msg, rateTick)
 
 		case chatID := <-ch.typing:
-			action := tgbotapi.NewChatAction(chatID, "typing")
-			if _, err := bot.Send(action); err != nil {
+			if _, err := b.SendChatAction(ctx, &bot.SendChatActionParams{
+				ChatID: chatID,
+				Action: models.ChatActionTyping,
+			}); err != nil {
 				slog.Debug("telegram: typing action failed", "chat_id", chatID, "err", err)
 			}
 
 		case req := <-ch.docSend:
-			doc := tgbotapi.NewDocument(req.ChatID, tgbotapi.FileBytes{Name: req.FileName, Bytes: req.Data})
-			if req.Caption != "" {
-				doc.Caption = req.Caption
-			}
-			_, err := bot.Send(doc)
+			_, sendErr := b.SendDocument(ctx, &bot.SendDocumentParams{
+				ChatID:  req.ChatID,
+				Document: &models.InputFileUpload{Filename: req.FileName, Data: bytes.NewReader(req.Data)},
+				Caption: req.Caption,
+			})
 			if req.ErrCh != nil {
-				req.ErrCh <- err
+				req.ErrCh <- sendErr
 			}
 		}
 	}
 }
 
-// handleUpdate filters and forwards a single Telegram update.
-func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
-	slog.Info("telegram: raw update received", "update_id", upd.UpdateID, "has_message", upd.Message != nil)
+// defaultHandler processes all incoming updates. It dispatches messages to the
+// updates channel, reactions to the reactions channel, and callbacks to the callbacks channel.
+func (ch *Channel) defaultHandler(ctx context.Context, b *bot.Bot, upd *models.Update) {
+	if upd.CallbackQuery != nil {
+		ch.handleCallback(ctx, b, upd.CallbackQuery)
+		return
+	}
+
+	if upd.MessageReaction != nil {
+		ch.handleReaction(upd.MessageReaction)
+		return
+	}
+
 	if upd.Message == nil || upd.Message.From == nil {
 		return
 	}
 
-	// Accept messages with text, photos, documents, voice, or combinations.
-	hasText := upd.Message.Text != "" || upd.Message.Caption != ""
-	hasPhoto := len(upd.Message.Photo) > 0
-	hasDocument := upd.Message.Document != nil
-	hasVoice := upd.Message.Voice != nil
-	hasAudio := upd.Message.Audio != nil
+	ch.handleMessage(ctx, b, upd.Message)
+}
+
+// handleMessage filters and forwards a single Telegram message.
+func (ch *Channel) handleMessage(ctx context.Context, b *bot.Bot, msg *models.Message) {
+	slog.Info("telegram: raw message received", "message_id", msg.ID, "chat_id", msg.Chat.ID)
+
+	hasText := msg.Text != "" || msg.Caption != ""
+	hasPhoto := len(msg.Photo) > 0
+	hasDocument := msg.Document != nil
+	hasVoice := msg.Voice != nil
+	hasAudio := msg.Audio != nil
 	if !hasText && !hasPhoto && !hasDocument && !hasVoice && !hasAudio {
 		return
 	}
 
-	userID := upd.Message.From.ID
+	userID := msg.From.ID
 	if !ch.isAllowed(userID) {
-		slog.Warn("telegram: ignoring message from disallowed user",
-			"user_id", userID,
-		)
+		slog.Warn("telegram: ignoring message from disallowed user", "user_id", userID)
 		return
 	}
 
-	text := upd.Message.Text
-	if text == "" && upd.Message.Caption != "" {
-		text = upd.Message.Caption
+	text := msg.Text
+	if text == "" && msg.Caption != "" {
+		text = msg.Caption
 	}
 
-	msg := IncomingMessage{
-		ChatID:    upd.Message.Chat.ID,
+	incoming := IncomingMessage{
+		ChatID:    msg.Chat.ID,
 		UserID:    userID,
 		Text:      text,
-		MessageID: upd.Message.MessageID,
-		ChatType:  upd.Message.Chat.Type,
+		MessageID: msg.ID,
+		ChatType:  string(msg.Chat.Type),
 	}
 
 	// Download attachments.
 	if hasPhoto {
-		photos := upd.Message.Photo
+		photos := msg.Photo
 		best := photos[len(photos)-1] // last = largest
-		att, err := ch.downloadFile(bot, best.FileID, AttachPhoto, "", maxDownloadBytes)
+		att, err := ch.downloadFile(ctx, b, best.FileID, AttachPhoto, "", maxDownloadBytes)
 		if err != nil {
 			slog.Warn("telegram: failed to download photo", "err", err)
 		} else {
-			msg.Attachments = append(msg.Attachments, att)
+			incoming.Attachments = append(incoming.Attachments, att)
 		}
 	}
 	if hasDocument {
-		doc := upd.Message.Document
-		att, err := ch.downloadFile(bot, doc.FileID, AttachDocument, doc.FileName, maxDownloadBytes)
+		doc := msg.Document
+		att, err := ch.downloadFile(ctx, b, doc.FileID, AttachDocument, doc.FileName, maxDownloadBytes)
 		if err != nil {
 			slog.Warn("telegram: failed to download document", "err", err)
 		} else {
 			if doc.MimeType != "" {
 				att.MimeType = doc.MimeType
 			}
-			msg.Attachments = append(msg.Attachments, att)
+			incoming.Attachments = append(incoming.Attachments, att)
 		}
 	}
 	if hasVoice {
-		v := upd.Message.Voice
-		att, err := ch.downloadFile(bot, v.FileID, AttachVoice, "", maxDownloadBytes)
+		v := msg.Voice
+		att, err := ch.downloadFile(ctx, b, v.FileID, AttachVoice, "", maxDownloadBytes)
 		if err != nil {
 			slog.Warn("telegram: failed to download voice", "err", err)
 		} else {
@@ -279,12 +333,12 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 			} else if att.MimeType == "" {
 				att.MimeType = "audio/ogg"
 			}
-			msg.Attachments = append(msg.Attachments, att)
+			incoming.Attachments = append(incoming.Attachments, att)
 		}
 	}
 	if hasAudio {
-		a := upd.Message.Audio
-		att, err := ch.downloadFile(bot, a.FileID, AttachAudio, a.FileName, maxDownloadBytes)
+		a := msg.Audio
+		att, err := ch.downloadFile(ctx, b, a.FileID, AttachAudio, a.FileName, maxDownloadBytes)
 		if err != nil {
 			slog.Warn("telegram: failed to download audio", "err", err)
 		} else {
@@ -292,21 +346,76 @@ func (ch *Channel) handleUpdate(upd tgbotapi.Update, bot *tgbotapi.BotAPI) {
 				att.MimeType = a.MimeType
 			}
 			att.Duration = a.Duration
-			msg.Attachments = append(msg.Attachments, att)
+			incoming.Attachments = append(incoming.Attachments, att)
 		}
 	}
 
-	ch.updates <- msg
+	ch.updates <- incoming
+}
+
+// handleReaction processes a Telegram reaction update and forwards it to the reactions channel.
+func (ch *Channel) handleReaction(reaction *models.MessageReactionUpdated) {
+	if reaction.User == nil {
+		return
+	}
+	if !ch.isAllowed(reaction.User.ID) {
+		return
+	}
+
+	// Extract the new emoji reaction (if any).
+	for _, r := range reaction.NewReaction {
+		if r.Type == models.ReactionTypeTypeEmoji && r.ReactionTypeEmoji != nil {
+			select {
+			case ch.reactions <- ReactionEvent{
+				ChatID:    reaction.Chat.ID,
+				UserID:    reaction.User.ID,
+				MessageID: reaction.MessageID,
+				Emoji:     r.ReactionTypeEmoji.Emoji,
+			}:
+			default:
+				slog.Warn("telegram: reaction channel full, dropping", "chat_id", reaction.Chat.ID)
+			}
+		}
+	}
+}
+
+// handleCallback processes a Telegram callback query from an inline keyboard button press.
+func (ch *Channel) handleCallback(ctx context.Context, b *bot.Bot, cq *models.CallbackQuery) {
+	if !ch.isAllowed(cq.From.ID) {
+		return
+	}
+
+	// Answer the callback to dismiss the loading indicator.
+	b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cq.ID}) //nolint:errcheck
+
+	msgID := 0
+	chatID := int64(0)
+	if cq.Message.Message != nil {
+		msgID = cq.Message.Message.ID
+		chatID = cq.Message.Message.Chat.ID
+	}
+
+	select {
+	case ch.callbacks <- CallbackEvent{
+		ID:        cq.ID,
+		ChatID:    chatID,
+		UserID:    cq.From.ID,
+		MessageID: msgID,
+		Data:      cq.Data,
+	}:
+	default:
+		slog.Warn("telegram: callback channel full, dropping", "data", cq.Data)
+	}
 }
 
 // downloadFile fetches any file from Telegram servers and returns it as an Attachment.
-func (ch *Channel) downloadFile(bot *tgbotapi.BotAPI, fileID string, kind AttachmentKind, fileName string, maxBytes int64) (Attachment, error) {
-	file, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+func (ch *Channel) downloadFile(ctx context.Context, b *bot.Bot, fileID string, kind AttachmentKind, fileName string, maxBytes int64) (Attachment, error) {
+	file, err := b.GetFile(ctx, &bot.GetFileParams{FileID: fileID})
 	if err != nil {
 		return Attachment{}, fmt.Errorf("get file: %w", err)
 	}
 
-	fileURL := file.Link(bot.Token)
+	fileURL := b.FileDownloadLink(file)
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(fileURL) //nolint:gosec // URL from Telegram API
 	if err != nil {
@@ -374,7 +483,7 @@ func (ch *Channel) isAllowed(userID int64) bool {
 // edits the existing message instead of creating a new one. If ResultCh is
 // set, it sends the message ID of the created/edited message back.
 // For new messages that exceed 4096 runes, it splits into chunks.
-func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTick *time.Ticker) {
+func (ch *Channel) sendMessage(ctx context.Context, b *bot.Bot, msg OutgoingMessage, rateTick *time.Ticker) {
 	// Edit existing message (streaming update path).
 	if msg.MessageID != 0 {
 		// Telegram edit limit is 4096 runes; truncate if needed.
@@ -383,21 +492,25 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 			r := []rune(text)
 			text = string(r[:maxMessageLen-3]) + "..."
 		}
-		edit := tgbotapi.NewEditMessageText(msg.ChatID, msg.MessageID, text)
-		if msg.HTML {
-			edit.Text = mdhtml.ConvertSafe(text)
-			edit.ParseMode = tgbotapi.ModeHTML
+		params := &bot.EditMessageTextParams{
+			ChatID:    msg.ChatID,
+			MessageID: msg.MessageID,
+			Text:      text,
 		}
-		if _, err := bot.Send(edit); err != nil {
+		if msg.HTML {
+			params.Text = mdhtml.ConvertSafe(text)
+			params.ParseMode = models.ParseModeHTML
+		}
+		if _, err := b.EditMessageText(ctx, params); err != nil {
 			// Retry without parse mode if Telegram can't parse the HTML.
 			if msg.HTML && strings.Contains(err.Error(), "can't parse entities") {
 				slog.Warn("telegram: HTML parse failed, retrying as plain text",
 					"chat_id", msg.ChatID,
 					"message_id", msg.MessageID,
 				)
-				edit.Text = msg.Text
-				edit.ParseMode = ""
-				if _, retryErr := bot.Send(edit); retryErr != nil {
+				params.Text = msg.Text
+				params.ParseMode = ""
+				if _, retryErr := b.EditMessageText(ctx, params); retryErr != nil {
 					slog.Warn("telegram: failed to edit message (plain retry)",
 						"chat_id", msg.ChatID,
 						"message_id", msg.MessageID,
@@ -412,7 +525,7 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 					"message_id", msg.MessageID,
 				)
 				time.Sleep(3 * time.Second)
-				if _, retryErr := bot.Send(edit); retryErr != nil {
+				if _, retryErr := b.EditMessageText(ctx, params); retryErr != nil {
 					slog.Warn("telegram: failed to edit message (rate limit retry)",
 						"chat_id", msg.ChatID,
 						"message_id", msg.MessageID,
@@ -437,18 +550,28 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 	chunks := chunkMessage(msg.Text)
 
 	for i, chunk := range chunks {
-		mc := tgbotapi.NewMessage(msg.ChatID, chunk)
+		params := &bot.SendMessageParams{
+			ChatID: msg.ChatID,
+			Text:   chunk,
+		}
 		if msg.HTML {
-			mc.Text = mdhtml.ConvertSafe(chunk)
-			mc.ParseMode = tgbotapi.ModeHTML
+			params.Text = mdhtml.ConvertSafe(chunk)
+			params.ParseMode = models.ParseModeHTML
 		}
 
 		// Only the first chunk replies to the original message.
 		if i == 0 && msg.ReplyTo != 0 {
-			mc.ReplyToMessageID = msg.ReplyTo
+			params.ReplyParameters = &models.ReplyParameters{
+				MessageID: msg.ReplyTo,
+			}
 		}
 
-		sent, err := bot.Send(mc)
+		// Attach inline keyboard to the last chunk only.
+		if i == len(chunks)-1 && len(msg.Buttons) > 0 {
+			params.ReplyMarkup = buildInlineKeyboard(msg.Buttons)
+		}
+
+		sent, err := b.SendMessage(ctx, params)
 		if err != nil {
 			// Retry without parse mode if Telegram can't parse the HTML.
 			if msg.HTML && strings.Contains(err.Error(), "can't parse entities") {
@@ -456,9 +579,9 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 					"chat_id", msg.ChatID,
 					"chunk", i+1,
 				)
-				mc.Text = chunk
-				mc.ParseMode = ""
-				sent, err = bot.Send(mc)
+				params.Text = chunk
+				params.ParseMode = ""
+				sent, err = b.SendMessage(ctx, params)
 			}
 			if err != nil {
 				slog.Error("telegram: failed to send message",
@@ -475,7 +598,7 @@ func (ch *Channel) sendMessage(bot *tgbotapi.BotAPI, msg OutgoingMessage, rateTi
 
 		// Send back the message ID of the first chunk (for streaming).
 		if i == 0 && msg.ResultCh != nil {
-			msg.ResultCh <- sent.MessageID
+			msg.ResultCh <- sent.ID
 		}
 
 		// Wait for the rate-limit ticker before sending the next chunk.
@@ -621,4 +744,20 @@ func runeOffsetToByteOffset(s string, n int) int {
 		offset += size
 	}
 	return offset
+}
+
+// buildInlineKeyboard converts rows of InlineButton to a Telegram InlineKeyboardMarkup.
+func buildInlineKeyboard(rows [][]InlineButton) *models.InlineKeyboardMarkup {
+	var keyboard [][]models.InlineKeyboardButton
+	for _, row := range rows {
+		var kbRow []models.InlineKeyboardButton
+		for _, btn := range row {
+			kbRow = append(kbRow, models.InlineKeyboardButton{
+				Text:         btn.Text,
+				CallbackData: btn.CallbackData,
+			})
+		}
+		keyboard = append(keyboard, kbRow)
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: keyboard}
 }
