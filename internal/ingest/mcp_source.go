@@ -271,10 +271,17 @@ func DiscoverGmailAccounts(ctx context.Context, mcp ToolRouter, ownerUID, ownerC
 		return []string{""}, nil
 	}
 
+	// Unwrap MCP {"text": "..."} envelope if present.
+	raw := result
+	var textEnvelope struct{ Text string `json:"text"` }
+	if json.Unmarshal([]byte(result), &textEnvelope) == nil && textEnvelope.Text != "" {
+		raw = textEnvelope.Text
+	}
+
 	var accounts []struct {
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal([]byte(result), &accounts); err != nil {
+	if err := json.Unmarshal([]byte(raw), &accounts); err != nil {
 		return []string{""}, nil
 	}
 

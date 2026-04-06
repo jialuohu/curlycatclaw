@@ -488,13 +488,13 @@ func run(configPath string) error {
 	var ingestLLM ingest.LLMClient
 	if claudeClient != nil {
 		ingestLLM = claudeClient
-	} else if cfg.Claude.CLIPath != "" && cfg.Claude.OAuthToken != "" {
-		ingestLLM = &claude.CLISender{
-			CLIPath:    cfg.Claude.CLIPath,
-			OAuthToken: cfg.Claude.OAuthToken,
-			Model:      string(cfg.Claude.Model),
+	} else if cliManager != nil && cfg.Claude.OAuthToken != "" {
+		ingestModel := cfg.Memory.Observations.ExtractionModel
+		if ingestModel == "" {
+			ingestModel = string(cfg.Claude.Model)
 		}
-		slog.Info("ingest: using CLI mode for LLM extraction")
+		ingestLLM = claude.NewPersistentCLISender(cliManager, ingestModel, 0)
+		slog.Info("ingest: using persistent CLI mode for LLM extraction", "model", ingestModel)
 	}
 	if len(cfg.Ingest.Sources) > 0 && ingestLLM != nil && len(cfg.Telegram.AllowedID) > 0 {
 		ownerUID := cfg.Telegram.AllowedID[0]
@@ -769,6 +769,22 @@ func buildIngestSources(ctx context.Context, cfg *config.Config, mcpRouter inges
 			if err != nil {
 				slog.Warn("gmail account discovery failed, using single-account", "err", err)
 				accounts = []string{""}
+			}
+
+			// Filter to configured accounts if specified.
+			if len(src.Accounts) > 0 {
+				allowed := make(map[string]bool, len(src.Accounts))
+				for _, a := range src.Accounts {
+					allowed[a] = true
+				}
+				var filtered []string
+				for _, a := range accounts {
+					if allowed[a] {
+						filtered = append(filtered, a)
+					}
+				}
+				slog.Info("gmail account filter applied", "discovered", len(accounts), "allowed", len(filtered), "accounts", filtered)
+				accounts = filtered
 			}
 
 			for _, account := range accounts {
