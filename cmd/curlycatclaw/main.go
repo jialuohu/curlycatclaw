@@ -22,7 +22,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/actor"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
-	emailingest "github.com/jialuohu/curlycatclaw/internal/email"
+	"github.com/jialuohu/curlycatclaw/internal/ingest"
 	"github.com/jialuohu/curlycatclaw/internal/eval"
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
@@ -482,24 +482,35 @@ func run(configPath string) error {
 	// Create reminder actor.
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh, cronRunner)
 
-	// Create email ingest actor (background email-to-observation processing).
-	var emailActor *emailingest.Actor
-	if cfg.EmailIngest.Enabled && claudeClient != nil && len(cfg.Telegram.AllowedID) > 0 {
+	// Create generic ingest actor (background knowledge source processing).
+	var ingestActor *ingest.Actor
+	if len(cfg.Ingest.Sources) > 0 && claudeClient != nil && len(cfg.Telegram.AllowedID) > 0 {
 		ownerUID := cfg.Telegram.AllowedID[0]
-		var emailVS emailingest.VectorIndexer
+		var ingestVS ingest.VectorIndexer
 		if vectorStore != nil {
-			emailVS = vectorStore
+			ingestVS = vectorStore
 		}
-		emailActor = emailingest.New(
-			cfg.EmailIngest,
-			claudeClient,
-			mcpMgr,
-			store,
-			emailVS,
-			ownerUID,
-			ownerUID, // chatID same as userID for private chats
-		)
-		slog.Info("email ingest actor enabled", "interval_min", cfg.EmailIngest.IntervalMinutes)
+
+		sources, err := buildIngestSources(ctx, cfg, mcpMgr, ownerUID)
+		if err != nil {
+			slog.Error("failed to build ingest sources", "err", err)
+		} else if len(sources) > 0 {
+			ingestActor = ingest.New(sources, claudeClient, store, ingestVS, ownerUID, ownerUID)
+			// Set extractors now that actor exists (needs LLM sender).
+			llmExtractor := ingestActor.MakeLLMExtractor()
+			passthrough := &ingest.PassthroughExtractor{}
+			for i := range sources {
+				switch sources[i].ExtractionMode {
+				case ingest.ExtractionPassthrough:
+					sources[i].Extractor = passthrough
+				case ingest.ExtractionHybrid:
+					sources[i].Extractor = &ingest.HybridExtractor{LLM: llmExtractor, Passthrough: passthrough}
+				default:
+					sources[i].Extractor = llmExtractor
+				}
+			}
+			slog.Info("ingest actor enabled", "sources", len(sources))
+		}
 	}
 
 	// Create session actor.
@@ -657,9 +668,9 @@ func run(configPath string) error {
 
 	slog.Info("curlycatclaw started")
 
-	// Add email ingest actor if enabled.
-	if emailActor != nil {
-		actors = append(actors, emailActor)
+	// Add ingest actor if enabled.
+	if ingestActor != nil {
+		actors = append(actors, ingestActor)
 	}
 
 	// Run actors under supervision.
@@ -688,6 +699,125 @@ func embedderModel(cfg config.VectorConfig) string {
 	default:
 		return ""
 	}
+}
+
+// buildIngestSources creates Source entries from the ingest config.
+func buildIngestSources(ctx context.Context, cfg *config.Config, mcpRouter ingest.ToolRouter, ownerUID int64) ([]ingest.SourceEntry, error) {
+	var entries []ingest.SourceEntry
+
+	for _, src := range cfg.Ingest.Sources {
+		if !src.Enabled {
+			continue
+		}
+
+		trustLevel := ingest.TrustUntrusted
+		if src.TrustLevel == "trusted" {
+			trustLevel = ingest.TrustTrusted
+		}
+
+		extractionMode := ingest.ExtractionLLM
+		switch src.Extraction {
+		case "passthrough":
+			extractionMode = ingest.ExtractionPassthrough
+		case "hybrid":
+			extractionMode = ingest.ExtractionHybrid
+		}
+
+		interval := time.Duration(src.IntervalMinutes) * time.Minute
+
+		// Apply defaults for zero-value caps (prevents blocking all processing).
+		maxDailyObs := src.MaxDailyObservations
+		if maxDailyObs == 0 {
+			maxDailyObs = 100
+		}
+		maxDailyLLM := src.MaxDailyLLMCalls
+		if maxDailyLLM == 0 {
+			maxDailyLLM = 200
+		}
+		maxBodyChars := src.MaxBodyChars
+		if maxBodyChars == 0 {
+			maxBodyChars = 4000
+		}
+
+		switch src.Type {
+		case "gmail":
+			// Discover Gmail accounts for multi-account support.
+			accounts, err := ingest.DiscoverGmailAccounts(ctx, mcpRouter, ownerUID, ownerUID)
+			if err != nil {
+				slog.Warn("gmail account discovery failed, using single-account", "err", err)
+				accounts = []string{""}
+			}
+
+			for _, account := range accounts {
+				gmailSrc := ingest.NewGmailSource(ingest.GmailSourceConfig{
+					Name:        src.Name,
+					Account:     account,
+					MCP:         mcpRouter,
+					OwnerUID:    ownerUID,
+					OwnerCID:    ownerUID,
+					Labels:      src.Prefilter.Labels,
+					SkipSenders: src.Prefilter.SkipSenders,
+				})
+				entries = append(entries, ingest.SourceEntry{
+					Source:         gmailSrc,
+					TrustLevel:     trustLevel,
+					ExtractionMode: extractionMode,
+					ChatType:       "email",
+					Partition:      account,
+					Interval:       interval,
+					BackfillDays:   src.BackfillDays,
+					MaxDailyObs:    maxDailyObs,
+					MaxDailyLLM:    maxDailyLLM,
+					MinImportance:  src.MinImportance,
+					MaxBodyChars:   maxBodyChars,
+				})
+			}
+
+		case "file":
+			fileSrc := ingest.NewFileSource(ingest.FileSourceConfig{
+				Name:         src.Name,
+				RootDir:      src.RootDir,
+				Patterns:     src.Patterns,
+				IncludePaths: src.Prefilter.IncludePaths,
+				ExcludePaths: src.Prefilter.ExcludePaths,
+			})
+			entries = append(entries, ingest.SourceEntry{
+				Source:         fileSrc,
+				TrustLevel:     trustLevel,
+				ExtractionMode: extractionMode,
+				ChatType:       src.Name,
+				Interval:       interval,
+				BackfillDays:   src.BackfillDays,
+				MaxDailyObs:    src.MaxDailyObservations,
+				MaxDailyLLM:    src.MaxDailyLLMCalls,
+				MinImportance:  src.MinImportance,
+				MaxBodyChars:   src.MaxBodyChars,
+			})
+
+		case "notion":
+			notionSrc := ingest.NewNotionSource(ingest.NotionSourceConfig{
+				Name:     src.Name,
+				MCP:      mcpRouter,
+				OwnerUID: ownerUID,
+				OwnerCID: ownerUID,
+			})
+			entries = append(entries, ingest.SourceEntry{
+				Source:         notionSrc,
+				TrustLevel:     trustLevel,
+				ExtractionMode: extractionMode,
+				ChatType:       "notion",
+				Interval:       interval,
+				BackfillDays:   src.BackfillDays,
+				MaxDailyObs:    src.MaxDailyObservations,
+				MaxDailyLLM:    src.MaxDailyLLMCalls,
+				MinImportance:  src.MinImportance,
+				MaxBodyChars:   src.MaxBodyChars,
+			})
+		}
+	}
+
+	// Extractors are set by the caller after actor creation (needs LLM sender).
+	return entries, nil
 }
 
 // reconstructEmbedder recreates the old embedder from stored state and current config.
