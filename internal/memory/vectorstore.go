@@ -999,7 +999,25 @@ func (vs *VectorStore) ensureCollection(ctx context.Context, name string) error 
 		return fmt.Errorf("vectorstore: check collection %s: %w", name, err)
 	}
 	if exists {
-		return nil
+		// Check dimension matches the active embedder. If not, the collection
+		// was created with an old embedder and must be recreated.
+		info, infoErr := vs.client.GetCollectionInfo(ctx, name)
+		if infoErr == nil {
+			existingDim := info.GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize()
+			expectedDim := vs.activeEmbedder().Dimension()
+			if existingDim != expectedDim {
+				slog.Warn("collection dimension mismatch, recreating",
+					"collection", name, "existing", existingDim, "expected", expectedDim)
+				if delErr := vs.client.DeleteCollection(ctx, name); delErr != nil {
+					return fmt.Errorf("vectorstore: delete stale collection %s: %w", name, delErr)
+				}
+				// Fall through to create with correct dimension.
+			} else {
+				return nil // exists with correct dimension
+			}
+		} else {
+			return nil // can't check, assume OK
+		}
 	}
 
 	err = vs.client.CreateCollection(ctx, &qdrant.CreateCollection{
