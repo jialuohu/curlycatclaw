@@ -63,14 +63,14 @@ func (s *GmailSource) Discover(ctx context.Context, cursor json.RawMessage) ([]I
 		}
 	}
 
-	args := map[string]any{"q": query}
+	args := map[string]any{"query": query}
 	if s.account != "" {
 		args["account"] = s.account
 	}
 
-	result, err := s.mcp.CallTool(ctx, "gws__gws_gmail_search", args, s.ownerUID, s.ownerCID)
+	result, err := s.mcp.CallTool(ctx, "gws__gws_gmail_triage", args, s.ownerUID, s.ownerCID)
 	if err != nil {
-		return nil, cursor, fmt.Errorf("gmail search: %w", err)
+		return nil, cursor, fmt.Errorf("gmail triage: %w", err)
 	}
 
 	refs := parseGmailSearchResult(result)
@@ -93,7 +93,7 @@ func (s *GmailSource) Discover(ctx context.Context, cursor json.RawMessage) ([]I
 
 // Read fetches the full email message content.
 func (s *GmailSource) Read(ctx context.Context, id string) (Content, error) {
-	args := map[string]any{"message_id": id}
+	args := map[string]any{"id": id}
 	if s.account != "" {
 		args["account"] = s.account
 	}

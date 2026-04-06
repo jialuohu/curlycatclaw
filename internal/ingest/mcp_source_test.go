@@ -141,7 +141,7 @@ func (m *mockToolRouter) CallTool(_ context.Context, name string, _ map[string]a
 func TestGmailSource_Discover(t *testing.T) {
 	mock := &mockToolRouter{
 		results: map[string]string{
-			"gws__gws_gmail_search": `[{"id":"msg1","from":"alice@test.com","subject":"Test","snippet":"Preview","labelIds":["INBOX"]}]`,
+			"gws__gws_gmail_triage": `[{"id":"msg1","from":"alice@test.com","subject":"Test","snippet":"Preview","labelIds":["INBOX"]}]`,
 		},
 	}
 
@@ -167,7 +167,7 @@ func TestGmailSource_Discover(t *testing.T) {
 func TestGmailSource_Discover_WithCursor(t *testing.T) {
 	mock := &mockToolRouter{
 		results: map[string]string{
-			"gws__gws_gmail_search": `[]`,
+			"gws__gws_gmail_triage": `[]`,
 		},
 	}
 
