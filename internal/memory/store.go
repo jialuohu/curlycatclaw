@@ -1575,12 +1575,13 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("memory: create embedder_state: %w", err)
 	}
 
-	const emailIngestSchema = `
-	CREATE TABLE IF NOT EXISTS email_ingest_state (
-		account TEXT PRIMARY KEY,
+	// Generic ingest tables (replaces email_ingest_state + email_processed_messages).
+	const ingestSchema = `
+	CREATE TABLE IF NOT EXISTS ingest_state (
+		source TEXT NOT NULL,
+		partition TEXT NOT NULL DEFAULT '',
 		mode TEXT NOT NULL DEFAULT 'incremental',
 		cursor TEXT NOT NULL DEFAULT '',
-		backfill_from TEXT NOT NULL DEFAULT '',
 		backfill_cursor TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'idle',
 		stats_scanned INTEGER NOT NULL DEFAULT 0,
@@ -1589,21 +1590,26 @@ func (s *Store) migrate() error {
 		stats_kept INTEGER NOT NULL DEFAULT 0,
 		stats_failed INTEGER NOT NULL DEFAULT 0,
 		last_run_at DATETIME,
-		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (source, partition)
 	);
-	CREATE TABLE IF NOT EXISTS email_processed_messages (
-		account TEXT NOT NULL,
-		message_id TEXT NOT NULL,
+	CREATE TABLE IF NOT EXISTS ingest_processed_items (
+		source TEXT NOT NULL,
+		item_id TEXT NOT NULL,
 		result TEXT NOT NULL,
+		fingerprint TEXT NOT NULL DEFAULT '',
 		attempt_count INTEGER NOT NULL DEFAULT 1,
 		processed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY (account, message_id)
+		PRIMARY KEY (source, item_id)
 	);
-	CREATE INDEX IF NOT EXISTS idx_email_processed_at ON email_processed_messages(processed_at);
+	CREATE INDEX IF NOT EXISTS idx_ingest_processed_at ON ingest_processed_items(processed_at);
 	`
-	if _, err := s.db.Exec(emailIngestSchema); err != nil {
-		return fmt.Errorf("memory: create email ingest tables: %w", err)
+	if _, err := s.db.Exec(ingestSchema); err != nil {
+		return fmt.Errorf("memory: create ingest tables: %w", err)
 	}
+
+	// Migrate legacy email_ingest tables if they exist.
+	s.migrateEmailIngestTables()
 
 	// Eval Phase 0: event model tables for self-evaluation pipeline.
 	const evalEventSchema = `
@@ -2329,40 +2335,73 @@ func (s *Store) EnsureConversation(id string, userID int64) error {
 	return nil
 }
 
-// GetEmailIngestState returns the ingest state for an account.
-func (s *Store) GetEmailIngestState(account string) (mode, cursor, backfillCursor, status string, err error) {
+// migrateEmailIngestTables migrates legacy email_ingest_state and
+// email_processed_messages tables into the new generic ingest tables.
+func (s *Store) migrateEmailIngestTables() {
+	// Check if old table exists.
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='email_ingest_state'`).Scan(&count)
+	if err != nil || count == 0 {
+		return
+	}
+
+	// Migrate state rows.
+	if _, err := s.db.Exec(`
+		INSERT OR IGNORE INTO ingest_state (source, partition, mode, cursor, backfill_cursor, status,
+			stats_scanned, stats_prefiltered, stats_llm_triaged, stats_kept, stats_failed,
+			last_run_at, updated_at)
+		SELECT 'gmail', account, mode, cursor, backfill_cursor, status,
+			stats_scanned, stats_prefiltered, stats_llm_triaged, stats_kept, stats_failed,
+			last_run_at, updated_at
+		FROM email_ingest_state
+	`); err != nil {
+		slog.Warn("ingest: legacy state migration failed", "err", err)
+	}
+
+	// Migrate processed messages.
+	if _, err := s.db.Exec(`
+		INSERT OR IGNORE INTO ingest_processed_items (source, item_id, result, attempt_count, processed_at)
+		SELECT 'gmail', message_id, result, attempt_count, processed_at
+		FROM email_processed_messages
+	`); err != nil {
+		slog.Warn("ingest: legacy processed items migration failed", "err", err)
+	}
+}
+
+// GetIngestState returns the ingest state for a source+partition.
+func (s *Store) GetIngestState(source, partition string) (mode, cursor, backfillCursor, status string, err error) {
 	err = s.db.QueryRow(
-		`SELECT mode, cursor, backfill_cursor, status FROM email_ingest_state WHERE account = ?`,
-		account,
+		`SELECT mode, cursor, backfill_cursor, status FROM ingest_state WHERE source = ? AND partition = ?`,
+		source, partition,
 	).Scan(&mode, &cursor, &backfillCursor, &status)
 	if err == sql.ErrNoRows {
 		return "backfill", "", "", "idle", nil
 	}
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("memory: get email ingest state: %w", err)
+		return "", "", "", "", fmt.Errorf("memory: get ingest state: %w", err)
 	}
 	return
 }
 
-// UpdateEmailIngestState upserts the ingest state for an account.
-func (s *Store) UpdateEmailIngestState(account, mode, cursor, backfillCursor, status string) error {
+// UpdateIngestState upserts the ingest state for a source+partition.
+func (s *Store) UpdateIngestState(source, partition, mode, cursor, backfillCursor, status string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO email_ingest_state (account, mode, cursor, backfill_cursor, status, updated_at)
-		 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		 ON CONFLICT(account) DO UPDATE SET mode=excluded.mode, cursor=excluded.cursor,
+		`INSERT INTO ingest_state (source, partition, mode, cursor, backfill_cursor, status, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(source, partition) DO UPDATE SET mode=excluded.mode, cursor=excluded.cursor,
 		 backfill_cursor=excluded.backfill_cursor, status=excluded.status, updated_at=CURRENT_TIMESTAMP`,
-		account, mode, cursor, backfillCursor, status,
+		source, partition, mode, cursor, backfillCursor, status,
 	)
 	if err != nil {
-		return fmt.Errorf("memory: update email ingest state: %w", err)
+		return fmt.Errorf("memory: update ingest state: %w", err)
 	}
 	return nil
 }
 
-// UpdateEmailIngestStats updates the statistics counters for an account.
-func (s *Store) UpdateEmailIngestStats(account string, scanned, prefiltered, llmTriaged, kept, failed int) error {
+// UpdateIngestStats updates the statistics counters for a source+partition.
+func (s *Store) UpdateIngestStats(source, partition string, scanned, prefiltered, llmTriaged, kept, failed int) error {
 	_, err := s.db.Exec(
-		`UPDATE email_ingest_state SET
+		`UPDATE ingest_state SET
 		 stats_scanned = stats_scanned + ?,
 		 stats_prefiltered = stats_prefiltered + ?,
 		 stats_llm_triaged = stats_llm_triaged + ?,
@@ -2370,53 +2409,70 @@ func (s *Store) UpdateEmailIngestStats(account string, scanned, prefiltered, llm
 		 stats_failed = stats_failed + ?,
 		 last_run_at = CURRENT_TIMESTAMP,
 		 updated_at = CURRENT_TIMESTAMP
-		 WHERE account = ?`,
-		scanned, prefiltered, llmTriaged, kept, failed, account,
+		 WHERE source = ? AND partition = ?`,
+		scanned, prefiltered, llmTriaged, kept, failed, source, partition,
 	)
 	if err != nil {
-		return fmt.Errorf("memory: update email ingest stats: %w", err)
+		return fmt.Errorf("memory: update ingest stats: %w", err)
 	}
 	return nil
 }
 
-// IsEmailProcessed checks if a message has been successfully processed (not failed).
-func (s *Store) IsEmailProcessed(account, messageID string) (bool, error) {
+// IsItemProcessed checks if an item has been successfully processed (not failed).
+func (s *Store) IsItemProcessed(source, itemID string) (bool, error) {
 	var result string
 	err := s.db.QueryRow(
-		`SELECT result FROM email_processed_messages WHERE account = ? AND message_id = ?`,
-		account, messageID,
+		`SELECT result FROM ingest_processed_items WHERE source = ? AND item_id = ?`,
+		source, itemID,
 	).Scan(&result)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("memory: check email processed: %w", err)
+		return false, fmt.Errorf("memory: check item processed: %w", err)
 	}
 	return result != "failed", nil
 }
 
-// RecordEmailProcessed records the processing result for a message.
-func (s *Store) RecordEmailProcessed(account, messageID, result string) error {
+// GetItemFingerprint returns the content fingerprint for a processed item.
+func (s *Store) GetItemFingerprint(source, itemID string) (string, error) {
+	var fingerprint string
+	err := s.db.QueryRow(
+		`SELECT fingerprint FROM ingest_processed_items WHERE source = ? AND item_id = ?`,
+		source, itemID,
+	).Scan(&fingerprint)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("memory: get item fingerprint: %w", err)
+	}
+	return fingerprint, nil
+}
+
+// RecordItemProcessed records the processing result for an item.
+func (s *Store) RecordItemProcessed(source, itemID, result, fingerprint string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO email_processed_messages (account, message_id, result)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(account, message_id) DO UPDATE SET result=excluded.result, attempt_count=attempt_count+1, processed_at=CURRENT_TIMESTAMP`,
-		account, messageID, result,
+		`INSERT INTO ingest_processed_items (source, item_id, result, fingerprint)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(source, item_id) DO UPDATE SET result=excluded.result, fingerprint=excluded.fingerprint,
+		 attempt_count=attempt_count+1, processed_at=CURRENT_TIMESTAMP`,
+		source, itemID, result, fingerprint,
 	)
 	if err != nil {
-		return fmt.Errorf("memory: record email processed: %w", err)
+		return fmt.Errorf("memory: record item processed: %w", err)
 	}
 	return nil
 }
 
-// CleanupOldEmailProcessed removes entries older than the given number of days.
-func (s *Store) CleanupOldEmailProcessed(days int) (int64, error) {
+// CleanupOldProcessedItems removes entries older than the given number of days.
+func (s *Store) CleanupOldProcessedItems(days int) (int64, error) {
 	result, err := s.db.Exec(
-		`DELETE FROM email_processed_messages WHERE processed_at < datetime('now', ?)`,
+		`DELETE FROM ingest_processed_items WHERE processed_at < datetime('now', ?)`,
 		fmt.Sprintf("-%d days", days),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("memory: cleanup old email processed: %w", err)
+		return 0, fmt.Errorf("memory: cleanup old processed items: %w", err)
 	}
 	return result.RowsAffected()
 }
