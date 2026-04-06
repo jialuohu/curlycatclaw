@@ -176,6 +176,9 @@ type SourceConfig struct {
 	MaxBodyChars         int             `toml:"max_body_chars"`
 	Prefilter            PrefilterConfig `toml:"prefilter"`
 
+	// Gmail-specific (type = "gmail").
+	Accounts []string `toml:"accounts"` // if set, only ingest from these accounts
+
 	// File-specific (type = "file").
 	RootDir  string   `toml:"root_dir"`
 	Patterns []string `toml:"patterns"`

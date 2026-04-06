@@ -316,7 +316,8 @@ func (a *Actor) processItems(ctx context.Context, entry SourceEntry, items []Ite
 		// Check if already processed.
 		processed, err := a.store.IsItemProcessed(srcName, item.ID)
 		if err != nil {
-			a.logger.Warn("check processed", "item_id", item.ID, "err", err)
+			a.logger.Warn("check processed, skipping item", "item_id", item.ID, "err", err)
+			continue
 		}
 
 		// For already-processed items, only re-process if the source
@@ -543,8 +544,9 @@ func (a *Actor) recoverStaleStates() {
 			continue
 		}
 		if status == "running" {
-			a.logger.Info("recovering stale running state", "source", srcName, "partition", entry.Partition)
-			_ = a.store.UpdateIngestState(srcName, entry.Partition, "", "", "", "idle")
+			mode, cursor, backfillCursor, _, _ := a.store.GetIngestState(srcName, entry.Partition)
+			a.logger.Info("recovering stale running state", "source", srcName, "partition", entry.Partition, "mode", mode)
+			_ = a.store.UpdateIngestState(srcName, entry.Partition, mode, cursor, backfillCursor, "idle")
 		}
 	}
 }
