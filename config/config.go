@@ -24,7 +24,8 @@ type Config struct {
 	Logging          LoggingConfig          `toml:"logging"`
 	Health           HealthConfig           `toml:"health"`
 	Voice            VoiceConfig            `toml:"voice"`
-	EmailIngest      EmailIngestConfig      `toml:"email_ingest"`
+	Ingest           IngestConfig           `toml:"ingest"`
+	EmailIngest      EmailIngestConfig      `toml:"email_ingest"` // deprecated: backward compat
 	ConfirmTools     []string               `toml:"confirm_tools"`
 	Projects         []ProjectConfig        `toml:"projects"`
 	SkillCollections []SkillCollectionConfig `toml:"skill_collections"`
@@ -155,7 +156,40 @@ type MemoryConfig struct {
 	Observations         ObservationsConfig `toml:"observations"`
 }
 
-// EmailIngestConfig controls background email-to-observation processing.
+// IngestConfig controls the generic knowledge source ingest pipeline.
+type IngestConfig struct {
+	Sources []SourceConfig `toml:"sources"`
+}
+
+// SourceConfig defines a single knowledge source for the ingest pipeline.
+type SourceConfig struct {
+	Name                 string          `toml:"name"`
+	Type                 string          `toml:"type"` // "gmail", "file", "notion"
+	Enabled              bool            `toml:"enabled"`
+	IntervalMinutes      int             `toml:"interval_minutes"`
+	BackfillDays         int             `toml:"backfill_days"`
+	TrustLevel           string          `toml:"trust_level"` // "trusted" or "untrusted"
+	Extraction           string          `toml:"extraction"`  // "llm", "passthrough", "hybrid"
+	MaxDailyObservations int             `toml:"max_daily_observations"`
+	MaxDailyLLMCalls     int             `toml:"max_daily_llm_calls"`
+	MinImportance        int             `toml:"min_importance"`
+	MaxBodyChars         int             `toml:"max_body_chars"`
+	Prefilter            PrefilterConfig `toml:"prefilter"`
+
+	// File-specific (type = "file").
+	RootDir  string   `toml:"root_dir"`
+	Patterns []string `toml:"patterns"`
+}
+
+// PrefilterConfig holds source-specific prefilter settings.
+type PrefilterConfig struct {
+	Labels       []string `toml:"labels"`
+	SkipSenders  []string `toml:"skip_senders"`
+	IncludePaths []string `toml:"include_paths"`
+	ExcludePaths []string `toml:"exclude_paths"`
+}
+
+// EmailIngestConfig is the deprecated config format for backward compatibility.
 type EmailIngestConfig struct {
 	Enabled              bool     `toml:"enabled"`
 	IntervalMinutes      int      `toml:"interval_minutes"`
@@ -166,6 +200,37 @@ type EmailIngestConfig struct {
 	MinImportance        int      `toml:"min_importance"`
 	Labels               []string `toml:"labels"`
 	SkipSenders          []string `toml:"skip_senders"`
+}
+
+// MigrateEmailIngest converts the deprecated [email_ingest] config into the
+// first entry of the new [[ingest.sources]] array for backward compatibility.
+func (c *Config) MigrateEmailIngest() {
+	if !c.EmailIngest.Enabled {
+		return
+	}
+	// Don't add if user already has a gmail source configured.
+	for _, src := range c.Ingest.Sources {
+		if src.Type == "gmail" {
+			return
+		}
+	}
+	c.Ingest.Sources = append([]SourceConfig{{
+		Name:                 "gmail",
+		Type:                 "gmail",
+		Enabled:              true,
+		IntervalMinutes:      c.EmailIngest.IntervalMinutes,
+		BackfillDays:         c.EmailIngest.BackfillDays,
+		TrustLevel:           "untrusted",
+		Extraction:           "llm",
+		MaxDailyObservations: c.EmailIngest.MaxDailyObservations,
+		MaxDailyLLMCalls:     c.EmailIngest.MaxDailyLLMCalls,
+		MinImportance:        c.EmailIngest.MinImportance,
+		MaxBodyChars:         4000,
+		Prefilter: PrefilterConfig{
+			Labels:      c.EmailIngest.Labels,
+			SkipSenders: c.EmailIngest.SkipSenders,
+		},
+	}}, c.Ingest.Sources...)
 }
 
 // ObservationsConfig controls automatic observation extraction and retrieval.
@@ -299,6 +364,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	// Backward compat: migrate deprecated [email_ingest] to [[ingest.sources]].
+	cfg.MigrateEmailIngest()
+
 	// Allow environment variables to override path-related fields so a
 	// single config.toml can be shared between local and Docker runs.
 	cfg.applyEnvOverrides()
@@ -424,15 +492,39 @@ func (c *Config) validate() error {
 	if c.Voice.Enabled && c.Voice.OpenAIAPIKey == "" {
 		return fmt.Errorf("config: voice.openai_api_key is required when voice is enabled")
 	}
-	if c.EmailIngest.Enabled {
-		if c.EmailIngest.IntervalMinutes < 1 {
-			return fmt.Errorf("config: email_ingest.interval_minutes must be >= 1")
+	for i, src := range c.Ingest.Sources {
+		if !src.Enabled {
+			continue
 		}
-		if c.EmailIngest.BackfillDays < 0 {
-			return fmt.Errorf("config: email_ingest.backfill_days must be >= 0")
+		if src.Name == "" {
+			return fmt.Errorf("config: ingest.sources[%d].name is required", i)
 		}
-		if c.EmailIngest.MinImportance < 1 || c.EmailIngest.MinImportance > 10 {
-			return fmt.Errorf("config: email_ingest.min_importance must be 1-10")
+		switch src.Type {
+		case "gmail", "file", "notion":
+		default:
+			return fmt.Errorf("config: ingest.sources[%d].type must be gmail, file, or notion; got %q", i, src.Type)
+		}
+		if src.IntervalMinutes < 1 {
+			return fmt.Errorf("config: ingest.sources[%d].interval_minutes must be >= 1", i)
+		}
+		if src.BackfillDays < 0 {
+			return fmt.Errorf("config: ingest.sources[%d].backfill_days must be >= 0", i)
+		}
+		if src.MinImportance < 1 || src.MinImportance > 10 {
+			return fmt.Errorf("config: ingest.sources[%d].min_importance must be 1-10", i)
+		}
+		if src.Type == "file" && src.RootDir == "" {
+			return fmt.Errorf("config: ingest.sources[%d].root_dir is required for file sources", i)
+		}
+		switch src.TrustLevel {
+		case "", "trusted", "untrusted":
+		default:
+			return fmt.Errorf("config: ingest.sources[%d].trust_level must be trusted or untrusted; got %q", i, src.TrustLevel)
+		}
+		switch src.Extraction {
+		case "", "llm", "passthrough", "hybrid":
+		default:
+			return fmt.Errorf("config: ingest.sources[%d].extraction must be llm, passthrough, or hybrid; got %q", i, src.Extraction)
 		}
 	}
 	if c.Eval.Enabled {

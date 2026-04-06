@@ -69,7 +69,9 @@ curlycatclaw --migrate-embedder --dry-run  # count texts only, no modifications
 
 Goroutine-based actor model under supervision. See [docs/architecture.md](docs/architecture.md) for full diagrams and details.
 
-**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Email Ingest Actor (background email-to-observation processing). Each actor panics safely and restarts with exponential backoff.
+**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Ingest Actor (background multi-source knowledge ingestion). Each actor panics safely and restarts with exponential backoff.
+
+**Ingest pipeline**: Generic `IngestActor` processes configured knowledge sources (Gmail via MCP, Obsidian via filesystem, Notion via MCP). Config-driven via `[[ingest.sources]]`. Each source implements `Source` interface (Discover/Read/Prefilter). Three extractors: LLM (trusted/untrusted prompts), Passthrough (YAML front matter), Hybrid. Per-source cursors, daily caps, trust levels. Content fingerprint tracking for mutable-source re-extraction. Stale "running" state recovery on startup. Deprecated `[email_ingest]` auto-migrates.
 
 **Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control. Document attachments: PDFs sent as native document blocks (both modes), text files inlined into message (CLI) or as text blocks (API).
 
@@ -127,6 +129,11 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/skillloader/loader.go` | External skill collection loader (exec adapter) |
 | `internal/memory/migration.go` | Background embedding migration manager (backfill, catch-up, alias swap) |
 | `cmd/curlycatclaw/migrate.go` | CLI embedder migration tool (manual fallback, versioned collections + aliases) |
+| `internal/ingest/source.go` | Source interface, ItemRef, Content types for generic ingest pipeline |
+| `internal/ingest/actor.go` | Generic IngestActor (background multi-source knowledge ingestion) |
+| `internal/ingest/mcp_source.go` | GmailSource (multi-account MCP) and NotionSource implementations |
+| `internal/ingest/file_source.go` | FileSource for Obsidian vaults (directory walker, mtime cursor, symlink escape) |
+| `internal/ingest/extract.go` | LLM/Passthrough/Hybrid extractors with trusted/untrusted prompt templates |
 | `cmd/curlycatclaw/eval_export.go` | CLI eval export tool (conversation quality labeling) |
 | `cmd/curlycatclaw/eval_seed.go` | CLI eval seeder (synthetic conversations for validation) |
 | `internal/eval/actor.go` | EvalActor: supervised background eval with gocron scheduler |
@@ -134,7 +141,6 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/eval/miner.go` | FailureMiner: cluster low-scoring conversations by failure type |
 | `internal/eval/candidate.go` | CandidateGenerator: Claude proposes memory fixes per failure |
 | `internal/eval/gate.go` | CommitGate: confidence-based gating with approve/reject |
-| `internal/email/actor.go` | Email Ingest Actor (background Gmail polling, two-stage filter, Claude extraction to observations) |
 | `internal/security/credential.go` | AES-256-GCM encrypted credential store for MCP server secrets |
 | `internal/memory/context.go` | Memory context builder for conversation priming |
 | `skills/note.go` | Note management skills (create, list, read, delete) |
