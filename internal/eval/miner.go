@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -127,7 +126,6 @@ func (m *Miner) mineToolErrors(runID, convID string) ([]FailureCluster, error) {
 
 	var clusters []FailureCluster
 	for _, g := range groups {
-		callIDsJSON, _ := json.Marshal(g.callIDs)
 		clusters = append(clusters, FailureCluster{
 			ID:              newID(),
 			EvalRunID:       runID,
@@ -139,7 +137,6 @@ func (m *Miner) mineToolErrors(runID, convID string) ([]FailureCluster, error) {
 			Frequency:       len(g.callIDs),
 			CreatedAt:       time.Now().UTC(),
 		})
-		_ = callIDsJSON // used for persistence in actor
 	}
 
 	return clusters, nil

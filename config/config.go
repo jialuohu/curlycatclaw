@@ -435,6 +435,17 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: email_ingest.min_importance must be 1-10")
 		}
 	}
+	if c.Eval.Enabled {
+		if c.Eval.LookbackHours < 1 {
+			return fmt.Errorf("config: eval.lookback_hours must be >= 1")
+		}
+		if c.Eval.ScoreThreshold < 0 || c.Eval.ScoreThreshold > 1.0 {
+			return fmt.Errorf("config: eval.score_threshold must be 0.0-1.0")
+		}
+		if c.Eval.MaxCandidatesPerRun < 1 {
+			return fmt.Errorf("config: eval.max_candidates_per_run must be >= 1")
+		}
+	}
 	for i, sc := range c.SkillCollections {
 		if sc.Path == "" {
 			return fmt.Errorf("config: skill_collections[%d].path is required", i)

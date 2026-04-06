@@ -1767,8 +1767,9 @@ func (s *Store) LookupConversationByTelegramMessage(chatID int64, tgMsgID int) (
 // LogEvalReaction records a Telegram reaction (thumbs up/down) on a bot message.
 func (s *Store) LogEvalReaction(convID string, userID, chatID int64, tgMsgID int, reaction string) error {
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO eval_reactions (conversation_id, user_id, chat_id, telegram_message_id, reaction, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO eval_reactions (conversation_id, user_id, chat_id, telegram_message_id, reaction, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, chat_id, telegram_message_id) DO UPDATE SET reaction = excluded.reaction, created_at = excluded.created_at`,
 		convID, userID, chatID, tgMsgID, reaction, time.Now().UTC(),
 	)
 	if err != nil {
