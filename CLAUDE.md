@@ -36,6 +36,8 @@ go test ./... -count=1   # must all pass
 
 If `golangci-lint` is not installed, at minimum run `go vet ./...`. But CI uses `golangci-lint v2` with errcheck, staticcheck, and unused enabled, so `go vet` alone is not sufficient. Install it: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
 
+CI also runs `govulncheck ./...` (continue-on-error) and tests with `-race` flag.
+
 Test expectations:
 - When writing new functions, write a corresponding test
 - When fixing a bug, write a regression test
@@ -52,6 +54,16 @@ Version is tracked in the `VERSION` file (currently source of truth). Follows se
 - **z (patch)**: Bug fixes and patches
 
 Goreleaser injects the version into the binary via `-X main.version={{.Version}}` from git tags. Update `VERSION` and `CHANGELOG.md` when releasing.
+
+## CLI Subcommands
+
+```bash
+curlycatclaw --config PATH       # path to config.toml (default: ~/.curlycatclaw/config.toml)
+curlycatclaw --version            # print version and exit
+curlycatclaw --mcp-server         # run as MCP stdio server (spawned by claude CLI)
+curlycatclaw --migrate-embedder   # wipe and rebuild vector collections with configured embedder
+curlycatclaw --migrate-embedder --dry-run  # count texts only, no modifications
+```
 
 ## Architecture
 
@@ -121,6 +133,9 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/eval/candidate.go` | CandidateGenerator: Claude proposes memory fixes per failure |
 | `internal/eval/gate.go` | CommitGate: confidence-based gating with approve/reject |
 | `internal/email/actor.go` | Email Ingest Actor (background Gmail polling, two-stage filter, Claude extraction to observations) |
+| `internal/security/credential.go` | AES-256-GCM encrypted credential store for MCP server secrets |
+| `internal/memory/context.go` | Memory context builder for conversation priming |
+| `skills/note.go` | Note management skills (create, list, read, delete) |
 | `skills/send_file.go` | Send file skill (Telegram document delivery) |
 | `cmd/curlycatclaw-gws-mcp/main.go` | GWS MCP server entrypoint, multi-account env parsing (`GWS_ACCOUNT_*`, `_SERVICES`) |
 | `cmd/curlycatclaw-gws-mcp/executor.go` | GWS CLI subprocess runner, account resolution, service validation, per-call env overrides |
@@ -140,6 +155,8 @@ For Google Workspace, export credentials on a machine with a browser (`gws auth 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 
 For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
+
+Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format.
 
 ## gstack
 
