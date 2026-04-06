@@ -121,6 +121,14 @@ func parseCandidateResponse(resp string, runID string, cluster FailureCluster) (
 		return nil, fmt.Errorf("empty title or summary")
 	}
 
+	// Validate candidate type against allowed set.
+	switch cj.Type {
+	case "observation", "fact", "prompt_note":
+		// valid
+	default:
+		cj.Type = "observation" // default to observation for unrecognized types
+	}
+
 	// Clamp confidence.
 	if cj.Confidence < 0 {
 		cj.Confidence = 0
