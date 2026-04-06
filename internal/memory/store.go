@@ -1191,6 +1191,19 @@ func (s *Store) UpdateObservation(id string, userID int64, title, summary, obsTy
 	if len(setClauses) == 0 {
 		return fmt.Errorf("memory: no fields to update")
 	}
+	// Recompute content_hash if title or summary changed.
+	if title != "" || summary != "" {
+		var curTitle, curSummary string
+		_ = s.db.QueryRow(`SELECT title, summary FROM observations WHERE id = ? AND user_id = ?`, id, userID).Scan(&curTitle, &curSummary)
+		if title != "" {
+			curTitle = title
+		}
+		if summary != "" {
+			curSummary = summary
+		}
+		setClauses = append(setClauses, "content_hash = ?")
+		args = append(args, observationContentHash(curTitle, curSummary))
+	}
 	query := "UPDATE observations SET " + strings.Join(setClauses, ", ") + " WHERE id = ? AND user_id = ? AND archived_at IS NULL"
 	args = append(args, id, userID)
 	res, err := s.db.Exec(query, args...)

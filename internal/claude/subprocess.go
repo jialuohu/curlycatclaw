@@ -289,15 +289,28 @@ func (m *CLIManager) GetOrCreate(ctx context.Context, userID, chatID int64, para
 	if m.spawning == nil {
 		m.spawning = make(map[userKey]chan struct{})
 	}
-	done := make(chan struct{})
-	m.spawning[key] = done
+	spawnDone := make(chan struct{})
+	m.spawning[key] = spawnDone
 	m.mu.Unlock()
+
+	// Ensure spawning entry is cleaned up even if spawn() panics,
+	// so concurrent waiters aren't stuck forever.
+	cleaned := false
+	defer func() {
+		if !cleaned {
+			m.mu.Lock()
+			delete(m.spawning, key)
+			close(spawnDone)
+			m.mu.Unlock()
+		}
+	}()
 
 	proc, err = m.spawn(ctx, params)
 
 	m.mu.Lock()
 	delete(m.spawning, key)
-	close(done) // unblock any waiters
+	close(spawnDone) // unblock any waiters
+	cleaned = true
 	if err == nil {
 		m.processes[key] = proc
 	}
@@ -470,9 +483,16 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 	go func() {
 		for scanner.Scan() {
 			line := append([]byte(nil), scanner.Bytes()...)
-			scanCh <- ScanResult{Line: line, OK: true}
+			select {
+			case scanCh <- ScanResult{Line: line, OK: true}:
+			case <-done:
+				return
+			}
 		}
-		scanCh <- ScanResult{OK: false, Err: scanner.Err()}
+		select {
+		case scanCh <- ScanResult{OK: false, Err: scanner.Err()}:
+		case <-done:
+		}
 	}()
 
 	proc := &CLIProcess{

@@ -76,14 +76,24 @@ func (s *Scorer) ScoreConversation(convID string) (*ConversationSignals, error) 
 	// Count interaction events (retries, effort overrides).
 	// Events may have empty conversation_id (logged before conversation lookup),
 	// so also match by (user_id, chat_id) within the conversation's time window.
-	rows, err := s.db.Query(
-		`SELECT event_type FROM interaction_events
-		 WHERE conversation_id = ?
-		    OR (conversation_id = '' AND user_id = ? AND chat_id = ?
-		        AND created_at BETWEEN ? AND ?)`,
-		convID, sig.UserID, sig.ChatID,
-		firstAt.String, lastAt.String,
-	)
+	// Only use the time-window fallback when we have valid timestamps.
+	var rows *sql.Rows
+	if firstAt.Valid && lastAt.Valid {
+		rows, err = s.db.Query(
+			`SELECT event_type FROM interaction_events
+			 WHERE conversation_id = ?
+			    OR (conversation_id = '' AND user_id = ? AND chat_id = ?
+			        AND created_at BETWEEN ? AND ?)`,
+			convID, sig.UserID, sig.ChatID,
+			firstAt.String, lastAt.String,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT event_type FROM interaction_events
+			 WHERE conversation_id = ?`,
+			convID,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("eval: query interaction events: %w", err)
 	}

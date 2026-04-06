@@ -365,6 +365,12 @@ func (s *NotionSource) Prefilter(_ ItemRef) bool { return true }
 // Notion JSON parsing helpers.
 
 func parseNotionSearchResult(result string) ([]ItemRef, string) {
+	// Unwrap MCP {"text": "..."} envelope if present.
+	var searchEnvelope struct{ Text string `json:"text"` }
+	if json.Unmarshal([]byte(result), &searchEnvelope) == nil && searchEnvelope.Text != "" {
+		result = searchEnvelope.Text
+	}
+
 	var resp struct {
 		Results []struct {
 			ID         string `json:"id"`
@@ -417,6 +423,12 @@ func parseNotionSearchResult(result string) ([]ItemRef, string) {
 }
 
 func parseNotionPage(result, pageID string) Content {
+	// Unwrap MCP {"text": "..."} envelope if present.
+	var pageEnvelope struct{ Text string `json:"text"` }
+	if json.Unmarshal([]byte(result), &pageEnvelope) == nil && pageEnvelope.Text != "" {
+		result = pageEnvelope.Text
+	}
+
 	var page struct {
 		Title   string `json:"title"`
 		Content string `json:"content"`

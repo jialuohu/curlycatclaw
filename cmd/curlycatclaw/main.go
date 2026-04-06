@@ -827,10 +827,10 @@ func buildIngestSources(ctx context.Context, cfg *config.Config, mcpRouter inges
 				ChatType:       src.Name,
 				Interval:       interval,
 				BackfillDays:   src.BackfillDays,
-				MaxDailyObs:    src.MaxDailyObservations,
-				MaxDailyLLM:    src.MaxDailyLLMCalls,
+				MaxDailyObs:    maxDailyObs,
+				MaxDailyLLM:    maxDailyLLM,
 				MinImportance:  src.MinImportance,
-				MaxBodyChars:   src.MaxBodyChars,
+				MaxBodyChars:   maxBodyChars,
 			})
 
 		case "notion":
@@ -847,10 +847,10 @@ func buildIngestSources(ctx context.Context, cfg *config.Config, mcpRouter inges
 				ChatType:       "notion",
 				Interval:       interval,
 				BackfillDays:   src.BackfillDays,
-				MaxDailyObs:    src.MaxDailyObservations,
-				MaxDailyLLM:    src.MaxDailyLLMCalls,
+				MaxDailyObs:    maxDailyObs,
+				MaxDailyLLM:    maxDailyLLM,
 				MinImportance:  src.MinImportance,
-				MaxBodyChars:   src.MaxBodyChars,
+				MaxBodyChars:   maxBodyChars,
 			})
 		}
 	}
