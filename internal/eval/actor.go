@@ -121,22 +121,21 @@ func (a *Actor) runPipeline(ctx context.Context) {
 		}
 	}
 
-	// Overlap guard: check if a run is already in progress.
-	var running int
-	a.store.DB().QueryRow(`SELECT COUNT(*) FROM eval_runs WHERE status = 'running'`).Scan(&running) //nolint:errcheck
-	if running > 0 {
-		slog.Info("eval: skipping run, another is in progress")
-		return
-	}
-
+	// Atomic overlap guard: insert only if no run is already in progress.
 	runID := newID()
 	now := time.Now().UTC()
-	_, err := a.store.DB().Exec(
-		`INSERT INTO eval_runs (id, started_at, status) VALUES (?, ?, 'running')`,
+	result, err := a.store.DB().Exec(
+		`INSERT INTO eval_runs (id, started_at, status)
+		 SELECT ?, ?, 'running'
+		 WHERE NOT EXISTS (SELECT 1 FROM eval_runs WHERE status = 'running')`,
 		runID, now,
 	)
 	if err != nil {
 		slog.Error("eval: failed to create run", "err", err)
+		return
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		slog.Info("eval: skipping run, another is in progress")
 		return
 	}
 

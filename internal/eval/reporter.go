@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
@@ -65,5 +66,6 @@ func (r *Reporter) SendReport(chatID int64, run EvalRun, scores []EvalScore, clu
 	select {
 	case r.tg <- telegram.OutgoingMessage{ChatID: chatID, Text: b.String()}:
 	default:
+		slog.Warn("eval: report dropped, telegram inbox full", "chat_id", chatID)
 	}
 }

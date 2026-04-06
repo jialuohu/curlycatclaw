@@ -1791,7 +1791,7 @@ type InteractionEvent struct {
 // GetInteractionEvents returns interaction events for a conversation, ordered by time.
 func (s *Store) GetInteractionEvents(convID string) ([]InteractionEvent, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conversation_id, user_id, chat_id, event_type, payload, created_at
+		`SELECT id, conversation_id, user_id, chat_id, event_type, COALESCE(payload, ''), created_at
 		 FROM interaction_events WHERE conversation_id = ? ORDER BY created_at ASC`,
 		convID,
 	)
@@ -1817,7 +1817,7 @@ func (s *Store) GetInteractionEvents(convID string) ([]InteractionEvent, error) 
 // These are events logged before conversation lookup (e.g., /effort, /retry commands).
 func (s *Store) GetInteractionEventsByUser(userID, chatID int64) ([]InteractionEvent, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conversation_id, user_id, chat_id, event_type, payload, created_at
+		`SELECT id, conversation_id, user_id, chat_id, event_type, COALESCE(payload, ''), created_at
 		 FROM interaction_events WHERE conversation_id = '' AND user_id = ? AND chat_id = ? ORDER BY created_at ASC`,
 		userID, chatID,
 	)
