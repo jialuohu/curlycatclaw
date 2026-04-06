@@ -63,7 +63,7 @@ func (s *GmailSource) Discover(ctx context.Context, cursor json.RawMessage) ([]I
 		}
 	}
 
-	args := map[string]any{"query": query}
+	args := map[string]any{"query": query, "labels": true}
 	if s.account != "" {
 		args["account"] = s.account
 	}
@@ -192,12 +192,13 @@ func parseGmailSearchResult(result string) []gmailMessageRef {
 	}
 
 	type triageMsg struct {
-		ID      string   `json:"id"`
-		From    string   `json:"from"`
-		Subject string   `json:"subject"`
-		Date    string   `json:"date"`
-		Snippet string   `json:"snippet"`
-		Labels  []string `json:"labelIds"`
+		ID       string   `json:"id"`
+		From     string   `json:"from"`
+		Subject  string   `json:"subject"`
+		Date     string   `json:"date"`
+		Snippet  string   `json:"snippet"`
+		Labels   []string `json:"labels"`   // gws +triage --labels output
+		LabelIDs []string `json:"labelIds"` // fallback for raw API format
 	}
 	var messages []triageMsg
 	if err := json.Unmarshal([]byte(raw), &messages); err != nil {
@@ -213,12 +214,16 @@ func parseGmailSearchResult(result string) []gmailMessageRef {
 
 	var refs []gmailMessageRef
 	for _, m := range messages {
+		labels := m.Labels
+		if len(labels) == 0 {
+			labels = m.LabelIDs // fallback to raw API format
+		}
 		refs = append(refs, gmailMessageRef{
 			id:      m.ID,
 			from:    m.From,
 			subject: m.Subject,
 			snippet: m.Snippet,
-			labels:  m.Labels,
+			labels:  labels,
 		})
 	}
 	return refs
