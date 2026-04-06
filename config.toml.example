@@ -139,17 +139,66 @@ port    = 8080
 # openai_api_key = ""
 # stt_model = "whisper-1"
 
-# Background email-to-observation processing.
-# Requires GWS MCP server with Gmail-enabled accounts.
-[email_ingest]
-enabled = false
-interval_minutes = 15       # poll interval for new emails
-backfill_days = 30           # days of history to backfill on first run
-batch_size = 20              # emails per backfill batch
-max_daily_observations = 100 # per-account daily cap
-max_daily_llm_calls = 200    # cost circuit breaker
-min_importance = 3           # minimum importance to index (1-10)
-labels = ["INBOX"]           # Gmail labels to process
-skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
+# Knowledge source ingest pipeline.
+# Each [[ingest.sources]] entry is an independent source with its own schedule and caps.
+# Types: "gmail" (via GWS MCP), "file" (local directory), "notion" (via Notion MCP).
+
+# Gmail source (requires GWS MCP server with Gmail-enabled accounts).
+# [[ingest.sources]]
+# name = "gmail"
+# type = "gmail"
+# enabled = true
+# interval_minutes = 15
+# backfill_days = 30
+# trust_level = "untrusted"          # blocks preference/commitment extraction
+# extraction = "llm"                 # "llm", "passthrough", or "hybrid"
+# max_daily_observations = 100
+# max_daily_llm_calls = 200
+# min_importance = 3
+# [ingest.sources.prefilter]
+# labels = ["INBOX"]
+# skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
+
+# Obsidian vault (mount directory into Docker as read-only volume).
+# docker-compose: volumes: ["~/.obsidian-vault:/data/obsidian-vault:ro"]
+# [[ingest.sources]]
+# name = "obsidian"
+# type = "file"
+# enabled = true
+# interval_minutes = 60
+# trust_level = "trusted"            # all observation types allowed
+# extraction = "hybrid"              # passthrough for YAML front matter, LLM fallback
+# max_daily_observations = 200
+# max_daily_llm_calls = 300
+# min_importance = 3
+# root_dir = "/data/obsidian-vault"
+# patterns = ["*.md"]
+# [ingest.sources.prefilter]
+# include_paths = ["daily/", "projects/", "references/"]
+# exclude_paths = [".obsidian/", ".trash/", "templates/"]
+
+# Notion workspace (requires notion MCP server).
+# [[ingest.sources]]
+# name = "notion"
+# type = "notion"
+# enabled = false
+# interval_minutes = 30
+# trust_level = "trusted"
+# extraction = "llm"
+# max_daily_observations = 150
+# max_daily_llm_calls = 250
+# min_importance = 3
+
+# DEPRECATED: [email_ingest] still works but auto-migrates to [[ingest.sources]].
+# Prefer the new format above.
+# [email_ingest]
+# enabled = false
+# interval_minutes = 15
+# backfill_days = 30
+# max_daily_observations = 100
+# max_daily_llm_calls = 200
+# min_importance = 3
+# labels = ["INBOX"]
+# skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
 
 # Encrypted MCP credentials: set CURLYCATCLAW_MASTER_KEY env var (64 hex chars).
