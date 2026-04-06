@@ -7,6 +7,21 @@ import (
 	"path/filepath"
 )
 
+// FileQueuer abstracts queuing a file for later delivery (MCP server mode).
+type FileQueuer interface {
+	QueueFile(chatID int64, fileName string, data []byte) error
+}
+
+// QueuedDocumentSender implements DocumentSender by writing to a SQLite queue.
+// Used in MCP server mode where direct Telegram access is unavailable.
+type QueuedDocumentSender struct {
+	Queue FileQueuer
+}
+
+func (q *QueuedDocumentSender) SendDocument(chatID int64, fileName string, data []byte, _ string) error {
+	return q.Queue.QueueFile(chatID, fileName, data)
+}
+
 // DocumentSender abstracts the Telegram document send capability.
 type DocumentSender interface {
 	SendDocument(chatID int64, fileName string, data []byte, caption string) error
@@ -17,8 +32,8 @@ type DocumentSender interface {
 func NewSendFileSkill(sender DocumentSender) *Skill {
 	return &Skill{
 		Name:        "send_file",
-		Description: "Send a file to the user in the current Telegram chat. Use this to deliver generated code, data exports, reports, or any content as a downloadable file.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"filename":{"type":"string","description":"Name for the file (e.g. report.csv, code.go)"},"content":{"type":"string","description":"The file content as text"}},"required":["filename","content"]}`),
+		Description: "Queue a file for delivery to the user in Telegram. Pass the content directly as a string — do NOT write to disk first. The file is delivered after your response completes. Call this exactly once per file.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"filename":{"type":"string","description":"Name for the file (e.g. report.csv, code.go)"},"content":{"type":"string","description":"The full file content as a string. Pass it directly, do not use a file path."}},"required":["filename","content"]}`),
 		Execute:     makeSendFileExecute(sender),
 	}
 }
@@ -57,6 +72,6 @@ func makeSendFileExecute(sender DocumentSender) func(ctx context.Context, input 
 			return "", fmt.Errorf("send document: %w", err)
 		}
 
-		return fmt.Sprintf("File sent: %s (%d bytes)", safeName, len(data)), nil
+		return fmt.Sprintf("File queued: %s (%d bytes). It will be delivered to the user as a Telegram document when this response completes. Do NOT retry or call send_file again for the same file.", safeName, len(data)), nil
 	}
 }

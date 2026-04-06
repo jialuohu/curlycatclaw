@@ -1721,6 +1721,19 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("memory: create eval pipeline tables: %w", err)
 	}
 
+	// Pending outbound files queue (send_file in MCP mode).
+	const pendingFilesSchema = `
+	CREATE TABLE IF NOT EXISTS pending_files (
+		id        INTEGER PRIMARY KEY AUTOINCREMENT,
+		chat_id   INTEGER NOT NULL,
+		file_name TEXT NOT NULL,
+		data      BLOB NOT NULL,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);`
+	if _, err := s.db.Exec(pendingFilesSchema); err != nil {
+		return fmt.Errorf("memory: create pending_files: %w", err)
+	}
+
 	return nil
 }
 
@@ -1874,6 +1887,54 @@ func (s *Store) GetConversationsSince(after time.Time) ([]ConversationMeta, erro
 		convs = append(convs, c)
 	}
 	return convs, rows.Err()
+}
+
+// QueueFile inserts a file into the pending outbound queue.
+func (s *Store) QueueFile(chatID int64, fileName string, data []byte) error {
+	_, err := s.db.Exec(
+		`INSERT INTO pending_files (chat_id, file_name, data) VALUES (?, ?, ?)`,
+		chatID, fileName, data,
+	)
+	return err
+}
+
+// PendingFile represents a file waiting to be sent.
+type PendingFile struct {
+	ID       int64
+	ChatID   int64
+	FileName string
+	Data     []byte
+}
+
+// DrainPendingFiles returns and deletes all pending outbound files.
+func (s *Store) DrainPendingFiles() ([]PendingFile, error) {
+	rows, err := s.db.Query(`SELECT id, chat_id, file_name, data FROM pending_files ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []PendingFile
+	for rows.Next() {
+		var f PendingFile
+		if err := rows.Scan(&f.ID, &f.ChatID, &f.FileName, &f.Data); err != nil {
+			return nil, err
+		}
+		files = append(files, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(files) > 0 {
+		ids := make([]string, len(files))
+		for i, f := range files {
+			ids[i] = fmt.Sprintf("%d", f.ID)
+		}
+		_, _ = s.db.Exec(`DELETE FROM pending_files WHERE id IN (` + strings.Join(ids, ",") + `)`)
+	}
+
+	return files, nil
 }
 
 // parseTimeStr attempts to parse a time string returned by SQLite in various formats.

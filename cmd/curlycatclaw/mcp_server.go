@@ -143,6 +143,9 @@ func runMCPServer() error {
 		reg.Register(skills.InitSupersedeSkill(mcpObsAdapter))
 	}
 
+	// send_file skill (queued mode — files delivered by session actor after tool loop).
+	reg.Register(skills.NewSendFileSkill(&skills.QueuedDocumentSender{Queue: store}))
+
 	// Plugin management skills (optional, requires CLI + isolated home).
 	cliPath := os.Getenv("CURLYCATCLAW_CLI_PATH")
 	isolatedHome := os.Getenv("CURLYCATCLAW_ISOLATED_HOME")
