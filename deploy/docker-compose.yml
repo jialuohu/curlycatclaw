@@ -1,9 +1,0 @@
-# DEPRECATED: This file has been merged into the root docker-compose.yml.
-#
-# The root docker-compose.yml now works for both production and development:
-#   Production: docker compose up -d (pulls pre-built GHCR images)
-#   Development: cp docker-compose.override.yml.example docker-compose.override.yml
-#                docker compose up -d (builds from source)
-#
-# Download the new file:
-#   curl -O https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/docker-compose.yml
