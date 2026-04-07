@@ -7,7 +7,7 @@
 #   3. docker compose -f docker-compose.yml up -d
 services:
   curlycatclaw:
-    image: ghcr.io/jialuohu/curlycatclaw:latest
+    image: ${CURLYCATCLAW_IMAGE:-ghcr.io/jialuohu/curlycatclaw:latest}
     restart: unless-stopped
     volumes:
       - ~/.curlycatclaw:/data
@@ -24,8 +24,30 @@ services:
       timeout: 5s
       retries: 3
 
+  curlycatclaw-updater:
+    image: ghcr.io/jialuohu/curlycatclaw-updater:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.curlycatclaw:/data
+      - .:/compose-project:ro
+    env_file:
+      - path: ~/.curlycatclaw/env
+        required: false
+    environment:
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
+      - SERVICE_NAME=curlycatclaw
+      - HEALTH_URL=http://curlycatclaw:8080/health
+      - UPDATER_SECRET=${UPDATER_SECRET:-}
+    working_dir: /compose-project
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   qdrant:
-    image: qdrant/qdrant:v1.14.0
+    image: qdrant/qdrant:v1.17.1
     restart: unless-stopped
     ports:
       - "127.0.0.1:6333:6333"

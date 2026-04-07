@@ -1,0 +1,5 @@
+FROM docker:27-cli
+COPY curlycatclaw-updater /usr/local/bin/curlycatclaw-updater
+RUN mkdir -p /data
+VOLUME /data
+ENTRYPOINT ["curlycatclaw-updater"]

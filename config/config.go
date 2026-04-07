@@ -30,6 +30,15 @@ type Config struct {
 	Projects         []ProjectConfig        `toml:"projects"`
 	SkillCollections []SkillCollectionConfig `toml:"skill_collections"`
 	Eval             EvalConfig             `toml:"eval"`
+	Update           UpdateConfig           `toml:"update"`
+}
+
+// UpdateConfig controls the self-update system. Requires the curlycatclaw-updater sidecar.
+type UpdateConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	UpdaterURL string `toml:"updater_url"`
+	AutoUpdate bool   `toml:"auto_update"`
+	Schedule   string `toml:"schedule"`
 }
 
 // EvalConfig controls the self-evaluation pipeline.
@@ -361,6 +370,11 @@ func Load(path string) (*Config, error) {
 			MaxCandidatesPerRun:  5,
 			CandidateExpiryDays:  7,
 		},
+		Update: UpdateConfig{
+			Enabled:    false,
+			UpdaterURL: "http://curlycatclaw-updater:8081",
+			Schedule:   "0 3 * * 0",
+		},
 	}
 
 	if err := toml.Unmarshal(data, cfg); err != nil {
@@ -540,6 +554,9 @@ func (c *Config) validate() error {
 		if c.Eval.MaxCandidatesPerRun < 1 {
 			return fmt.Errorf("config: eval.max_candidates_per_run must be >= 1")
 		}
+	}
+	if c.Update.Enabled && c.Update.UpdaterURL == "" {
+		return fmt.Errorf("config: update.updater_url is required when update is enabled")
 	}
 	for i, sc := range c.SkillCollections {
 		if sc.Path == "" {

@@ -24,6 +24,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/internal/update"
 	"github.com/jialuohu/curlycatclaw/internal/voice"
 	"github.com/jialuohu/curlycatclaw/skills"
 )
@@ -105,6 +106,9 @@ type Actor struct {
 
 	// fileDrainer drains pending outbound files queued by send_file in MCP mode.
 	fileDrainer *memory.Store
+
+	// updateClient communicates with the curlycatclaw-updater sidecar (nil when update not configured).
+	updateClient *update.Client
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -125,6 +129,7 @@ func New(
 	transcriber voice.Transcriber,
 	observer *memory.ObservationExtractor,
 	obsStore ObservationStore,
+	updateClient *update.Client,
 ) *Actor {
 	ctxb := memory.NewContextBuilder(store)
 	var vi VectorIndexer
@@ -158,6 +163,7 @@ func New(
 		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
 		debugOverride:  make(map[userKey]bool),
 		fileDrainer:    store,
+		updateClient:   updateClient,
 	}
 }
 
@@ -231,6 +237,40 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 
 	// Handle memory management commands.
 	if a.handleMemoryCommand(msg) {
+		return nil
+	}
+
+	// Handle self-update commands (/update, /status, /rollback).
+	switch {
+	case msg.Text == "/update" || strings.HasPrefix(msg.Text, "/update "):
+		if a.updateClient == nil {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   "Self-update is not configured. Enable [update] in config.toml and deploy the updater sidecar.",
+			})
+			return nil
+		}
+		a.handleUpdateCommand(ctx, msg)
+		return nil
+	case msg.Text == "/status" || strings.HasPrefix(msg.Text, "/status "):
+		if a.updateClient == nil {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   "Self-update is not configured.",
+			})
+			return nil
+		}
+		a.handleStatusCommand(ctx, msg)
+		return nil
+	case msg.Text == "/rollback" || strings.HasPrefix(msg.Text, "/rollback "):
+		if a.updateClient == nil {
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   "Self-update is not configured.",
+			})
+			return nil
+		}
+		a.handleRollbackCommand(ctx, msg)
 		return nil
 	}
 
@@ -1724,11 +1764,184 @@ func (a *Actor) handleProjectCommand(msg telegram.IncomingMessage) error {
 }
 
 // handleCallback processes a Telegram inline keyboard callback.
-// Routes eval approve/reject callbacks to the appropriate handler.
+// Routes eval approve/reject and update confirm/cancel callbacks.
 func (a *Actor) handleCallback(cb telegram.CallbackEvent) {
 	slog.Debug("callback received", "data", cb.Data, "user_id", cb.UserID, "chat_id", cb.ChatID)
-	// Callback data format: "eval:approve:<candidate_id>" or "eval:reject:<candidate_id>"
-	// Phase 2+ will wire this to the eval gate. For now, log it.
+
+	switch cb.Data {
+	case "update:confirm":
+		if a.updateClient == nil {
+			return
+		}
+		a.trySend(telegram.OutgoingMessage{
+			ChatID:    cb.ChatID,
+			MessageID: cb.MessageID,
+			Text:      "Updating... I'll be right back.",
+		})
+		go func() {
+			if err := a.updateClient.Update(a.bgCtx()); err != nil {
+				slog.Error("update failed", "err", err)
+				a.trySend(telegram.OutgoingMessage{
+					ChatID: cb.ChatID,
+					Text:   fmt.Sprintf("Update failed: %v", err),
+				})
+			}
+		}()
+	case "update:cancel":
+		a.trySend(telegram.OutgoingMessage{
+			ChatID:    cb.ChatID,
+			MessageID: cb.MessageID,
+			Text:      "Update cancelled.",
+		})
+	case "rollback:confirm":
+		if a.updateClient == nil {
+			return
+		}
+		a.trySend(telegram.OutgoingMessage{
+			ChatID:    cb.ChatID,
+			MessageID: cb.MessageID,
+			Text:      "Rolling back...",
+		})
+		go func() {
+			resp, err := a.updateClient.Rollback(a.bgCtx())
+			if err != nil {
+				slog.Error("rollback failed", "err", err)
+				a.trySend(telegram.OutgoingMessage{
+					ChatID: cb.ChatID,
+					Text:   fmt.Sprintf("Rollback failed: %v", err),
+				})
+				return
+			}
+			if resp.Success {
+				a.trySend(telegram.OutgoingMessage{
+					ChatID: cb.ChatID,
+					Text:   fmt.Sprintf("Rolled back to %s. Restarting...", resp.Version),
+				})
+			} else {
+				a.trySend(telegram.OutgoingMessage{
+					ChatID: cb.ChatID,
+					Text:   fmt.Sprintf("Rollback failed: %s", resp.Error),
+				})
+			}
+		}()
+	case "rollback:cancel":
+		a.trySend(telegram.OutgoingMessage{
+			ChatID:    cb.ChatID,
+			MessageID: cb.MessageID,
+			Text:      "Rollback cancelled.",
+		})
+	default:
+		// Callback data format: "eval:approve:<candidate_id>" or "eval:reject:<candidate_id>"
+		// Phase 2+ will wire this to the eval gate. For now, log it.
+	}
+}
+
+// handleStatusCommand sends the current updater sidecar status to the user.
+func (a *Actor) handleStatusCommand(ctx context.Context, msg telegram.IncomingMessage) {
+	status, err := a.updateClient.Status(ctx)
+	if err != nil {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Failed to reach updater: %v", err),
+		})
+		return
+	}
+
+	uptime := time.Duration(status.UptimeSeconds) * time.Second
+	var lines []string
+	lines = append(lines, "<b>Updater Status</b>")
+	if status.CurrentVersion != "" {
+		lines = append(lines, fmt.Sprintf("Version: %s", status.CurrentVersion))
+	}
+	lines = append(lines, fmt.Sprintf("Uptime: %s", uptime.Truncate(time.Second)))
+	if status.LastCheck != "" {
+		lines = append(lines, fmt.Sprintf("Last check: %s", status.LastCheck))
+	}
+	if status.Updating {
+		lines = append(lines, "Status: updating...")
+	} else if status.UpdateAvailable {
+		lines = append(lines, fmt.Sprintf("Update available: %s", status.LatestVersion))
+	} else {
+		lines = append(lines, "Up to date.")
+	}
+	if len(status.PreviousDigests) > 0 {
+		lines = append(lines, fmt.Sprintf("Rollback images: %d", len(status.PreviousDigests)))
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   strings.Join(lines, "\n"),
+		HTML:   true,
+	})
+}
+
+// handleUpdateCommand checks for an update and prompts the user to confirm.
+func (a *Actor) handleUpdateCommand(ctx context.Context, msg telegram.IncomingMessage) {
+	a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Checking for updates..."})
+
+	status, err := a.updateClient.Check(ctx)
+	if err != nil {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Update check failed: %v", err),
+		})
+		return
+	}
+
+	if !status.UpdateAvailable {
+		ver := status.CurrentVersion
+		if ver == "" {
+			ver = "unknown"
+		}
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Already up to date (v%s).", ver),
+		})
+		return
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   fmt.Sprintf("Update available: %s\nProceed with update?", status.LatestVersion),
+		Buttons: [][]telegram.InlineButton{
+			{
+				{Text: "Confirm", CallbackData: "update:confirm"},
+				{Text: "Cancel", CallbackData: "update:cancel"},
+			},
+		},
+	})
+}
+
+// handleRollbackCommand prompts the user to confirm a rollback to the previous version.
+func (a *Actor) handleRollbackCommand(ctx context.Context, msg telegram.IncomingMessage) {
+	// Check if rollback is possible by fetching status.
+	status, err := a.updateClient.Status(ctx)
+	if err != nil {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   fmt.Sprintf("Failed to reach updater: %v", err),
+		})
+		return
+	}
+
+	if len(status.PreviousDigests) == 0 {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   "No previous version available to rollback to.",
+		})
+		return
+	}
+
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   "Roll back to the previous version?",
+		Buttons: [][]telegram.InlineButton{
+			{
+				{Text: "Confirm Rollback", CallbackData: "rollback:confirm"},
+				{Text: "Cancel", CallbackData: "rollback:cancel"},
+			},
+		},
+	})
 }
 
 // handleReaction processes a Telegram reaction event by storing it in the eval_reactions table.

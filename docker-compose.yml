@@ -20,6 +20,30 @@ services:
       timeout: 5s
       retries: 3
 
+  curlycatclaw-updater:
+    build:
+      context: .
+      dockerfile: Dockerfile.updater
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.curlycatclaw:/data
+      - .:/compose-project:ro
+    env_file:
+      - path: ~/.curlycatclaw/env
+        required: false
+    environment:
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
+      - SERVICE_NAME=curlycatclaw
+      - HEALTH_URL=http://curlycatclaw:8080/health
+      - UPDATER_SECRET=${UPDATER_SECRET:-}
+    working_dir: /compose-project
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   qdrant:
     image: qdrant/qdrant:v1.17.1
     restart: unless-stopped

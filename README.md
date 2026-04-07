@@ -34,6 +34,8 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - 🔒 **Secure** -- AES-256-GCM encrypted credentials, SSRF protection, user scoping, tool confirmation, Docker isolation
 
+- 🔄 **Self-updating** -- `/update` in Telegram to pull the latest image and restart, `/rollback` to revert, optional auto-update on a cron schedule, all via a lightweight updater sidecar
+
 - 🐳 **Docker ready** -- one command to run with Qdrant + Ollama, health endpoint, supervised actors with auto-restart
 
 ## Quick Start
@@ -61,6 +63,15 @@ docker compose exec ollama ollama pull bge-m3  # first run only
 ```
 
 Then message your Telegram bot. Done.
+
+For self-update support, also start the updater sidecar and set a shared secret in `~/.curlycatclaw/env`:
+
+```bash
+echo "UPDATER_SECRET=$(openssl rand -hex 16)" >> ~/.curlycatclaw/env
+docker compose up -d curlycatclaw-updater
+```
+
+Then use `/update` in Telegram to check for and apply updates.
 
 ## Architecture
 

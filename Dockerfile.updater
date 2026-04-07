@@ -1,0 +1,17 @@
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /updater ./cmd/curlycatclaw-updater
+
+FROM docker:27-cli
+# docker:27-cli includes docker and docker compose CLI.
+# Run as root: the sidecar's purpose is Docker socket access, which requires
+# root or docker group membership. Running as root is standard for Docker
+# socket sidecar containers (Watchtower, Portainer agents follow the same pattern).
+COPY --from=builder /updater /usr/local/bin/curlycatclaw-updater
+RUN mkdir -p /data
+VOLUME /data
+ENTRYPOINT ["curlycatclaw-updater"]

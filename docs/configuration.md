@@ -116,6 +116,20 @@ GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..."
 
 Remove `--read-only` if you need write operations (create issues, comment on PRs). Rebuild and restart.
 
+## Self-Update (optional)
+
+Tell the bot `/update` in Telegram and it pulls the latest Docker image and restarts itself. Requires the `curlycatclaw-updater` sidecar container (see [docker.md](docker.md#updater-sidecar)).
+
+```toml
+[update]
+enabled     = true
+updater_url = "http://curlycatclaw-updater:8081"  # default
+auto_update = false                                # opt-in scheduled updates
+schedule    = "0 3 * * 0"                          # cron (default: weekly Sunday 3am)
+```
+
+Telegram commands: `/update` (check + confirm), `/status` (version, uptime, available update), `/rollback` (revert to previous image with confirmation).
+
 ## Encrypted MCP Credentials
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes). MCP servers, Wasm plugins, cron tasks, and other advanced options are documented in `config.toml.example`.

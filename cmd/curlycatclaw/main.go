@@ -19,6 +19,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/go-co-op/gocron/v2"
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/actor"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
@@ -31,6 +32,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/session"
 	"github.com/jialuohu/curlycatclaw/internal/skillloader"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/internal/update"
 	"github.com/jialuohu/curlycatclaw/internal/voice"
 	"github.com/jialuohu/curlycatclaw/internal/wasm"
 	"github.com/jialuohu/curlycatclaw/skills"
@@ -180,6 +182,17 @@ func run(configPath string) error {
 		return fmt.Errorf("init telegram: %w", err)
 	}
 	slog.Info("telegram channel initialized")
+
+	// Initialize update client (self-update system, optional).
+	var updateClient *update.Client
+	if cfg.Update.Enabled {
+		secret := os.Getenv("UPDATER_SECRET")
+		if secret == "" {
+			slog.Warn("update enabled but UPDATER_SECRET not set; update commands will fail")
+		}
+		updateClient = update.NewClient(cfg.Update.UpdaterURL, secret)
+		slog.Info("update client initialized", "url", cfg.Update.UpdaterURL)
+	}
 
 	// Initialize MCP manager.
 	mcpMgr := mcp.NewManager(version)
@@ -607,7 +620,7 @@ func run(configPath string) error {
 			skillReg.Register(skills.InitSupersedeSkill(skillObsStore))
 		}
 	}
-	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber, observer, obsStore)
+	sess := session.New(cfg, claudeClient, sessionCLI, tg, mcpMgr, store, skillReg, vectorStore, factStore, sessionSummarizer, configPath, extReg, transcriber, observer, obsStore, updateClient)
 
 	// Handle shutdown signals. First signal triggers graceful shutdown;
 	// second signal forces immediate exit.
@@ -691,6 +704,18 @@ func run(configPath string) error {
 
 	slog.Info("curlycatclaw started")
 
+	// Post-update notification: detect version change via file on shared volume.
+	go checkVersionChange(version, tg, cfg.Telegram.AllowedID)
+
+	// Auto-update cron: periodically check for updates and apply if configured.
+	if cfg.Update.Enabled && cfg.Update.AutoUpdate && updateClient != nil {
+		notifyChatID := int64(0)
+		if len(cfg.Telegram.AllowedID) > 0 {
+			notifyChatID = cfg.Telegram.AllowedID[0]
+		}
+		go runAutoUpdate(ctx, cfg.Update.Schedule, updateClient, store, tg, notifyChatID)
+	}
+
 	// Add ingest actor if enabled.
 	if ingestActor != nil {
 		actors = append(actors, ingestActor)
@@ -702,6 +727,98 @@ func run(configPath string) error {
 
 	slog.Info("curlycatclaw stopped")
 	return nil
+}
+
+// checkVersionChange detects a post-update restart by comparing the running
+// version against the last known version stored in /data/.last-version. If
+// different, it sends a notification to all allowed Telegram users.
+func checkVersionChange(ver string, tg *telegram.Channel, allowedIDs []int64) {
+	// Give the Telegram channel time to connect before sending.
+	time.Sleep(5 * time.Second)
+
+	const versionFile = "/data/.last-version"
+	old, err := os.ReadFile(versionFile)
+	if err == nil && strings.TrimSpace(string(old)) != ver && ver != "dev" {
+		msg := fmt.Sprintf("Updated to v%s -- all systems operational.", ver)
+		for _, id := range allowedIDs {
+			tg.Inbox() <- telegram.OutgoingMessage{ChatID: id, Text: msg}
+		}
+		slog.Info("post-update notification sent", "old", strings.TrimSpace(string(old)), "new", ver)
+	}
+	_ = os.WriteFile(versionFile, []byte(ver), 0o644)
+}
+
+// runAutoUpdate starts a cron-scheduled auto-update loop. It checks for available
+// updates and applies them if no conversation is active (no message in last 5 minutes).
+func runAutoUpdate(ctx context.Context, schedule string, client *update.Client, store *memory.Store, tg *telegram.Channel, notifyChatID int64) {
+	sched, err := gocron.NewScheduler()
+	if err != nil {
+		slog.Error("auto-update: failed to create scheduler", "err", err)
+		return
+	}
+
+	_, err = sched.NewJob(
+		gocron.CronJob(schedule, false),
+		gocron.NewTask(func() {
+			slog.Info("auto-update: checking for updates")
+
+			status, err := client.Check(ctx)
+			if err != nil {
+				slog.Warn("auto-update: check failed", "err", err)
+				return
+			}
+			if !status.UpdateAvailable {
+				slog.Info("auto-update: already up to date", "version", status.CurrentVersion)
+				return
+			}
+
+			// Check for active conversations: skip if any user sent a message in the last 5 minutes.
+			if hasRecentActivity(store) {
+				slog.Info("auto-update: conversation active, deferring update")
+				return
+			}
+
+			slog.Info("auto-update: applying update", "from", status.CurrentVersion, "to", status.LatestVersion)
+			if notifyChatID != 0 {
+				tg.Inbox() <- telegram.OutgoingMessage{
+					ChatID: notifyChatID,
+					Text:   fmt.Sprintf("Auto-updating to v%s... I'll be right back.", status.LatestVersion),
+				}
+			}
+
+			if err := client.Update(ctx); err != nil {
+				slog.Error("auto-update: update failed", "err", err)
+				if notifyChatID != 0 {
+					tg.Inbox() <- telegram.OutgoingMessage{
+						ChatID: notifyChatID,
+						Text:   fmt.Sprintf("Auto-update failed: %v", err),
+					}
+				}
+			}
+		}),
+	)
+	if err != nil {
+		slog.Error("auto-update: failed to schedule job", "err", err)
+		return
+	}
+
+	sched.Start()
+	slog.Info("auto-update: scheduler started", "schedule", schedule)
+	<-ctx.Done()
+	_ = sched.Shutdown()
+}
+
+// hasRecentActivity checks if any user sent a message in the last 5 minutes.
+func hasRecentActivity(store *memory.Store) bool {
+	var count int
+	err := store.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages WHERE role = 'user' AND created_at > datetime('now', '-5 minutes')`,
+	).Scan(&count)
+	if err != nil {
+		slog.Warn("auto-update: failed to check recent activity", "err", err)
+		return true // err on the side of caution
+	}
+	return count > 0
 }
 
 // embedderModel extracts the model name from a VectorConfig for the configured embedder type.
@@ -953,10 +1070,10 @@ func newHealthHandler(ctx context.Context) http.Handler {
 }
 
 // startHealthServer runs an HTTP health endpoint in a background goroutine.
-// Binds to localhost only and sets conservative timeouts to prevent slowloris.
+// Binds to all interfaces (for Docker sidecar access) and sets conservative timeouts to prevent slowloris.
 func startHealthServer(ctx context.Context, port int) {
 	srv := &http.Server{
-		Addr:              net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)),
+		Addr:              net.JoinHostPort("0.0.0.0", fmt.Sprintf("%d", port)),
 		Handler:           newHealthHandler(ctx),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
