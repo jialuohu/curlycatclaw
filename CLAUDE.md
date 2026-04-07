@@ -69,11 +69,11 @@ curlycatclaw --migrate-embedder --dry-run  # count texts only, no modifications
 
 Goroutine-based actor model under supervision. See [docs/architecture.md](docs/architecture.md) for full diagrams and details.
 
-**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Ingest Actor (background multi-source knowledge ingestion). Each actor panics safely and restarts with exponential backoff.
+**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Ingest Actor (background multi-source knowledge ingestion). Each actor panics safely and restarts with exponential backoff. A separate **updater sidecar** (`curlycatclaw-updater`) runs alongside the main container, holding the Docker socket and managing image pulls, container restarts, and rollbacks via an authenticated HTTP API.
 
 **Ingest pipeline**: Generic `IngestActor` processes configured knowledge sources (Gmail via MCP, Obsidian via filesystem, Notion via MCP). Config-driven via `[[ingest.sources]]`. Each source implements `Source` interface (Discover/Read/Prefilter). Three extractors: LLM (trusted/untrusted prompts), Passthrough (YAML front matter), Hybrid. Per-source cursors, daily caps, trust levels. Content fingerprint tracking for mutable-source re-extraction. Stale "running" state recovery on startup. Deprecated `[email_ingest]` auto-migrates.
 
-**Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control. Document attachments: PDFs sent as native document blocks (both modes), text files inlined into message (CLI) or as text blocks (API).
+**Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control. `/update`, `/status`, `/rollback` for self-update management. Document attachments: PDFs sent as native document blocks (both modes), text files inlined into message (CLI) or as text blocks (API).
 
 **MCP & tools**: MCP Manager holds persistent stdio connections. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
 
@@ -93,6 +93,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - GWS multi-account: `GWS_ACCOUNT_<NAME>_SERVICES` env vars must not collide with account names. `parseAccountsFromEnv()` skips keys ending in `_SERVICES`. Account names validated as `[a-zA-Z0-9_-]+`. `"account"` is in `reservedFlags` to prevent LLM injection as a gws CLI flag. Credential paths must be absolute and exist at startup (fatal otherwise).
 - `send_file` in CLI mode queues to SQLite (`pending_files` table), delivered by session actor after tool loop ends. Direct API mode sends immediately via Telegram. Tool result says "File queued" to prevent Claude retries.
 - CLI subprocess `bufio.Scanner` max is 16MB (for base64 PDF responses in stream-json). Default 64KB would crash on any document attachment.
+- Health endpoint binds to `0.0.0.0:8080` (not `127.0.0.1`) so the updater sidecar can reach it across the Docker network for liveness checks.
 
 ## Key Files
 
@@ -148,7 +149,12 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `cmd/curlycatclaw-gws-mcp/main.go` | GWS MCP server entrypoint, multi-account env parsing (`GWS_ACCOUNT_*`, `_SERVICES`) |
 | `cmd/curlycatclaw-gws-mcp/executor.go` | GWS CLI subprocess runner, account resolution, service validation, per-call env overrides |
 | `cmd/curlycatclaw-gws-mcp/discovery.go` | GWS skill discovery, tool registration, account field injection, `gws_list_accounts` |
+| `cmd/curlycatclaw-updater/main.go` | Updater sidecar entrypoint, HTTP server, shared secret auth |
+| `cmd/curlycatclaw-updater/handler.go` | Update/rollback/status HTTP handlers, digest blacklist, stale lock recovery |
+| `cmd/curlycatclaw-updater/docker.go` | Docker client wrapper for image pull, container restart, rollback |
+| `internal/update/client.go` | HTTP client for updater sidecar API (used by session actor and auto-update cron) |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
+| `Dockerfile.updater` | Updater sidecar container build |
 | `docker-compose.yml` | curlycatclaw + Qdrant + Ollama orchestration |
 | `.goreleaser.yml` | Release automation (binaries, checksums, Docker images) |
 
@@ -164,7 +170,7 @@ For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex cha
 
 For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
 
-Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format.
+Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format, `[update]` for self-update system (`enabled`, `updater_url`, `auto_update`, `schedule`).
 
 ## gstack
 

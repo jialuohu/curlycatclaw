@@ -12,11 +12,12 @@ docker compose exec ollama ollama pull bge-m3  # first run only
 
 ## Services
 
-`docker compose up` starts three services:
+`docker compose up` starts three services (plus an optional fourth):
 
 - **curlycatclaw** -- the agent daemon (Debian bookworm-slim + Claude CLI + gws CLI)
-- **qdrant** -- vector search (Qdrant v1.14.0, ports 6333/6334)
+- **qdrant** -- vector search (Qdrant v1.17.1, ports 6333/6334)
 - **ollama** -- local embeddings (bge-m3 by default, port 11434)
+- **curlycatclaw-updater** (optional) -- sidecar for self-update. Holds the Docker socket, exposes an authenticated HTTP API on port 8081 for image pulls, container restarts, and rollbacks. Enable via `[update]` config section.
 
 ## Configuration
 
@@ -96,6 +97,29 @@ and lives directly on the host filesystem. No named volumes needed.
 
 ```bash
 cp ~/.curlycatclaw/curlycatclaw.db ./backup.db
+```
+
+## Updater Sidecar
+
+The updater sidecar enables self-update from Telegram (`/update`, `/status`, `/rollback`). It runs as a separate container with access to the Docker socket.
+
+**Required env vars** (set in `~/.curlycatclaw/env` or docker-compose override):
+
+| Variable | Purpose |
+|----------|---------|
+| `UPDATER_SECRET` | Shared secret for authentication between the main container and sidecar (required) |
+| `CURLYCATCLAW_IMAGE` | Docker image reference, e.g. `ghcr.io/jialuohu/curlycatclaw:latest`. Used for rollback override support |
+
+The sidecar checks GHCR for new image digests, pulls updates, and restarts the main container. Rollback keeps the 3 most recent digests. A digest blacklist (24h TTL) prevents retry loops on broken images.
+
+To enable, add `[update]` to `config.toml`:
+
+```toml
+[update]
+enabled     = true
+updater_url = "http://curlycatclaw-updater:8081"  # default
+auto_update = false                                # opt-in scheduled updates
+schedule    = "0 3 * * 0"                          # cron (default: weekly Sunday 3am)
 ```
 
 ## Encrypted MCP Credentials
