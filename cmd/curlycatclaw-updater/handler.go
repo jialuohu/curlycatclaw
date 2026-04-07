@@ -64,6 +64,7 @@ type StatusResponse struct {
 const (
 	ghcrImage         = "ghcr.io/jialuohu/curlycatclaw"
 	maxPreviousDigest = 3
+	maxUpdateHistory  = 50
 	staleTimeout      = 10 * time.Minute
 	healthTimeout     = 120 * time.Second
 	blacklistTTL      = 24 * time.Hour
@@ -347,12 +348,12 @@ func (h *Handler) runUpdate(targetDigest string) {
 		h.state.PreviousDigests = prependCapped(h.state.PreviousDigests, fromDigest, maxPreviousDigest)
 	}
 	h.state.CurrentDigest = targetDigest
-	h.state.UpdateHistory = append(h.state.UpdateHistory, UpdateRecord{
+	h.state.UpdateHistory = appendCapped(h.state.UpdateHistory, UpdateRecord{
 		Time:       time.Now(),
 		FromDigest: fromDigest,
 		ToDigest:   targetDigest,
 		Success:    true,
-	})
+	}, maxUpdateHistory)
 	h.mu.Unlock()
 
 	// Write marker file so the restarted main container knows it was updated
@@ -385,7 +386,7 @@ func (h *Handler) autoRollback(fromDigest, failedDigest string) {
 }
 
 // performRollback brings up the service with the rollback image.
-func (h *Handler) performRollback(rollbackDigest string) error {
+func (h *Handler) performRollback(_ string) error {
 	var envOverrides map[string]string
 	if !h.buildMode {
 		// Deploy mode: override the image tag to use the rollback image.
@@ -408,13 +409,13 @@ func (h *Handler) performRollback(rollbackDigest string) error {
 func (h *Handler) recordFailure(fromDigest, toDigest, errMsg string) {
 	slog.Error("update failed", "from", fromDigest, "to", toDigest, "error", errMsg)
 	h.mu.Lock()
-	h.state.UpdateHistory = append(h.state.UpdateHistory, UpdateRecord{
+	h.state.UpdateHistory = appendCapped(h.state.UpdateHistory, UpdateRecord{
 		Time:       time.Now(),
 		FromDigest: fromDigest,
 		ToDigest:   toDigest,
 		Success:    false,
 		Error:      errMsg,
-	})
+	}, maxUpdateHistory)
 	h.mu.Unlock()
 }
 
@@ -460,6 +461,14 @@ func (h *Handler) saveStateLocked() error {
 }
 
 // prependCapped inserts item at front and caps length.
+func appendCapped(items []UpdateRecord, item UpdateRecord, maxLen int) []UpdateRecord {
+	items = append(items, item)
+	if len(items) > maxLen {
+		items = items[len(items)-maxLen:]
+	}
+	return items
+}
+
 func prependCapped(items []string, item string, maxLen int) []string {
 	result := make([]string, 0, maxLen)
 	result = append(result, item)
