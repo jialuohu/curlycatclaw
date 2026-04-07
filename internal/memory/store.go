@@ -1756,6 +1756,17 @@ func (s *Store) migrate() error {
 	return nil
 }
 
+// LatestConversationID returns the most recent conversation ID for a user/chat pair,
+// or "" if none exists. Read-only: does not create or expire conversations.
+func (s *Store) LatestConversationID(userID, chatID int64) string {
+	var convID string
+	_ = s.db.QueryRow(
+		`SELECT id FROM conversations WHERE user_id = ? AND chat_id = ? ORDER BY updated_at DESC LIMIT 1`,
+		userID, chatID,
+	).Scan(&convID)
+	return convID
+}
+
 // LogInteractionEvent records a user interaction event (e.g., /effort, /retry, /debug).
 func (s *Store) LogInteractionEvent(convID string, userID, chatID int64, eventType, payload string) error {
 	_, err := s.db.Exec(

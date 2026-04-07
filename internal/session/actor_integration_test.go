@@ -144,6 +144,7 @@ func (m *mockStore) CompleteToolCall(callID string, _ json.RawMessage, isError b
 	return nil
 }
 
+func (m *mockStore) LatestConversationID(_, _ int64) string                      { return "" }
 func (m *mockStore) LogInteractionEvent(_ string, _, _ int64, _, _ string) error { return nil }
 func (m *mockStore) MapTelegramMessage(_ int64, _ int, _ string) error           { return nil }
 func (m *mockStore) LookupConversationByTelegramMessage(_ int64, _ int) (string, error) {
