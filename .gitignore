@@ -9,6 +9,7 @@ config.toml
 .env.*
 .DS_Store
 .gstack/
+.serena/
 .idea/
 docs/superpowers/
 .claude/*

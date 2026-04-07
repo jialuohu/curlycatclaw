@@ -7,15 +7,15 @@
 │                       Supervisor                           │
 │            (panic/recover, backoff, 30s drain)             │
 │                                                            │
-│  ┌──────────┐   ┌───────────┐   ┌───────────┐   ┌──────────┐│
-│  │ Channel  │◄─►│  Session  │   │ Reminder  │   │  Email   ││
-│  │  Actor   │   │   Actor   │   │   Actor   │   │  Ingest  ││
-│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘   └────┬─────┘│
-│       │               │               │               │      │
-│       │               ├──► Claude     │          Gmail │      │
-│       │               │    Direct API (stream+tools)  via    │
-│       │               │    OR CLI subprocess         MCP     │
-│       │               │    + /effort /retry /debug     │      │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  ┌──────┐│
+│  │ Channel  │◄►│ Session  │  │ Reminder │  │ Ingest │  │ Eval ││
+│  │  Actor   │  │  Actor   │  │  Actor   │  │ Actor  │  │ Actor││
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘  └──┬──┘│
+│       │              │              │             │          │   │
+│       │              ├──► Claude    │        Gmail│     gocron│  │
+│       │              │    Direct API (stream+tools) Obsidian │  │
+│       │              │    OR CLI subprocess  Notion via MCP  │  │
+│       │              │    + /effort /retry /debug /update    │  │
 │       │               │               │               ▼      │
 │       │               ├──► MCP Manager           Observations│
 │       │               │    ├─ Config servers (gws, github)   │
@@ -33,7 +33,7 @@
    Bot API
 ```
 
-Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s -> 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit. The Email Ingest Actor (optional, `[email_ingest]` config) polls Gmail via the GWS MCP server, applies a two-stage filter (sender/label pre-filter, then Claude importance scoring), and extracts observations from important emails into SQLite + Qdrant.
+Everything runs as goroutine-based actors under supervision. If an actor panics, it restarts with exponential backoff (1s -> 30s), resetting after 60s healthy. On shutdown, actors get 30 seconds to drain before forced exit (Docker stop_grace_period: 45s). The Ingest Actor (optional, `[[ingest.sources]]` config) is a generic knowledge ingestion pipeline supporting Gmail (via GWS MCP), Obsidian (filesystem walker), and Notion (via MCP). Each source implements a Source interface (Discover/Read/Prefilter), with per-source cursors, daily caps, and trust levels. The Eval Actor (optional, `[eval]` config) runs background self-evaluation on a gocron schedule, scoring conversations and mining failure patterns.
 
 A companion **updater sidecar** (`curlycatclaw-updater`) runs as a separate container alongside the main daemon. It holds the Docker socket and exposes an authenticated HTTP API for image pulls, container restarts, and rollbacks. The main container communicates with it via `internal/update/client.go`. This keeps Docker socket access out of the main container. Telegram commands `/update`, `/status`, and `/rollback` drive the sidecar through the session actor. An optional auto-update cron (gocron) checks for new images on a schedule.
 
@@ -145,7 +145,7 @@ Pluggable embeddings with three Qdrant collections:
 ```
 Embedder Interface: Embed(text) → vector
   ├─ FNV (384d, offline, no deps)
-  ├─ Ollama (768d, local, nomic-embed-text)
+  ├─ Ollama (1024d, local, bge-m3)
   └─ Voyage AI (512d, API, voyage-3-lite)
 
 Qdrant (gRPC, cosine similarity, user_id tenant isolation):
