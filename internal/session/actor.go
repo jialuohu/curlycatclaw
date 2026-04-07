@@ -2245,14 +2245,14 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	if a.cfg.Claude.CLIPath != "" {
 		mcpEnv["CURLYCATCLAW_CLI_PATH"] = a.cfg.Claude.CLIPath
 	}
-	// Pass master key via a fixed-path file so the MCP server subprocess
+	// Pass master key via a per-PID file so the MCP server subprocess
 	// can encrypt/decrypt extension env vars. Using a file avoids exposing
 	// the key in /proc/PID/cmdline (the JSON is a CLI argument).
-	// Uses a deterministic path (not os.CreateTemp) to avoid leaking temp
-	// files on repeated calls, since buildMCPConfig runs every message.
-	// Only write if the file doesn't already exist (key is immutable).
+	// The filename includes the PID to prevent other processes from
+	// predicting and pre-creating the file (symlink race). Only write if
+	// the file doesn't already exist (key is immutable across rebuilds).
 	if mk := os.Getenv("CURLYCATCLAW_MASTER_KEY"); mk != "" {
-		mkPath := filepath.Join(os.TempDir(), "curlycatclaw-mk")
+		mkPath := filepath.Join(os.TempDir(), fmt.Sprintf("curlycatclaw-mk-%d", os.Getpid()))
 		if _, statErr := os.Stat(mkPath); statErr != nil {
 			if err := os.WriteFile(mkPath, []byte(mk), 0600); err != nil {
 				slog.Warn("buildMCPConfig: master key file", "err", err)

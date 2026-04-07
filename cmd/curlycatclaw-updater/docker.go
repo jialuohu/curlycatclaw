@@ -10,9 +10,18 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// validDigest matches Docker content-addressable digests (sha256:hex) and
+// local image IDs (hex only). Prevents injection via crafted digest strings.
+var validDigest = regexp.MustCompile(`^(sha256:)?[a-fA-F0-9]{12,128}$`)
+
+// validImageRef matches image references like ghcr.io/owner/repo:tag or
+// ghcr.io/owner/repo@sha256:hex. Prevents injection via crafted image refs.
+var validImageRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/:-]*$`)
 
 // ghcrTokenResponse is the response from the GHCR token endpoint.
 type ghcrTokenResponse struct {
@@ -102,7 +111,7 @@ func ghcrCheck(image string) (version string, digest string, err error) {
 	}
 
 	// Step 3: Fetch config blob to get labels.
-	if manifest.Config.Digest != "" {
+	if manifest.Config.Digest != "" && validDigest.MatchString(manifest.Config.Digest) {
 		configURL := fmt.Sprintf("https://ghcr.io/v2/%s/blobs/%s", repo, manifest.Config.Digest)
 		configReq, err := http.NewRequest("GET", configURL, nil)
 		if err != nil {
@@ -166,6 +175,12 @@ func composeUp(service string, envOverrides map[string]string) error {
 
 // tagImage tags an image by digest with a new tag name.
 func tagImage(currentDigest, tagName string) error {
+	if !validDigest.MatchString(currentDigest) {
+		return fmt.Errorf("invalid digest format: %q", currentDigest)
+	}
+	if !validImageRef.MatchString(tagName) {
+		return fmt.Errorf("invalid tag name format: %q", tagName)
+	}
 	slog.Info("tagging image", "digest", currentDigest, "tag", tagName)
 	cmd := exec.Command("docker", "tag", currentDigest, tagName)
 	out, err := cmd.CombinedOutput()
@@ -188,6 +203,10 @@ func getCurrentDigest(service string) (string, error) {
 	if containerID == "" {
 		return "", fmt.Errorf("no running container for service %s", service)
 	}
+	// Validate container ID is a hex string (Docker container IDs are hex).
+	if !validDigest.MatchString(containerID) {
+		return "", fmt.Errorf("unexpected container ID format: %q", containerID)
+	}
 
 	// Get the image digest via docker inspect.
 	inspectCmd := exec.Command("docker", "inspect",
@@ -200,6 +219,9 @@ func getCurrentDigest(service string) (string, error) {
 	digest := strings.TrimSpace(string(inspectOut))
 	if digest == "" {
 		return "", fmt.Errorf("empty digest for container %s", containerID)
+	}
+	if !validDigest.MatchString(digest) {
+		return "", fmt.Errorf("unexpected image digest format: %q", digest)
 	}
 
 	// Also try to get the repo digest (more useful for comparison with

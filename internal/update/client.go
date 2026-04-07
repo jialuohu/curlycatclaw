@@ -115,6 +115,11 @@ func (c *Client) Rollback(ctx context.Context) error {
 	return c.readError(resp)
 }
 
+// maxResponseBytes is the maximum response body size accepted from the
+// updater sidecar. StatusResponse payloads are small (< 4 KB); this cap
+// prevents a compromised sidecar from causing OOM via an oversized body.
+const maxResponseBytes = 1 << 20 // 1 MiB
+
 // doJSON sends a request and decodes the JSON response into dst.
 func (c *Client) doJSON(ctx context.Context, method, path string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
@@ -133,7 +138,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, dst any) error
 		return c.readError(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
+	// Limit the response body to prevent OOM from a rogue sidecar.
+	limited := io.LimitReader(resp.Body, maxResponseBytes)
+	if err := json.NewDecoder(limited).Decode(dst); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"syscall"
 	"time"
 )
@@ -21,10 +23,19 @@ func main() {
 	}
 
 	serviceName := envOrDefault("SERVICE_NAME", "curlycatclaw")
+	if !isValidServiceName(serviceName) {
+		slog.Error("SERVICE_NAME contains invalid characters (must be [a-zA-Z0-9_-]+)", "value", serviceName)
+		os.Exit(1)
+	}
+
 	healthURL := envOrDefault("HEALTH_URL", "http://curlycatclaw:8080/health")
 	composeProject := os.Getenv("COMPOSE_PROJECT_NAME")
 
 	statePath := envOrDefault("STATE_PATH", "/data/update-state.json")
+	if !isPathUnder(statePath, "/data/") {
+		slog.Error("STATE_PATH must resolve under /data/", "value", statePath)
+		os.Exit(1)
+	}
 	buildMode := os.Getenv("BUILD_MODE") == "true" // dev: compose build, not compose pull
 
 	state, err := loadState(statePath)
@@ -91,4 +102,22 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// validServiceName matches Docker Compose service names: alphanumeric, dash, underscore.
+var validServiceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// isValidServiceName returns true if name is a safe Docker Compose service name.
+func isValidServiceName(name string) bool {
+	return len(name) > 0 && len(name) <= 64 && validServiceName.MatchString(name)
+}
+
+// isPathUnder returns true if the cleaned absolute path is inside the given prefix.
+func isPathUnder(path, prefix string) bool {
+	cleaned := filepath.Clean(path)
+	// filepath.Clean removes trailing slashes, so ensure prefix matching
+	// checks directory boundaries.
+	prefixClean := filepath.Clean(prefix) + string(filepath.Separator)
+	return len(cleaned) > len(prefixClean)-1 &&
+		cleaned[:len(prefixClean)] == prefixClean
 }

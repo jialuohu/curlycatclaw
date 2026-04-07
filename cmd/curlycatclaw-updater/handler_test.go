@@ -623,3 +623,60 @@ func TestSaveLoadState(t *testing.T) {
 		t.Errorf("BlacklistedDigests len = %d, want 1", len(loaded.BlacklistedDigests))
 	}
 }
+
+func TestIsValidServiceName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"valid simple", "curlycatclaw", true},
+		{"valid with dash", "my-service", true},
+		{"valid with underscore", "my_service", true},
+		{"valid with digits", "svc123", true},
+		{"empty", "", false},
+		{"starts with dash", "-bad", false},
+		{"starts with underscore", "_bad", false},
+		{"shell metachar semicolon", "svc;rm -rf /", false},
+		{"shell metachar pipe", "svc|evil", false},
+		{"shell metachar backtick", "svc`evil`", false},
+		{"shell metachar dollar", "svc$(evil)", false},
+		{"spaces", "svc name", false},
+		{"path traversal", "../../../etc", false},
+		{"flag injection", "--file=evil.yml", false},
+		{"too long", string(make([]byte, 65)), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidServiceName(tt.input); got != tt.want {
+				t.Errorf("isValidServiceName(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsPathUnder(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		prefix string
+		want   bool
+	}{
+		{"valid subpath", "/data/update-state.json", "/data/", true},
+		{"valid nested", "/data/sub/state.json", "/data/", true},
+		{"traversal escape", "/data/../etc/passwd", "/data/", false},
+		{"exact prefix dir", "/data/", "/data/", false},
+		{"outside prefix", "/etc/passwd", "/data/", false},
+		{"prefix substring", "/data-evil/state.json", "/data/", false},
+		{"double dot", "/data/../../etc/shadow", "/data/", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPathUnder(tt.path, tt.prefix); got != tt.want {
+				t.Errorf("isPathUnder(%q, %q) = %v, want %v", tt.path, tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
