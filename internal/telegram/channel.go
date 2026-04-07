@@ -217,6 +217,9 @@ func (ch *Channel) Run(ctx context.Context) error {
 			{Command: "effort", Description: "Show or set thinking effort level (low/medium/high/max)"},
 			{Command: "retry", Description: "Replay last message at higher effort"},
 			{Command: "debug", Description: "Toggle tool call visibility (on/off)"},
+			{Command: "update", Description: "Check for and install updates"},
+			{Command: "status", Description: "Show version, uptime, and update availability"},
+			{Command: "rollback", Description: "Revert to previous version"},
 		},
 	})
 	if err != nil {

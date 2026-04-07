@@ -25,6 +25,7 @@ func main() {
 	composeProject := os.Getenv("COMPOSE_PROJECT_NAME")
 
 	statePath := envOrDefault("STATE_PATH", "/data/update-state.json")
+	buildMode := os.Getenv("BUILD_MODE") == "true" // dev: compose build, not compose pull
 
 	state, err := loadState(statePath)
 	if err != nil {
@@ -44,6 +45,7 @@ func main() {
 		statePath:      statePath,
 		state:          state,
 		startTime:      time.Now(),
+		buildMode:      buildMode,
 	}
 
 	mux := http.NewServeMux()

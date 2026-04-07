@@ -705,7 +705,7 @@ func run(configPath string) error {
 	slog.Info("curlycatclaw started")
 
 	// Post-update notification: detect version change via file on shared volume.
-	go checkVersionChange(version, tg, cfg.Telegram.AllowedID)
+	go checkVersionChange(version, tg, cfg.Telegram.AllowedID, updateClient)
 
 	// Auto-update cron: periodically check for updates and apply if configured.
 	if cfg.Update.Enabled && cfg.Update.AutoUpdate && updateClient != nil {
@@ -729,14 +729,17 @@ func run(configPath string) error {
 	return nil
 }
 
-// checkVersionChange detects a post-update restart by comparing the running
-// version against the last known version stored in /data/.last-version. If
-// different, it sends a notification to all allowed Telegram users.
-func checkVersionChange(ver string, tg *telegram.Channel, allowedIDs []int64) {
+// checkVersionChange detects a post-update restart. Two detection methods:
+// 1. Version file: compare binary version against /data/.last-version (works for tagged releases)
+// 2. Sidecar state: if the updater reports a recent successful update (within 60s), this is a post-update restart (works for dev/build mode)
+func checkVersionChange(ver string, tg *telegram.Channel, allowedIDs []int64, updateClient *update.Client) {
 	// Give the Telegram channel time to connect before sending.
 	time.Sleep(5 * time.Second)
 
 	const versionFile = "/data/.last-version"
+	notified := false
+
+	// Method 1: Version file comparison (tagged releases).
 	old, err := os.ReadFile(versionFile)
 	if err == nil && strings.TrimSpace(string(old)) != ver && ver != "dev" {
 		msg := fmt.Sprintf("Updated to v%s -- all systems operational.", ver)
@@ -744,7 +747,28 @@ func checkVersionChange(ver string, tg *telegram.Channel, allowedIDs []int64) {
 			tg.Inbox() <- telegram.OutgoingMessage{ChatID: id, Text: msg}
 		}
 		slog.Info("post-update notification sent", "old", strings.TrimSpace(string(old)), "new", ver)
+		notified = true
 	}
+
+	// Method 2: Marker file from sidecar (works in dev/build mode).
+	// The sidecar writes /data/.update-complete after a successful update.
+	// We read it, send notification, and delete it (one-shot).
+	const updateMarker = "/data/.update-complete"
+	if !notified {
+		markerData, err := os.ReadFile(updateMarker)
+		if err == nil {
+			_ = os.Remove(updateMarker)
+			msg := "Updated and restarted -- all systems operational."
+			if content := strings.TrimSpace(string(markerData)); content != "" {
+				msg = fmt.Sprintf("Updated to %s -- all systems operational.", content)
+			}
+			for _, id := range allowedIDs {
+				tg.Inbox() <- telegram.OutgoingMessage{ChatID: id, Text: msg}
+			}
+			slog.Info("post-update notification sent (marker file)", "content", strings.TrimSpace(string(markerData)))
+		}
+	}
+
 	_ = os.WriteFile(versionFile, []byte(ver), 0o644)
 }
 

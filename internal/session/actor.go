@@ -1849,7 +1849,7 @@ func (a *Actor) handleStatusCommand(ctx context.Context, msg telegram.IncomingMe
 
 	uptime := time.Duration(status.UptimeSeconds) * time.Second
 	var lines []string
-	lines = append(lines, "<b>Updater Status</b>")
+	lines = append(lines, "**Updater Status**")
 	if status.CurrentVersion != "" {
 		lines = append(lines, fmt.Sprintf("Version: %s", status.CurrentVersion))
 	}

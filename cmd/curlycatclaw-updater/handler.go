@@ -42,6 +42,7 @@ type Handler struct {
 	composeProject string
 	statePath      string
 	startTime      time.Time
+	buildMode      bool // dev mode: compose build instead of compose pull
 
 	mu    sync.Mutex
 	state *UpdateState
@@ -91,8 +92,32 @@ func (h *Handler) handleStatus(w http.ResponseWriter, _ *http.Request) {
 
 // handleCheck forces a fresh registry query and returns updated status.
 func (h *Handler) handleCheck(w http.ResponseWriter, _ *http.Request) {
-	slog.Info("check requested, querying registry")
+	h.mu.Lock()
+	now := time.Now()
+	h.state.LastCheck = &now
 
+	// In build mode, we don't check GHCR. The update is always "available"
+	// because it rebuilds from source. Signal this with a synthetic digest.
+	if h.buildMode {
+		slog.Info("check requested (build mode, skipping registry)")
+		h.state.LatestVersion = "dev (local build)"
+		h.state.LatestDigest = "local-build"
+		if h.state.CurrentDigest == "" {
+			if d, err := getCurrentDigest(h.serviceName); err == nil {
+				h.state.CurrentDigest = d
+			}
+		}
+		resp := h.buildStatusResponse()
+		resp.UpdateAvailable = true // always available in build mode
+		_ = h.saveStateLocked()
+		h.mu.Unlock()
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	h.mu.Unlock()
+
+	slog.Info("check requested, querying registry")
 	version, digest, err := ghcrCheck(ghcrImage)
 	if err != nil {
 		slog.Error("registry check failed", "error", err)
@@ -101,8 +126,6 @@ func (h *Handler) handleCheck(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	h.mu.Lock()
-	now := time.Now()
-	h.state.LastCheck = &now
 	h.state.LatestVersion = version
 	h.state.LatestDigest = digest
 
@@ -146,23 +169,26 @@ func (h *Handler) handleUpdate(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	// Check blacklist.
-	h.pruneBlacklistLocked()
-	if expiry, ok := h.state.BlacklistedDigests[h.state.LatestDigest]; ok {
-		h.mu.Unlock()
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error":   "digest blacklisted",
-			"digest":  h.state.LatestDigest,
-			"expires": expiry.Format(time.RFC3339),
-		})
-		return
-	}
+	// In build mode, skip blacklist and digest comparison (always rebuild from source).
+	if !h.buildMode {
+		// Check blacklist.
+		h.pruneBlacklistLocked()
+		if expiry, ok := h.state.BlacklistedDigests[h.state.LatestDigest]; ok {
+			h.mu.Unlock()
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":   "digest blacklisted",
+				"digest":  h.state.LatestDigest,
+				"expires": expiry.Format(time.RFC3339),
+			})
+			return
+		}
 
-	// No update needed if already on latest.
-	if h.state.CurrentDigest != "" && h.state.CurrentDigest == h.state.LatestDigest {
-		h.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]string{"message": "already up to date"})
-		return
+		// No update needed if already on latest.
+		if h.state.CurrentDigest != "" && h.state.CurrentDigest == h.state.LatestDigest {
+			h.mu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]string{"message": "already up to date"})
+			return
+		}
 	}
 
 	now := time.Now()
@@ -277,12 +303,20 @@ func (h *Handler) runUpdate(targetDigest string) {
 		}
 	}
 
-	// Step 3: Pull new image.
-	if err := composePull(h.serviceName); err != nil {
-		h.recordFailure(fromDigest, targetDigest, fmt.Sprintf("pull failed: %v", err))
-		return
+	// Step 3: Get the new image (pull from GHCR or build locally).
+	if h.buildMode {
+		if err := composeBuild(h.serviceName); err != nil {
+			h.recordFailure(fromDigest, targetDigest, fmt.Sprintf("build failed: %v", err))
+			return
+		}
+		slog.Info("built new image locally")
+	} else {
+		if err := composePull(h.serviceName); err != nil {
+			h.recordFailure(fromDigest, targetDigest, fmt.Sprintf("pull failed: %v", err))
+			return
+		}
+		slog.Info("pulled new image from registry")
 	}
-	slog.Info("pulled new image")
 
 	// Step 4: Bring up the new container.
 	if err := composeUp(h.serviceName, nil); err != nil {
@@ -300,8 +334,12 @@ func (h *Handler) runUpdate(targetDigest string) {
 		return
 	}
 
-	// Step 6: Success.
+	// Step 6: Success. Write marker file so the restarted main container
+	// knows it was updated (for the "I'm back" notification).
 	slog.Info("update successful, service healthy")
+	if err := os.WriteFile("/data/.update-complete", []byte(h.state.LatestVersion), 0o644); err != nil {
+		slog.Warn("failed to write update marker", "error", err)
+	}
 	h.mu.Lock()
 	// Push old digest to previous.
 	if fromDigest != "" {
@@ -341,9 +379,15 @@ func (h *Handler) autoRollback(fromDigest, failedDigest string) {
 
 // performRollback brings up the service with the rollback image.
 func (h *Handler) performRollback(rollbackDigest string) error {
-	envOverrides := map[string]string{
-		"CURLYCATCLAW_IMAGE": ghcrImage + ":rollback-1",
+	var envOverrides map[string]string
+	if !h.buildMode {
+		// Deploy mode: override the image tag to use the rollback image.
+		envOverrides = map[string]string{
+			"CURLYCATCLAW_IMAGE": ghcrImage + ":rollback-1",
+		}
 	}
+	// In build mode, just restart the service (the current locally-built image
+	// is the one we tagged as rollback-1 before the failed update).
 	if err := composeUp(h.serviceName, envOverrides); err != nil {
 		return fmt.Errorf("compose up for rollback: %w", err)
 	}

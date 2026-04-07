@@ -128,6 +128,16 @@ func ghcrCheck(image string) (version string, digest string, err error) {
 }
 
 // composePull runs docker compose pull for the given service.
+func composeBuild(service string) error {
+	slog.Info("building image", "service", service)
+	cmd := exec.Command("docker", "compose", "build", service)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker compose build: %w: %s", err, string(out))
+	}
+	return nil
+}
+
 func composePull(service string) error {
 	slog.Info("pulling image", "service", service)
 	cmd := exec.Command("docker", "compose", "pull", service)
