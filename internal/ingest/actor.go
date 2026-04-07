@@ -260,6 +260,9 @@ func (a *Actor) runBackfill(ctx context.Context, entry SourceEntry, cursor strin
 		// First backfill run: set cursor to N days ago so Discover fetches historical data.
 		backfillDate := time.Now().AddDate(0, 0, -entry.BackfillDays).Format("2006/01/02")
 		cursorJSON, _ = json.Marshal(backfillDate)
+	} else if entry.BackfillDays < 0 {
+		// -1 = all history. Gmail launched April 2004.
+		cursorJSON, _ = json.Marshal("2004/01/01")
 	}
 
 	items, newCursor, err := src.Discover(ctx, cursorJSON)

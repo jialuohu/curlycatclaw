@@ -158,6 +158,26 @@ func TestValidate_IngestSourceValid(t *testing.T) {
 	}
 }
 
+func TestValidate_IngestSourceBackfillUnlimited(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Ingest.Sources = []SourceConfig{
+		{Name: "gmail", Type: "gmail", Enabled: true, IntervalMinutes: 15, MinImportance: 3, BackfillDays: -1},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("backfill_days=-1 (unlimited) should be valid, got: %v", err)
+	}
+}
+
+func TestValidate_IngestSourceBackfillInvalid(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Ingest.Sources = []SourceConfig{
+		{Name: "gmail", Type: "gmail", Enabled: true, IntervalMinutes: 15, MinImportance: 3, BackfillDays: -2},
+	}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error for backfill_days = -2")
+	}
+}
+
 func TestValidate_IngestDisabledSourcesSkipped(t *testing.T) {
 	cfg := minimalConfig()
 	cfg.Ingest.Sources = []SourceConfig{

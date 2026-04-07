@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"strings"
+	"time"
 )
 
 // ToolRouter abstracts MCP tool invocation.
@@ -90,8 +92,16 @@ func (s *GmailSource) Discover(ctx context.Context, cursor json.RawMessage) ([]I
 		})
 	}
 
-	// Cursor stays the same for incremental — we rely on dedup.
-	return items, cursor, nil
+	// For backfill: advance cursor to the newest email date so we page forward.
+	// For incremental: cursor stays the same (we rely on dedup).
+	newCursor := cursor
+	if len(refs) > 0 {
+		newestDate := newestEmailDate(refs)
+		if newestDate != "" {
+			newCursor, _ = json.Marshal(newestDate)
+		}
+	}
+	return items, newCursor, nil
 }
 
 // Read fetches the full email message content.
@@ -169,6 +179,7 @@ type gmailMessageRef struct {
 	from    string
 	subject string
 	snippet string
+	date    string
 	labels  []string
 }
 
@@ -223,10 +234,47 @@ func parseGmailSearchResult(result string) []gmailMessageRef {
 			from:    m.From,
 			subject: m.Subject,
 			snippet: m.Snippet,
+			date:    m.Date,
 			labels:  labels,
 		})
 	}
 	return refs
+}
+
+// newestEmailDate parses RFC 2822 dates from email refs and returns the
+// newest one in YYYY/MM/DD format for use as a Gmail search cursor.
+func newestEmailDate(refs []gmailMessageRef) string {
+	var newest time.Time
+	for _, r := range refs {
+		if r.date == "" {
+			continue
+		}
+		t, err := mail.ParseDate(r.date)
+		if err != nil {
+			// Try common variations.
+			for _, layout := range []string{
+				time.RFC1123Z,
+				time.RFC1123,
+				"2 Jan 2006 15:04:05 -0700",
+				"Mon, 2 Jan 2006 15:04:05 -0700 (MST)",
+			} {
+				if t2, err2 := time.Parse(layout, r.date); err2 == nil {
+					t = t2
+					break
+				}
+			}
+			if t.IsZero() {
+				continue
+			}
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	if newest.IsZero() {
+		return ""
+	}
+	return newest.Format("2006/01/02")
 }
 
 func parseGmailReadResult(result, account, messageID string) gmailMessage {
