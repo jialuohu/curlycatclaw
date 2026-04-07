@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.31.1] - 2026-04-08
+
+Fixes for production mode self-update. The GHCR pull flow now works end-to-end.
+
+### Fixed
+- **Compose project mount**: updater sidecar needs `docker-compose.yml` mounted in both prod and dev, not just dev override
+- **Config path mismatch**: GHCR image defaults to `/etc/curlycatclaw/config.toml` but compose mounts at `/data`. Added explicit `command` override.
+- **Permission denied on GHCR image**: distroless `nonroot` user (UID 65532) couldn't read host-owned config files. Compose now runs as host user's UID.
+- **"vunknown" version display**: GHCR images had no OCI version label. GoReleaser now sets `org.opencontainers.image.version`. Fallback shows short digest instead of "unknown".
+- **deploy/ directory**: removed stale redirect file left from v0.31.0 compose merge
+- **.clawhub/ directory**: removed plugin lock file from repo, added to .gitignore
+- **COMPOSE_PROFILES UX**: `.env` file pattern replaces ugly CLI prefix. Setup skill creates it automatically.
+
 ## [0.31.0] - 2026-04-07
 
 Unified docker-compose and smart embedding setup. One compose file for everyone, GPU-aware embedder selection during first-time setup.
