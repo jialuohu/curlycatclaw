@@ -16,9 +16,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.updater
-    volumes:
-      - .:/compose-project:ro
     environment:
       - HOME=${HOME}
       - BUILD_MODE=true
-    working_dir: /compose-project

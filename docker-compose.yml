@@ -1,6 +1,8 @@
 services:
   curlycatclaw:
     image: ${CURLYCATCLAW_IMAGE:-ghcr.io/jialuohu/curlycatclaw:latest}
+    command: ["--config", "/data/config.toml"]
+    user: "${UID:-1000}:${GID:-1000}"
     restart: unless-stopped
     stop_grace_period: 45s  # Must exceed SuperviseAll drain timeout (30s) + CLI shutdown (30s)
     volumes:
@@ -26,6 +28,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.curlycatclaw:/data
+      - .:/compose-project:ro
+    working_dir: /compose-project
     env_file:
       - path: ~/.curlycatclaw/env
         required: false
