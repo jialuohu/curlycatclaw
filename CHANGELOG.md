@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.29.1] - 2026-04-07
+
+Bug fixes for MCP server crash, eval scoring accuracy, and Qdrant version mismatch.
+
+### Fixed
+- **MCP server crash**: `backfill_days = -1` (unlimited backfill) failed config validation, crashing the curlycatclaw-skills MCP server subprocess and making `set_reminder` and all other built-in tools invisible to Claude
+- **Eval score inflation**: `/effort` and `/retry` commands logged with empty conversation ID, causing the time-window fallback to attribute events to all overlapping conversations
+- **Qdrant version mismatch**: Go client v1.17.1 was 3 minor versions ahead of server v1.14.0, triggering compatibility warnings
+- **Gmail backfill cursor**: cursor now advances to newest email date after each batch, preventing re-scanning of already-processed emails
+
+### Changed
+- `RemoteTrigger` added to `--disallowedTools` for CLI subprocess, preventing Claude from using it as a scheduling fallback
+- Qdrant Docker image bumped from v1.14.0 to v1.17.1
+
 ## [0.29.0] - 2026-04-06
 
 Persistent CLI subprocesses for ingest extraction. Email processing drops from ~12s to ~0.6s per email by reusing a long-lived Claude process instead of spawning a new one each time. Separate processes for trusted and untrusted content prevent cross-contamination. Gmail account filtering lets you choose which accounts to ingest from.
