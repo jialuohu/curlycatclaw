@@ -238,7 +238,7 @@ If user picks C (Voyage): Ask for Voyage API key. Validate starts with `pa-`.
 Store `EMBEDDER_CHOICE` (and `VOYAGE_API_KEY` if applicable) in the creds temp file.
 Also store `INSTALL_METHOD=docker` or `INSTALL_METHOD=github_releases`.
 
-If Ollama chosen: add `COMPOSE_PROFILES=ollama` to `~/.curlycatclaw/env` so the ollama service starts automatically.
+If Ollama chosen: write `COMPOSE_PROFILES=ollama` to `.env` in the same directory as `docker-compose.yml`. Docker Compose reads `.env` automatically, so `docker compose up -d` starts Ollama with no flags needed. If the updater is also configured, use `COMPOSE_PROFILES=ollama,updater`.
 
 ## 6. Generate Config
 

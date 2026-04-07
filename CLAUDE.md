@@ -30,7 +30,9 @@ docker compose build && docker compose up -d
 
 Optional services use Compose profiles:
 ```bash
-COMPOSE_PROFILES=ollama,updater docker compose up -d
+# Enable profiles by creating .env next to docker-compose.yml:
+echo "COMPOSE_PROFILES=ollama,updater" > .env
+docker compose up -d  # reads .env automatically
 ```
 
 ## Testing

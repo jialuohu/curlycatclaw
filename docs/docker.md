@@ -24,19 +24,18 @@ When `docker-compose.override.yml` is present, Docker Compose automatically merg
 
 ### Profiles
 
-Optional services are gated behind Compose profiles:
+Optional services (Ollama, updater) are gated behind Compose profiles. Enable them by creating a `.env` file next to `docker-compose.yml`:
 
-- **ollama** -- local embeddings (bge-m3). Enable with `COMPOSE_PROFILES=ollama`:
-  ```bash
-  COMPOSE_PROFILES=ollama docker compose up -d
-  docker compose exec ollama ollama pull bge-m3  # first run only
-  ```
-- **updater** -- self-update sidecar. Enable with `COMPOSE_PROFILES=updater`.
-
-Enable multiple profiles at once:
 ```bash
-COMPOSE_PROFILES=ollama,updater docker compose up -d
+echo "COMPOSE_PROFILES=ollama,updater" > .env
+docker compose up -d  # reads .env automatically, no prefix needed
 ```
+
+The setup skill (`/setup`) creates this file for you during first-time configuration.
+
+Available profiles:
+- **ollama** -- local embeddings (bge-m3). After first start: `docker compose exec ollama ollama pull bge-m3`
+- **updater** -- self-update sidecar. Requires `UPDATER_SECRET` in `~/.curlycatclaw/env`.
 
 ## Services
 

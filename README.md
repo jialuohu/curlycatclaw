@@ -70,18 +70,13 @@ cp docker-compose.override.yml.example docker-compose.override.yml
 docker compose build && docker compose up -d
 ```
 
-**Optional services** are gated behind Compose profiles. Enable Ollama for local embeddings and/or the updater sidecar:
+**Optional services** (Ollama for local embeddings, updater for self-updates) are enabled via a `.env` file next to `docker-compose.yml`:
 
 ```bash
-COMPOSE_PROFILES=ollama,updater docker compose up -d
-docker compose exec ollama ollama pull bge-m3  # first run only
-```
-
-For self-update support, set a shared secret in `~/.curlycatclaw/env`:
-
-```bash
-echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> ~/.curlycatclaw/env
-COMPOSE_PROFILES=updater docker compose up -d
+echo "COMPOSE_PROFILES=ollama,updater" > .env
+docker compose up -d                                    # now starts all services
+docker compose exec ollama ollama pull bge-m3            # first run only
+echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> ~/.curlycatclaw/env  # for self-update auth
 ```
 
 Then use `/update` in Telegram to check for and apply updates.
