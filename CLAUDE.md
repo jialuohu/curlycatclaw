@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 go build -o curlycatclaw ./cmd/curlycatclaw
+go build -o curlycatclaw-updater ./cmd/curlycatclaw-updater
 ./curlycatclaw --config ~/.curlycatclaw/config.toml
 ```
 
@@ -17,6 +18,7 @@ go build -o curlycatclaw ./cmd/curlycatclaw
 
 ```bash
 docker compose build curlycatclaw         # rebuild after code changes
+docker compose build curlycatclaw-updater # rebuild updater sidecar
 docker compose up -d curlycatclaw         # start/restart
 docker compose logs curlycatclaw --tail 20 # check logs
 docker compose restart curlycatclaw       # restart without rebuild
@@ -167,6 +169,8 @@ Auth modes: `cli_path` + `oauth_token` (Claude subscription via CLI subprocess) 
 For Google Workspace, export credentials on a machine with a browser (`gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json`). Single-account: set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` in `[mcp.servers.env]`. Multi-account: use `GWS_ACCOUNT_<NAME>` env vars with optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions and `GWS_DEFAULT_ACCOUNT`. See `config.toml.example`.
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
+
+For self-update, generate a shared secret: `echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> ~/.curlycatclaw/env`. The updater sidecar and main container use this for authenticated HTTP communication.
 
 For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
 
