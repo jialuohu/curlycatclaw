@@ -37,6 +37,7 @@ services:
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
       - SERVICE_NAME=curlycatclaw
       - HEALTH_URL=http://curlycatclaw:8080/health
+      - UPDATER_SECRET=${UPDATER_SECRET:-}
       - BUILD_MODE=true
     working_dir: /compose-project
     healthcheck:

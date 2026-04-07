@@ -22,13 +22,6 @@ type StatusResponse struct {
 	Updating        bool     `json:"updating"`
 }
 
-// RollbackResponse is returned by the updater sidecar's POST /v1/rollback.
-type RollbackResponse struct {
-	Success bool   `json:"success"`
-	Version string `json:"version"`
-	Error   string `json:"error,omitempty"`
-}
-
 // Client communicates with the curlycatclaw-updater sidecar.
 type Client struct {
 	baseURL string
@@ -99,15 +92,27 @@ func (c *Client) Update(ctx context.Context) error {
 }
 
 // Rollback rolls back to the previous image (POST /v1/rollback, 180s timeout).
-func (c *Client) Rollback(ctx context.Context) (*RollbackResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+// The sidecar returns 202 immediately; the actual rollback runs in the background.
+func (c *Client) Rollback(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	var resp RollbackResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/rollback", &resp); err != nil {
-		return nil, fmt.Errorf("updater rollback: %w", err)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/rollback", nil)
+	if err != nil {
+		return fmt.Errorf("updater rollback: build request: %w", err)
 	}
-	return &resp, nil
+	req.Header.Set("Authorization", "Bearer "+c.secret)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("updater rollback: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	return c.readError(resp)
 }
 
 // doJSON sends a request and decodes the JSON response into dst.

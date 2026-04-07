@@ -1803,8 +1803,7 @@ func (a *Actor) handleCallback(cb telegram.CallbackEvent) {
 			Text:      "Rolling back...",
 		})
 		go func() {
-			resp, err := a.updateClient.Rollback(a.bgCtx())
-			if err != nil {
+			if err := a.updateClient.Rollback(a.bgCtx()); err != nil {
 				slog.Error("rollback failed", "err", err)
 				a.trySend(telegram.OutgoingMessage{
 					ChatID: cb.ChatID,
@@ -1812,17 +1811,10 @@ func (a *Actor) handleCallback(cb telegram.CallbackEvent) {
 				})
 				return
 			}
-			if resp.Success {
-				a.trySend(telegram.OutgoingMessage{
-					ChatID: cb.ChatID,
-					Text:   fmt.Sprintf("Rolled back to %s. Restarting...", resp.Version),
-				})
-			} else {
-				a.trySend(telegram.OutgoingMessage{
-					ChatID: cb.ChatID,
-					Text:   fmt.Sprintf("Rollback failed: %s", resp.Error),
-				})
-			}
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: cb.ChatID,
+				Text:   "Rollback started. Restarting...",
+			})
 		}()
 	case "rollback:cancel":
 		a.trySend(telegram.OutgoingMessage{

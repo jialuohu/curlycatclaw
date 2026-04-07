@@ -134,7 +134,7 @@ func TestUpdateOK(t *testing.T) {
 	}
 }
 
-func TestRollbackSuccess(t *testing.T) {
+func TestRollbackAccepted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
@@ -142,28 +142,18 @@ func TestRollbackSuccess(t *testing.T) {
 		if r.URL.Path != "/v1/rollback" {
 			t.Errorf("path = %s, want /v1/rollback", r.URL.Path)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(RollbackResponse{ //nolint:errcheck
-			Success: true,
-			Version: "0.29.0",
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"accepted": true,
+			"message":  "Rollback started",
 		})
 	}))
 	defer srv.Close()
 
 	c := NewClient(srv.URL, "test-secret")
-	resp, err := c.Rollback(context.Background())
+	err := c.Rollback(context.Background())
 	if err != nil {
 		t.Fatalf("Rollback: %v", err)
-	}
-
-	if !resp.Success {
-		t.Error("Success = false, want true")
-	}
-	if resp.Version != "0.29.0" {
-		t.Errorf("Version = %q, want %q", resp.Version, "0.29.0")
-	}
-	if resp.Error != "" {
-		t.Errorf("Error = %q, want empty", resp.Error)
 	}
 }
 
@@ -231,7 +221,7 @@ func TestServerError(t *testing.T) {
 	})
 
 	t.Run("rollback", func(t *testing.T) {
-		_, err := c.Rollback(context.Background())
+		err := c.Rollback(context.Background())
 		if err == nil {
 			t.Fatal("expected error for 500 response")
 		}

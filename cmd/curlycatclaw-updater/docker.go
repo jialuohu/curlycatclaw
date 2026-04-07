@@ -127,7 +127,7 @@ func ghcrCheck(image string) (version string, digest string, err error) {
 	return version, digest, nil
 }
 
-// composePull runs docker compose pull for the given service.
+// composeBuild runs docker compose build for the given service.
 func composeBuild(service string) error {
 	slog.Info("building image", "service", service)
 	cmd := exec.Command("docker", "compose", "build", service)
@@ -202,9 +202,11 @@ func getCurrentDigest(service string) (string, error) {
 		return "", fmt.Errorf("empty digest for container %s", containerID)
 	}
 
-	// Also try to get the repo digest (more useful for comparison).
+	// Also try to get the repo digest (more useful for comparison with
+	// registry digests). RepoDigests is an image field, not a container
+	// field, so we inspect the image (digest), not the container.
 	repoDigestCmd := exec.Command("docker", "inspect",
-		"--format", "{{index .RepoDigests 0}}", containerID)
+		"--format", "{{index .RepoDigests 0}}", digest)
 	if repoOut, err := repoDigestCmd.Output(); err == nil {
 		repoDigest := strings.TrimSpace(string(repoOut))
 		// Extract just the digest part after @.

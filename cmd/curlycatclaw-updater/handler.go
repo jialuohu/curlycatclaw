@@ -233,6 +233,9 @@ func (h *Handler) handleRollback(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now()
 	h.state.Updating = true
 	h.state.UpdatingSince = &now
+	if err := h.saveStateLocked(); err != nil {
+		slog.Error("failed to save state before rollback", "error", err)
+	}
 	h.mu.Unlock()
 
 	slog.Info("manual rollback requested", "target_digest", rollbackDigest)
@@ -337,10 +340,8 @@ func (h *Handler) runUpdate(targetDigest string) {
 	// Step 6: Success. Write marker file so the restarted main container
 	// knows it was updated (for the "I'm back" notification).
 	slog.Info("update successful, service healthy")
-	if err := os.WriteFile("/data/.update-complete", []byte(h.state.LatestVersion), 0o644); err != nil {
-		slog.Warn("failed to write update marker", "error", err)
-	}
 	h.mu.Lock()
+	latestVersion := h.state.LatestVersion
 	// Push old digest to previous.
 	if fromDigest != "" {
 		h.state.PreviousDigests = prependCapped(h.state.PreviousDigests, fromDigest, maxPreviousDigest)
@@ -353,6 +354,12 @@ func (h *Handler) runUpdate(targetDigest string) {
 		Success:    true,
 	})
 	h.mu.Unlock()
+
+	// Write marker file so the restarted main container knows it was updated
+	// (for the "I'm back" notification). Done outside the lock since it's I/O.
+	if err := os.WriteFile("/data/.update-complete", []byte(latestVersion), 0o644); err != nil {
+		slog.Warn("failed to write update marker", "error", err)
+	}
 }
 
 // autoRollback restores the previous image after a failed update.

@@ -705,7 +705,7 @@ func run(configPath string) error {
 	slog.Info("curlycatclaw started")
 
 	// Post-update notification: detect version change via file on shared volume.
-	go checkVersionChange(version, tg, cfg.Telegram.AllowedID, updateClient)
+	go checkVersionChange(version, tg, cfg.Telegram.AllowedID)
 
 	// Auto-update cron: periodically check for updates and apply if configured.
 	if cfg.Update.Enabled && cfg.Update.AutoUpdate && updateClient != nil {
@@ -732,7 +732,7 @@ func run(configPath string) error {
 // checkVersionChange detects a post-update restart. Two detection methods:
 // 1. Version file: compare binary version against /data/.last-version (works for tagged releases)
 // 2. Sidecar state: if the updater reports a recent successful update (within 60s), this is a post-update restart (works for dev/build mode)
-func checkVersionChange(ver string, tg *telegram.Channel, allowedIDs []int64, updateClient *update.Client) {
+func checkVersionChange(ver string, tg *telegram.Channel, allowedIDs []int64) {
 	// Give the Telegram channel time to connect before sending.
 	time.Sleep(5 * time.Second)
 
@@ -781,12 +781,33 @@ func runAutoUpdate(ctx context.Context, schedule string, client *update.Client, 
 		return
 	}
 
+	trySendNotify := func(text string) {
+		if notifyChatID == 0 {
+			return
+		}
+		select {
+		case tg.Inbox() <- telegram.OutgoingMessage{ChatID: notifyChatID, Text: text}:
+		default:
+			slog.Warn("auto-update: telegram inbox full, dropping notification")
+		}
+	}
+
 	_, err = sched.NewJob(
 		gocron.CronJob(schedule, false),
 		gocron.NewTask(func() {
+			// Skip if the application is shutting down.
+			if ctx.Err() != nil {
+				return
+			}
+
 			slog.Info("auto-update: checking for updates")
 
-			status, err := client.Check(ctx)
+			// Use a per-task context so the sidecar call has its own timeout
+			// and isn't tied to the application lifecycle context.
+			taskCtx, taskCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer taskCancel()
+
+			status, err := client.Check(taskCtx)
 			if err != nil {
 				slog.Warn("auto-update: check failed", "err", err)
 				return
@@ -803,21 +824,11 @@ func runAutoUpdate(ctx context.Context, schedule string, client *update.Client, 
 			}
 
 			slog.Info("auto-update: applying update", "from", status.CurrentVersion, "to", status.LatestVersion)
-			if notifyChatID != 0 {
-				tg.Inbox() <- telegram.OutgoingMessage{
-					ChatID: notifyChatID,
-					Text:   fmt.Sprintf("Auto-updating to v%s... I'll be right back.", status.LatestVersion),
-				}
-			}
+			trySendNotify(fmt.Sprintf("Auto-updating to v%s... I'll be right back.", status.LatestVersion))
 
-			if err := client.Update(ctx); err != nil {
+			if err := client.Update(taskCtx); err != nil {
 				slog.Error("auto-update: update failed", "err", err)
-				if notifyChatID != 0 {
-					tg.Inbox() <- telegram.OutgoingMessage{
-						ChatID: notifyChatID,
-						Text:   fmt.Sprintf("Auto-update failed: %v", err),
-					}
-				}
+				trySendNotify(fmt.Sprintf("Auto-update failed: %v", err))
 			}
 		}),
 	)

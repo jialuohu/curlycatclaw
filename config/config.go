@@ -558,6 +558,9 @@ func (c *Config) validate() error {
 	if c.Update.Enabled && c.Update.UpdaterURL == "" {
 		return fmt.Errorf("config: update.updater_url is required when update is enabled")
 	}
+	if c.Update.Enabled && c.Update.AutoUpdate && c.Update.Schedule == "" {
+		return fmt.Errorf("config: update.schedule is required when auto_update is enabled")
+	}
 	for i, sc := range c.SkillCollections {
 		if sc.Path == "" {
 			return fmt.Errorf("config: skill_collections[%d].path is required", i)
