@@ -1,9 +1,42 @@
+# Version control
 .git
 .github
+
+# Dev tools and caches
 .gstack
+.serena
+.claude
+.idea
+
+# Documentation (except files needed at build time)
 *.md
 !CHANGELOG.md
+docs/
+
+# Deploy config (not needed in dev image)
 deploy/
+
+# Release artifacts
 dist/
+
+# Environment and secrets
 .env
 .env.*
+
+# Generated GWS skill definitions (not Go source)
+skills/gws-*/
+skills/persona-*/
+skills/recipe-*/
+skills/gws-shared/
+skills/gws-workflow*/
+
+# Compiled binaries
+curlycatclaw
+curlycatclaw-gws-mcp
+curlycatclaw-updater
+
+# Editor/OS
+.DS_Store
+*.swp
+*.swo
+*~

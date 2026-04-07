@@ -16,3 +16,10 @@ docs/superpowers/
 !.claude/skills/
 /curlycatclaw-gws-mcp
 /curlycatclaw-updater
+
+# Auto-generated GWS skill definitions (from gws generate-skills)
+skills/gws-*/
+skills/persona-*/
+skills/recipe-*/
+skills/gws-shared/
+skills/gws-workflow*/

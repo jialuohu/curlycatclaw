@@ -5,29 +5,29 @@
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │                       Supervisor                               │
-│            (panic/recover, backoff, 30s drain)                 │
+│             (panic/recover, backoff, 30s drain)                │
 │                                                                │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  ┌──────┐│
 │  │ Channel  │◄►│ Session  │  │ Reminder │  │ Ingest │  │ Eval ││
 │  │  Actor   │  │  Actor   │  │  Actor   │  │ Actor  │  │ Actor││
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘  └──┬──┘│
-│       │              │              │             │          │   │
-│       │              ├──► Claude    │        Gmail│     gocron│  │
-│       │              │    Direct API (stream+tools) Obsidian │  │
-│       │              │    OR CLI subprocess  Notion via MCP  │  │
-│       │              │    + /effort /retry /debug /update    │  │
-│       │               │               │               ▼      │
-│       │               ├──► MCP Manager           Observations│
-│       │               │    ├─ Config servers (gws, github)   │
-│       │               │    ├─ Runtime extensions (proxy)     │
-│       │               │    └─ Skills (built-in + Wasm)       │
-│       │               │               │                      │
-│       │               └──► Memory ◄───┘                      │
-│       │                    SQLite / Qdrant / Ollama          │
-│       │                                                      │
-│       │◄── [tool] lines (/debug toggles visibility)          │
-│       │                                                      │
-└───────┼──────────────────────────────────────────────────────┘
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘  └──┬───┘│
+│       │             │             │            │          │    │
+│       │             ├──► Claude   │       Gmail│    gocron│    │
+│       │             │    Direct API (stream+tools) Obsidian    │
+│       │             │    OR CLI subprocess  Notion via MCP     │
+│       │             │    + /effort /retry /debug /update       │
+│       │             │             │                   ▼        │
+│       │             ├──► MCP Manager          Observations     │
+│       │             │    ├─ Config servers (gws, github)       │
+│       │             │    ├─ Runtime extensions (proxy)         │
+│       │             │    └─ Skills (built-in + Wasm)           │
+│       │             │             │                            │
+│       │             └──► Memory ◄─┘                            │
+│       │                  SQLite / Qdrant / Ollama              │
+│       │                                                        │
+│       │◄── [tool] lines (/debug toggles visibility)            │
+│       │                                                        │
+└───────┼────────────────────────────────────────────────────────┘
         │
    Telegram
    Bot API
