@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.30.0] - 2026-04-07
+
+Self-update system. Tell the bot `/update` in Telegram and it pulls the latest Docker image and restarts itself. No SSH, no terminal. Optional auto-update on a schedule with rollback on failure.
+
+### Added
+- **Updater sidecar**: new `curlycatclaw-updater` container manages Docker lifecycle. Holds the Docker socket so the main container stays unprivileged. Communicates via authenticated HTTP API on the internal Docker network.
+- **`/update` command**: check for new version, confirm via inline keyboard, update with a single tap. Returns 202 Accepted immediately, sends "I'm back" notification after restart.
+- **`/status` command**: shows current version, uptime, and whether an update is available.
+- **`/rollback` command**: revert to a previous image (keeps 3 previous digests). Confirmation via inline keyboard.
+- **Auto-update cron**: opt-in scheduled updates via `[update]` config section. Checks for active conversations before applying. Skips if someone is mid-conversation.
+- **Post-update notification**: detects version change on startup and notifies all allowed users.
+- **GHCR digest checking**: anonymous token negotiation with OCI label parsing for human-readable version strings.
+- **Rollback safety**: digest blacklist (24h TTL) prevents retry loops on broken images. Stale update lock recovery (10min timeout).
+
+### Changed
+- Health endpoint now binds to `0.0.0.0:8080` (was `127.0.0.1`) so the updater sidecar can reach it across the Docker network.
+- Deploy compose Qdrant bumped from v1.14.0 to v1.17.1 to match dev environment.
+- Deploy compose image uses `${CURLYCATCLAW_IMAGE}` env var for rollback override support.
+
+### Security
+- Shared secret authentication (constant-time comparison) between main container and updater sidecar.
+- Docker socket isolated in sidecar only, never in main container.
+
 ## [0.29.1] - 2026-04-07
 
 Bug fixes for MCP server crash, eval scoring accuracy, and Qdrant version mismatch.
