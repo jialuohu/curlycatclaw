@@ -37,8 +37,9 @@ services:
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
       - SERVICE_NAME=curlycatclaw
       - HEALTH_URL=http://curlycatclaw:8080/health
-      - UPDATER_SECRET=${UPDATER_SECRET:-}
       - BUILD_MODE=true
+      # UPDATER_SECRET is loaded via env_file above; do NOT set it in
+      # environment: (host-side ${} expansion overrides the env_file value)
     working_dir: /compose-project
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/healthz"]
