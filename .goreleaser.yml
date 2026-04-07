@@ -57,13 +57,18 @@ builds:
 
 archives:
   - id: default
-    builds: [curlycatclaw, curlycatclaw-gws-mcp, curlycatclaw-updater]
+    builds: [curlycatclaw, curlycatclaw-gws-mcp]
     formats:
       - tar.gz
     files:
       - LICENSE*
       - README.md
       - config.toml.example
+  - id: updater
+    builds: [curlycatclaw-updater]
+    name_template: "curlycatclaw-updater_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
 
 checksum:
   name_template: "checksums.txt"
