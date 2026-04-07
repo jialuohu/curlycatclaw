@@ -92,6 +92,9 @@ dockers:
       - "ghcr.io/jialuohu/curlycatclaw:{{ .Version }}"
       - "ghcr.io/jialuohu/curlycatclaw:{{ .Major }}.{{ .Minor }}"
       - "ghcr.io/jialuohu/curlycatclaw:latest"
+    build_flag_templates:
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/jialuohu/curlycatclaw"
     extra_files:
       - config.toml.example
 
@@ -100,6 +103,8 @@ dockers:
     dockerfile: Dockerfile.goreleaser-updater
     goos: linux
     goarch: amd64
+    build_flag_templates:
+      - "--label=org.opencontainers.image.version={{ .Version }}"
     image_templates:
       - "ghcr.io/jialuohu/curlycatclaw-updater:{{ .Version }}"
       - "ghcr.io/jialuohu/curlycatclaw-updater:{{ .Major }}.{{ .Minor }}"

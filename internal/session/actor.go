@@ -1882,12 +1882,14 @@ func (a *Actor) handleUpdateCommand(ctx context.Context, msg telegram.IncomingMe
 
 	if !status.UpdateAvailable {
 		ver := status.CurrentVersion
-		if ver == "" {
-			ver = "unknown"
+		if ver == "" && status.CurrentDigest != "" {
+			ver = status.CurrentDigest[:12] // show short digest if no version label
+		} else if ver == "" {
+			ver = "latest"
 		}
 		a.trySend(telegram.OutgoingMessage{
 			ChatID: msg.ChatID,
-			Text:   fmt.Sprintf("Already up to date (v%s).", ver),
+			Text:   fmt.Sprintf("Already up to date (%s).", ver),
 		})
 		return
 	}
