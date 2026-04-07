@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.30.1] - 2026-04-07
+
+Bug fixes and security hardening for the self-update system, found by automated agent audits.
+
+### Fixed
+- **Data race**: `LatestVersion` read without mutex lock during update marker write
+- **Rollback state**: rollback didn't persist `Updating=true` to disk before starting
+- **Docker inspect**: `getCurrentDigest` inspected container ID instead of image ID for `RepoDigests`
+- **Rollback client**: returned wrong type for async 202 response, causing false failure messages
+- **Blocking sends**: auto-update cron used blocking channel sends that could stall gocron
+- **Shutdown context**: cancelled parent context leaked into sidecar HTTP calls during shutdown
+- **Compose env override**: `UPDATER_SECRET` in environment block overrode env_file value with empty string
+- **Stop grace period**: Docker default 10s was too short for 30s drain timeout, causing SIGKILL mid-shutdown
+- **Update history**: grew unbounded, now capped to 50 entries
+
+### Security
+- **Command injection**: validate `SERVICE_NAME` env var with regex to prevent targeting other compose services
+- **Path traversal**: validate `STATE_PATH` resolves under `/data/` to prevent arbitrary file writes
+- **Docker CLI injection**: validate digest and image ref strings before passing to `docker tag`/`docker inspect`
+- **OOM prevention**: bound HTTP response body to 1 MiB in update client before JSON decoding
+- **Symlink race**: master key temp file now uses per-PID path instead of predictable fixed path
+
+### Changed
+- Stale docs fixed: architecture diagrams, embedder dimensions, actor names, ingest pipeline description
+- Generated GWS skill folders (95 dirs) added to `.gitignore` and `.dockerignore`
+- Config code comments corrected for embedder defaults (ollama/bge-m3/1024d)
+
 ## [0.30.0] - 2026-04-07
 
 Self-update system. Tell the bot `/update` in Telegram and it pulls the latest Docker image and restarts itself. No SSH, no terminal. Optional auto-update on a schedule with rollback on failure.
