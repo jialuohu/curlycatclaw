@@ -398,7 +398,7 @@ func (m *CLIManager) spawn(ctx context.Context, params SpawnParams) (_ *CLIProce
 		args = append(args, "--strict-mcp-config", "--mcp-config", params.MCPConfig)
 		// Block built-in scheduling tools that compete with curlycatclaw's
 		// set_reminder/list_reminders/cancel_reminder MCP skills.
-		args = append(args, "--disallowedTools", "CronCreate,CronDelete,CronList")
+		args = append(args, "--disallowedTools", "CronCreate,CronDelete,CronList,RemoteTrigger")
 	}
 	model := m.model
 	if params.Model != "" {

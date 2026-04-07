@@ -1799,7 +1799,8 @@ func (a *Actor) handleEffortCommand(msg telegram.IncomingMessage) {
 
 	// Log the effort override as an interaction event for eval scoring.
 	if a.store != nil {
-		if err := a.store.LogInteractionEvent("", msg.UserID, msg.ChatID, "effort_override", string(effort)); err != nil {
+		convID := a.store.LatestConversationID(msg.UserID, msg.ChatID)
+		if err := a.store.LogInteractionEvent(convID, msg.UserID, msg.ChatID, "effort_override", string(effort)); err != nil {
 			slog.Warn("failed to log effort event", "err", err)
 		}
 	}
@@ -1861,7 +1862,8 @@ func (a *Actor) handleRetryCommand(ctx context.Context, msg telegram.IncomingMes
 
 	// Log the retry as an interaction event for eval scoring.
 	if a.store != nil {
-		if err := a.store.LogInteractionEvent("", msg.UserID, msg.ChatID, "retry", arg); err != nil {
+		convID := a.store.LatestConversationID(msg.UserID, msg.ChatID)
+		if err := a.store.LogInteractionEvent(convID, msg.UserID, msg.ChatID, "retry", arg); err != nil {
 			slog.Warn("failed to log retry event", "err", err)
 		}
 	}

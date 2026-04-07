@@ -510,8 +510,8 @@ func (c *Config) validate() error {
 		if src.IntervalMinutes < 1 {
 			return fmt.Errorf("config: ingest.sources[%d].interval_minutes must be >= 1", i)
 		}
-		if src.BackfillDays < 0 {
-			return fmt.Errorf("config: ingest.sources[%d].backfill_days must be >= 0", i)
+		if src.BackfillDays < -1 {
+			return fmt.Errorf("config: ingest.sources[%d].backfill_days must be >= 0 (or -1 for unlimited)", i)
 		}
 		if src.MinImportance < 1 || src.MinImportance > 10 {
 			return fmt.Errorf("config: ingest.sources[%d].min_importance must be 1-10", i)

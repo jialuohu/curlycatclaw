@@ -285,6 +285,7 @@ func (f *fakeMessageStore) ConversationMeta(_ string) (int64, int64, string, int
 func (f *fakeMessageStore) RecoverableSummarizations() ([]string, error) { return nil, nil }
 func (f *fakeMessageStore) GetSummaryText(_ string) (string, error)      { return "", nil }
 func (f *fakeMessageStore) GetMaxMessageRowid(_ string) (int64, error)   { return 0, nil }
+func (f *fakeMessageStore) LatestConversationID(_, _ int64) string { return "" }
 func (f *fakeMessageStore) LogInteractionEvent(_ string, _, _ int64, _, _ string) error {
 	return nil
 }

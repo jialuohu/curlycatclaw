@@ -29,6 +29,7 @@ type MessageStore interface {
 	RecoverableSummarizations() ([]string, error)
 	GetSummaryText(convID string) (string, error)
 	GetMaxMessageRowid(convID string) (int64, error)
+	LatestConversationID(userID, chatID int64) string
 	LogInteractionEvent(convID string, userID, chatID int64, eventType, payload string) error
 	MapTelegramMessage(chatID int64, tgMsgID int, convID string) error
 	LookupConversationByTelegramMessage(chatID int64, tgMsgID int) (string, error)
