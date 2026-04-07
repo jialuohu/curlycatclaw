@@ -14,3 +14,4 @@ docs/superpowers/
 .claude/*
 !.claude/skills/
 /curlycatclaw-gws-mcp
+/curlycatclaw-updater
