@@ -1,0 +1,29 @@
+# Development overrides for curlycatclaw.
+# Copy this file to docker-compose.override.yml to build from source:
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Docker Compose auto-merges override files. No flags needed:
+#   docker compose up -d    (builds from source when override is present)
+#
+# To use Ollama for embeddings:
+#   COMPOSE_PROFILES=ollama docker compose up -d
+#
+# To enable the self-update sidecar:
+#   COMPOSE_PROFILES=updater docker compose up -d
+#
+# Both:
+#   COMPOSE_PROFILES=ollama,updater docker compose up -d
+services:
+  curlycatclaw:
+    build: .
+
+  curlycatclaw-updater:
+    build:
+      context: .
+      dockerfile: Dockerfile.updater
+    volumes:
+      - .:/compose-project:ro
+    environment:
+      - HOME=${HOME}
+      - BUILD_MODE=true
+    working_dir: /compose-project

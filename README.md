@@ -58,17 +58,30 @@ Then type `/setup`. The skill detects your system, collects credentials, starts 
 git clone https://github.com/jialuohu/curlycatclaw.git && cd curlycatclaw
 mkdir -p ~/.curlycatclaw && cp config.toml.example ~/.curlycatclaw/config.toml
 # Edit ~/.curlycatclaw/config.toml with your credentials
-docker compose up -d
-docker compose exec ollama ollama pull bge-m3  # first run only
+docker compose up -d                          # pulls pre-built images
 ```
 
 Then message your Telegram bot. Done.
 
-For self-update support, also start the updater sidecar and set a shared secret in `~/.curlycatclaw/env`:
+**For developers** building from source, copy the override file first:
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+docker compose build && docker compose up -d
+```
+
+**Optional services** are gated behind Compose profiles. Enable Ollama for local embeddings and/or the updater sidecar:
+
+```bash
+COMPOSE_PROFILES=ollama,updater docker compose up -d
+docker compose exec ollama ollama pull bge-m3  # first run only
+```
+
+For self-update support, set a shared secret in `~/.curlycatclaw/env`:
 
 ```bash
 echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> ~/.curlycatclaw/env
-docker compose up -d curlycatclaw-updater
+COMPOSE_PROFILES=updater docker compose up -d
 ```
 
 Then use `/update` in Telegram to check for and apply updates.

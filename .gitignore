@@ -16,6 +16,7 @@ docs/superpowers/
 !.claude/skills/
 /curlycatclaw-gws-mcp
 /curlycatclaw-updater
+docker-compose.override.yml
 
 # Auto-generated GWS skill definitions (from gws generate-skills)
 skills/gws-*/

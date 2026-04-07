@@ -7,17 +7,45 @@ git clone https://github.com/jialuohu/curlycatclaw.git && cd curlycatclaw
 mkdir -p ~/.curlycatclaw && cp config.toml.example ~/.curlycatclaw/config.toml
 # Edit ~/.curlycatclaw/config.toml with your credentials
 docker compose up -d
-docker compose exec ollama ollama pull bge-m3  # first run only
+```
+
+This pulls pre-built images from GHCR and starts the services.
+
+### Compose Override Pattern
+
+The project uses a single `docker-compose.yml` as the base file. It references pre-built images by default (no `build:` directives). For local development, an override file adds `build:` directives so `docker compose build` works:
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+docker compose build && docker compose up -d
+```
+
+When `docker-compose.override.yml` is present, Docker Compose automatically merges it with the base file. Remove or rename it to go back to pulling pre-built images.
+
+### Profiles
+
+Optional services are gated behind Compose profiles:
+
+- **ollama** -- local embeddings (bge-m3). Enable with `COMPOSE_PROFILES=ollama`:
+  ```bash
+  COMPOSE_PROFILES=ollama docker compose up -d
+  docker compose exec ollama ollama pull bge-m3  # first run only
+  ```
+- **updater** -- self-update sidecar. Enable with `COMPOSE_PROFILES=updater`.
+
+Enable multiple profiles at once:
+```bash
+COMPOSE_PROFILES=ollama,updater docker compose up -d
 ```
 
 ## Services
 
-`docker compose up` starts three services (plus an optional fourth):
+`docker compose up` starts the core services (plus optional ones via profiles):
 
 - **curlycatclaw** -- the agent daemon (Debian bookworm-slim + Claude CLI + gws CLI)
 - **qdrant** -- vector search (Qdrant v1.17.1, ports 6333/6334)
-- **ollama** -- local embeddings (bge-m3 by default, port 11434)
-- **curlycatclaw-updater** (optional) -- sidecar for self-update. Holds the Docker socket, exposes an authenticated HTTP API on port 8081 for image pulls, container restarts, and rollbacks. Enable via `[update]` config section.
+- **ollama** (profile: `ollama`) -- local embeddings (bge-m3 by default, port 11434)
+- **curlycatclaw-updater** (profile: `updater`) -- sidecar for self-update. Holds the Docker socket, exposes an authenticated HTTP API on port 8081 for image pulls, container restarts, and rollbacks. Enable via `[update]` config section.
 
 ## Configuration
 
@@ -53,9 +81,9 @@ To add Gmail, Calendar, Drive, Sheets, Docs, Tasks access:
    GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = "/data/gws-credentials.json"
    ```
 
-3. Rebuild and restart:
+3. Restart:
    ```bash
-   docker compose build curlycatclaw && docker compose up -d
+   docker compose up -d
    ```
 
 ### Multi-account GWS

@@ -36,9 +36,9 @@ Before asking for anything, explain what curlycatclaw is:
 > connects to Telegram as a chat interface, uses Claude as the LLM, and stores
 > conversations + memories in SQLite with Qdrant for semantic search.
 >
-> This setup will install curlycatclaw, start Qdrant (vector database) and Ollama
-> (local embedding model for semantic search), configure your credentials, and
-> verify everything works.
+> This setup will install curlycatclaw, start Qdrant (vector database), select an
+> embedding engine (GPU-aware auto-selection between Ollama, Voyage AI, or FNV
+> hash), configure your credentials, and verify everything works.
 >
 > **Prerequisites:** Docker (recommended) or Go 1.25+.
 >
@@ -70,6 +70,9 @@ drive all subsequent decisions. Key fields:
 - `QDRANT_RUNNING` — skip Qdrant setup if already running
 - `CONFIG_EXISTS` — prompt before overwriting
 - `PORT_8080` — health endpoint port availability
+- `GPU_TYPE` — `nvidia`, `apple_silicon`, `nvidia_no_driver`, `amd_no_driver`, `intel_igpu`, or `none`
+- `GPU_NAME` — human-readable GPU name (empty if none detected)
+- `OLLAMA_RUNNING` — whether Ollama is already running
 
 Tell the user what was detected: "Detected: [OS] [ARCH], Docker [status], curlycatclaw [installed/not]."
 
@@ -200,7 +203,44 @@ Wait for user response. Validate:
 - Must be numeric (digits only)
 - If invalid: "That doesn't look like a Telegram user ID (should be a number). Try again."
 
-## 5. Generate Config
+## 5. Choose Embedding Engine
+
+Parse `GPU_TYPE` and `GPU_NAME` from the detect.sh output.
+
+**Auto-selection with override:**
+
+If `GPU_TYPE` is `nvidia`, `amd`, or `apple_silicon`:
+  - Auto-select: Ollama bge-m3
+  - Use AskUserQuestion: "Detected: [GPU_NAME]. Using Ollama bge-m3 for best quality embeddings (1024 dimensions, runs locally on your GPU, free)."
+  - Options:
+    - A) Keep Ollama (recommended)
+    - B) Use FNV hash instead (384d, lower quality, zero dependencies)
+    - C) Use Voyage AI instead (512d, cloud API, requires API key, costs money)
+
+If `GPU_TYPE` is `nvidia_no_driver` or `amd_no_driver`:
+  - Auto-select: FNV
+  - Use AskUserQuestion: "Detected [GPU_NAME] but no GPU driver found. Ollama would run on CPU (slower). Recommending FNV for now. Install GPU drivers later for better embeddings."
+  - Options:
+    - A) Use Ollama anyway (runs on CPU)
+    - B) Use FNV hash (recommended)
+    - C) Use Voyage AI instead (512d, cloud API, requires API key, costs money)
+
+If `GPU_TYPE` is `intel_igpu` or `none`:
+  - Auto-select: FNV
+  - Use AskUserQuestion: "No dedicated GPU detected. Using FNV hash embeddings (384d, instant, zero dependencies)."
+  - Options:
+    - A) Keep FNV hash (recommended)
+    - B) Use Ollama anyway (runs on CPU, slower)
+    - C) Use Voyage AI instead (512d, cloud API, requires API key, costs money)
+
+If user picks C (Voyage): Ask for Voyage API key. Validate starts with `pa-`.
+
+Store `EMBEDDER_CHOICE` (and `VOYAGE_API_KEY` if applicable) in the creds temp file.
+Also store `INSTALL_METHOD=docker` or `INSTALL_METHOD=github_releases`.
+
+If Ollama chosen: add `COMPOSE_PROFILES=ollama` to `~/.curlycatclaw/env` so the ollama service starts automatically.
+
+## 6. Generate Config
 
 **If `CONFIG_EXISTS=true`:**
 Use AskUserQuestion: "Config file already exists at ~/.curlycatclaw/config.toml. What do you want to do?"
@@ -237,7 +277,7 @@ Parse the STATUS block. Verify `CONFIG_WRITTEN=true` and `PERMISSIONS=600`.
 
 If permissions are not 600: `chmod 600 ~/.curlycatclaw/config.toml`
 
-## 6. Start Service
+## 7. Start Service
 
 **If `PORT_8080=in_use`:** Warn the user that port 8080 is already in use. Ask if they
 want to pick a different port. If yes, use the Edit tool to change `port = 8080` in
@@ -265,7 +305,15 @@ for i in $(seq 1 60); do
 done
 ```
 
-If health check passes, proceed to Step 7. If timeout, check logs:
+If health check passes:
+
+If `EMBEDDER_CHOICE` is `ollama` and `INSTALL_METHOD` is `docker`:
+```bash
+docker compose exec ollama ollama pull bge-m3
+```
+If pull fails: warn the user and note that embeddings will use FNV fallback until the model is available.
+
+Then proceed to Step 8. If timeout, check logs:
 `docker compose logs curlycatclaw`.
 
 **If `INSTALL_METHOD=github_releases`:**
@@ -296,7 +344,7 @@ for i in $(seq 1 60); do
 done
 ```
 
-If health check passes, proceed to Step 7. If timeout, check logs:
+If health check passes, proceed to Step 8. If timeout, check logs:
 `docker compose logs curlycatclaw`.
 
 **If Foreground (A or only option):**
@@ -318,10 +366,10 @@ for i in $(seq 1 30); do
 done
 ```
 
-If health check passes, proceed to Step 7. If timeout, ask user to check the terminal
+If health check passes, proceed to Step 8. If timeout, ask user to check the terminal
 output for errors.
 
-## 7. Verify
+## 8. Verify
 
 Run the verification script:
 
@@ -341,7 +389,7 @@ Parse the STATUS block:
 - **QDRANT=fail:** Run `bash .claude/skills/setup/qdrant.sh health`. If unhealthy,
   restart: `bash .claude/skills/setup/qdrant.sh stop && bash .claude/skills/setup/qdrant.sh start`
 
-- **SERVICE=stopped:** Re-check Step 6. Verify config path is correct.
+- **SERVICE=stopped:** Re-check Step 7. Verify config path is correct.
 
 - **CONFIG_PERMS_OK=false:** "Warning: config file permissions are too open (contains API keys).
   Fixing..." then `chmod 600 ~/.curlycatclaw/config.toml`

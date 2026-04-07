@@ -1,68 +1,9 @@
-# Production docker-compose for curlycatclaw.
-# Uses the pre-built image from GitHub Container Registry (no clone needed).
+# DEPRECATED: This file has been merged into the root docker-compose.yml.
 #
-# Usage:
-#   1. Download this file and config.toml.example
-#   2. Copy config.toml.example to ~/.curlycatclaw/config.toml and fill in credentials
-#   3. docker compose -f docker-compose.yml up -d
-services:
-  curlycatclaw:
-    image: ${CURLYCATCLAW_IMAGE:-ghcr.io/jialuohu/curlycatclaw:latest}
-    restart: unless-stopped
-    volumes:
-      - ~/.curlycatclaw:/data
-    env_file:
-      - path: ~/.curlycatclaw/env
-        required: false
-    environment:
-      - CURLYCATCLAW_DB_PATH=/data/curlycatclaw.db
-      - CURLYCATCLAW_QDRANT_ADDR=qdrant:6334
-      - HOME=/data
-    depends_on:
-      qdrant:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  curlycatclaw-updater:
-    image: ghcr.io/jialuohu/curlycatclaw-updater:latest
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.curlycatclaw:/data
-      - .:/compose-project:ro
-    env_file:
-      - path: ~/.curlycatclaw/env
-        required: false
-    environment:
-      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
-      - SERVICE_NAME=curlycatclaw
-      - HEALTH_URL=http://curlycatclaw:8080/health
-      # UPDATER_SECRET is loaded via env_file above; do NOT set it in
-      # environment: (host-side ${} expansion overrides the env_file value)
-    working_dir: /compose-project
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  qdrant:
-    image: qdrant/qdrant:v1.17.1
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
-    volumes:
-      - qdrant-data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-
-volumes:
-  qdrant-data:
+# The root docker-compose.yml now works for both production and development:
+#   Production: docker compose up -d (pulls pre-built GHCR images)
+#   Development: cp docker-compose.override.yml.example docker-compose.override.yml
+#                docker compose up -d (builds from source)
+#
+# Download the new file:
+#   curl -O https://raw.githubusercontent.com/jialuohu/curlycatclaw/main/docker-compose.yml

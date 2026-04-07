@@ -17,11 +17,20 @@ go build -o curlycatclaw-updater ./cmd/curlycatclaw-updater
 ## Docker (primary way to run)
 
 ```bash
-docker compose build curlycatclaw         # rebuild after code changes
-docker compose build curlycatclaw-updater # rebuild updater sidecar
-docker compose up -d curlycatclaw         # start/restart
+docker compose up -d                      # pulls pre-built images, starts services
 docker compose logs curlycatclaw --tail 20 # check logs
 docker compose restart curlycatclaw       # restart without rebuild
+```
+
+For dev (building from source), copy the override file first:
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+docker compose build && docker compose up -d
+```
+
+Optional services use Compose profiles:
+```bash
+COMPOSE_PROFILES=ollama,updater docker compose up -d
 ```
 
 ## Testing

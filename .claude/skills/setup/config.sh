@@ -39,8 +39,16 @@ while IFS='=' read -r key value; do
     TELEGRAM_TOKEN)       TELEGRAM_TOKEN="$value" ;;
     TELEGRAM_USER_ID)     TELEGRAM_USER_ID="$value" ;;
     CLAUDE_CLI_PATH)      CLAUDE_CLI_PATH="$value" ;;
+    EMBEDDER_CHOICE)      EMBEDDER_CHOICE="$value" ;;
+    VOYAGE_API_KEY)       VOYAGE_API_KEY="$value" ;;
+    INSTALL_METHOD)       INSTALL_METHOD="$value" ;;
   esac
 done < "$CREDS_FILE"
+
+# Defaults for optional fields
+EMBEDDER_CHOICE="${EMBEDDER_CHOICE:-fnv}"
+VOYAGE_API_KEY="${VOYAGE_API_KEY:-}"
+INSTALL_METHOD="${INSTALL_METHOD:-docker}"
 
 # Validate required fields: need exactly one of API key or auth token
 if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
@@ -109,10 +117,44 @@ allowed_user_ids = [$TELEGRAM_USER_ID]
 [storage]
 db_path = "$DB_PATH"
 
+$(
+QDRANT_ADDR="localhost:6334"
+if [ "$INSTALL_METHOD" = "docker" ]; then
+  QDRANT_ADDR="qdrant:6334"
+fi
+if [ "$EMBEDDER_CHOICE" = "ollama" ]; then
+  OLLAMA_URL="http://localhost:11434"
+  if [ "$INSTALL_METHOD" = "docker" ]; then
+    OLLAMA_URL="http://ollama:11434"
+  fi
+  cat << VECTOR_EOF
 [vector]
 enabled    = true
-qdrant_addr = "localhost:6334"
+qdrant_addr = "$QDRANT_ADDR"
+embedder   = "ollama"
+ollama_url = "$OLLAMA_URL"
+ollama_model = "bge-m3"
+ollama_dim = 1024
+VECTOR_EOF
+elif [ "$EMBEDDER_CHOICE" = "voyage" ]; then
+  cat << VECTOR_EOF
+[vector]
+enabled    = true
+qdrant_addr = "$QDRANT_ADDR"
+embedder   = "voyage"
+voyage_api_key = "$VOYAGE_API_KEY"
+voyage_model = "voyage-3-lite"
+voyage_dim = 512
+VECTOR_EOF
+else
+  cat << VECTOR_EOF
+[vector]
+enabled    = true
+qdrant_addr = "$QDRANT_ADDR"
 embedder   = "fnv"
+VECTOR_EOF
+fi
+)
 
 [memory]
 enabled = true

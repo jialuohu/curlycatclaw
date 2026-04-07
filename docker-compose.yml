@@ -1,6 +1,6 @@
 services:
   curlycatclaw:
-    build: .
+    image: ${CURLYCATCLAW_IMAGE:-ghcr.io/jialuohu/curlycatclaw:latest}
     restart: unless-stopped
     stop_grace_period: 45s  # Must exceed SuperviseAll drain timeout (30s) + CLI shutdown (30s)
     volumes:
@@ -13,8 +13,6 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 10s
@@ -22,26 +20,21 @@ services:
       retries: 3
 
   curlycatclaw-updater:
-    build:
-      context: .
-      dockerfile: Dockerfile.updater
+    image: ghcr.io/jialuohu/curlycatclaw-updater:latest
     restart: unless-stopped
+    profiles: ["updater"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.curlycatclaw:/data
-      - .:/compose-project:ro
     env_file:
       - path: ~/.curlycatclaw/env
         required: false
     environment:
-      - HOME=${HOME}
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
       - SERVICE_NAME=curlycatclaw
       - HEALTH_URL=http://curlycatclaw:8080/health
-      - BUILD_MODE=true
       # UPDATER_SECRET is loaded via env_file above; do NOT set it in
       # environment: (host-side ${} expansion overrides the env_file value)
-    working_dir: /compose-project
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/healthz"]
       interval: 10s
@@ -65,6 +58,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    profiles: ["ollama"]
     ports:
       - "127.0.0.1:11434:11434"
     volumes:

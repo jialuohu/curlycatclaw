@@ -119,6 +119,36 @@ else
   PORT_8080="unknown"
 fi
 
+# GPU detection
+GPU_TYPE="none"
+GPU_NAME=""
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+  GPU_TYPE="nvidia"
+  GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+elif [ "$(uname)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+  GPU_TYPE="apple_silicon"
+  GPU_NAME=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
+elif command -v lspci >/dev/null 2>&1; then
+  if lspci 2>/dev/null | grep -qi 'nvidia.*vga\|nvidia.*3d'; then
+    GPU_TYPE="nvidia_no_driver"
+    GPU_NAME=$(lspci 2>/dev/null | grep -i 'nvidia.*vga\|nvidia.*3d' | head -1 | sed 's/.*: //')
+  elif lspci 2>/dev/null | grep -qi 'amd.*vga\|radeon'; then
+    GPU_TYPE="amd_no_driver"
+    GPU_NAME=$(lspci 2>/dev/null | grep -i 'amd.*vga\|radeon' | head -1 | sed 's/.*: //')
+  elif lspci 2>/dev/null | grep -qi 'intel.*vga\|intel.*display'; then
+    GPU_TYPE="intel_igpu"
+    GPU_NAME=$(lspci 2>/dev/null | grep -i 'intel.*vga\|intel.*display' | head -1 | sed 's/.*: //')
+  fi
+fi
+
+# Ollama status
+OLLAMA_RUNNING="false"
+if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+  OLLAMA_RUNNING="true"
+elif command -v docker >/dev/null 2>&1 && docker ps 2>/dev/null | grep -q ollama; then
+  OLLAMA_RUNNING="true"
+fi
+
 # Output structured status block
 cat << EOF
 --- STATUS ---
@@ -137,5 +167,8 @@ LATEST_VERSION=$LATEST_VERSION
 QDRANT_RUNNING=$QDRANT_RUNNING
 CONFIG_EXISTS=$CONFIG_EXISTS
 PORT_8080=$PORT_8080
+GPU_TYPE=$GPU_TYPE
+GPU_NAME=$GPU_NAME
+OLLAMA_RUNNING=$OLLAMA_RUNNING
 --- END ---
 EOF
