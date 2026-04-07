@@ -40,9 +40,24 @@ builds:
       - -X main.version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  - id: curlycatclaw-updater
+    main: ./cmd/curlycatclaw-updater
+    binary: curlycatclaw-updater
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
   - id: default
-    builds: [curlycatclaw, curlycatclaw-gws-mcp]
+    builds: [curlycatclaw, curlycatclaw-gws-mcp, curlycatclaw-updater]
     formats:
       - tar.gz
     files:
@@ -74,6 +89,16 @@ dockers:
       - "ghcr.io/jialuohu/curlycatclaw:latest"
     extra_files:
       - config.toml.example
+
+  - id: curlycatclaw-updater
+    ids: [curlycatclaw-updater]
+    dockerfile: Dockerfile.goreleaser-updater
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/jialuohu/curlycatclaw-updater:{{ .Version }}"
+      - "ghcr.io/jialuohu/curlycatclaw-updater:{{ .Major }}.{{ .Minor }}"
+      - "ghcr.io/jialuohu/curlycatclaw-updater:latest"
 
 release:
   github:
