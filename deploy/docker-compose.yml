@@ -11,6 +11,9 @@ services:
     restart: unless-stopped
     volumes:
       - ~/.curlycatclaw:/data
+    env_file:
+      - path: ~/.curlycatclaw/env
+        required: false
     environment:
       - CURLYCATCLAW_DB_PATH=/data/curlycatclaw.db
       - CURLYCATCLAW_QDRANT_ADDR=qdrant:6334
@@ -38,7 +41,8 @@ services:
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
       - SERVICE_NAME=curlycatclaw
       - HEALTH_URL=http://curlycatclaw:8080/health
-      - UPDATER_SECRET=${UPDATER_SECRET:-}
+      # UPDATER_SECRET is loaded via env_file above; do NOT set it in
+      # environment: (host-side ${} expansion overrides the env_file value)
     working_dir: /compose-project
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/healthz"]
