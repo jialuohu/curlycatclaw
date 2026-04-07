@@ -3,10 +3,10 @@
 ## System Overview
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│                       Supervisor                           │
-│            (panic/recover, backoff, 30s drain)             │
-│                                                            │
+┌────────────────────────────────────────────────────────────────┐
+│                       Supervisor                               │
+│            (panic/recover, backoff, 30s drain)                 │
+│                                                                │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  ┌──────┐│
 │  │ Channel  │◄►│ Session  │  │ Reminder │  │ Ingest │  │ Eval ││
 │  │  Actor   │  │  Actor   │  │  Actor   │  │ Actor  │  │ Actor││
@@ -108,7 +108,7 @@ Conversation Archival (>4h idle, both API and CLI modes):
 
 ## Tool Execution
 
-Four tool sources unified under one routing layer:
+Three tool sources unified under one routing layer:
 
 ```
 Claude tool_use ──► skills.Registry.Get(name)
@@ -140,7 +140,7 @@ In CLI subprocess mode, runtime MCP extensions are proxied through the curlycatc
 
 ## Vector Search
 
-Pluggable embeddings with three Qdrant collections:
+Pluggable embeddings with four Qdrant collections:
 
 ```
 Embedder Interface: Embed(text) → vector

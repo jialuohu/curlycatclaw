@@ -131,10 +131,10 @@ type MCPServerConfig struct {
 type VectorConfig struct {
 	Enabled    bool   `toml:"enabled"`
 	QdrantAddr string `toml:"qdrant_addr"`
-	Embedder   string `toml:"embedder"`    // "fnv" (default), "ollama", "voyage"
+	Embedder   string `toml:"embedder"`    // "ollama" (default), "fnv", "voyage"
 	OllamaURL  string `toml:"ollama_url"`  // default "http://localhost:11434"
-	OllamaModel string `toml:"ollama_model"` // default "nomic-embed-text"
-	OllamaDim  uint64 `toml:"ollama_dim"`  // default 768
+	OllamaModel string `toml:"ollama_model"` // default "bge-m3"
+	OllamaDim  uint64 `toml:"ollama_dim"`  // default 1024
 	VoyageKey  string `toml:"voyage_api_key"`
 	VoyageModel string `toml:"voyage_model"` // default "voyage-3-lite"
 	VoyageDim  uint64 `toml:"voyage_dim"`  // default 512

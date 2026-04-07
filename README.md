@@ -24,7 +24,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - 🧠 **Smart memory** -- four-tier context (user facts, auto-extracted observations with entity tracking and self-healing supersession, conversation summaries via Qdrant, sliding window), FTS5 hybrid search, progressive retrieval, pluggable embeddings, voice messages transcribed via OpenAI Whisper
 
-- 📧 **Email ingest** -- background Gmail polling with two-stage filtering (sender/label pre-filter + Claude importance scoring), automatic observation extraction from important emails
+- 📧 **Knowledge ingest** -- background ingestion from Gmail, Obsidian vaults, and Notion with per-source cursors, daily caps, and trust levels
 
 - 🔌 **Extensible** -- Google Workspace (multi-account with per-account service filtering), GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, file delivery, all manageable from chat
 
@@ -67,7 +67,7 @@ Then message your Telegram bot. Done.
 For self-update support, also start the updater sidecar and set a shared secret in `~/.curlycatclaw/env`:
 
 ```bash
-echo "UPDATER_SECRET=$(openssl rand -hex 16)" >> ~/.curlycatclaw/env
+echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> ~/.curlycatclaw/env
 docker compose up -d curlycatclaw-updater
 ```
 
@@ -80,15 +80,15 @@ Then use `/update` in Telegram to check for and apply updates.
 │                       Supervisor                           │
 │            (panic/recover, backoff, 30s drain)             │
 │                                                            │
-│  ┌──────────┐   ┌───────────┐   ┌───────────┐   ┌──────────┐│
-│  │ Channel  │◄─►│  Session  │   │ Reminder  │   │  Email   ││
-│  │  Actor   │   │   Actor   │   │   Actor   │   │  Ingest  ││
-│  └────┬─────┘   └─────┬─────┘   └─────┬─────┘   └────┬─────┘│
-│       │               │               │               │      │
-│       │               ├──► Claude     │          Gmail │      │
-│       │               │    Direct API (stream+tools)  via    │
-│       │               │    OR CLI subprocess         MCP     │
-│       │               │    + /effort /retry /debug     │      │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  ┌──────┐│
+│  │ Channel  │◄►│ Session  │  │ Reminder │  │ Ingest │  │ Eval ││
+│  │  Actor   │  │  Actor   │  │  Actor   │  │ Actor  │  │ Actor││
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘  └──┬──┘│
+│       │              │              │             │          │   │
+│       │              ├──► Claude    │        Gmail│     gocron│  │
+│       │              │    Direct API (stream+tools) Obsidian │  │
+│       │              │    OR CLI subprocess  Notion via MCP  │  │
+│       │              │    + /effort /retry /debug /update    │  │
 │       │               │               │               ▼      │
 │       │               ├──► MCP Manager           Observations│
 │       │               │    ├─ Config servers (gws, github)   │
@@ -106,7 +106,7 @@ Then use `/update` in Telegram to check for and apply updates.
    Bot API
 ```
 
-Everything runs as goroutine-based actors under supervision. The Channel Actor handles Telegram I/O, the Session Actor orchestrates Claude conversations and tool execution, the Reminder Actor manages scheduled tasks, and the Email Ingest Actor polls Gmail for important emails and extracts observations. See [docs/architecture.md](docs/architecture.md) for the full streaming pipeline, memory system, tool execution, and vector search diagrams.
+Everything runs as goroutine-based actors under supervision. The Channel Actor handles Telegram I/O, the Session Actor orchestrates Claude conversations and tool execution, the Reminder Actor manages scheduled tasks, and the Ingest Actor ingests knowledge from configured sources (Gmail, Obsidian, Notion) and extracts observations into the memory system. See [docs/architecture.md](docs/architecture.md) for the full streaming pipeline, memory system, tool execution, and vector search diagrams.
 
 ## Documentation
 
@@ -114,7 +114,7 @@ Everything runs as goroutine-based actors under supervision. The Channel Actor h
 |----------|-------------|
 | [Architecture](docs/architecture.md) | System overview, streaming pipeline, memory, tool execution, vector search |
 | [Configuration](docs/configuration.md) | Config reference, Google Workspace, GitHub, encrypted credentials |
-| [Built-in Skills](docs/skills.md) | All 31 skills and the 5 skill types |
+| [Google Workspace Skills](docs/skills.md) | Google Workspace skills catalog |
 | [Docker Deployment](docs/docker.md) | Services, data layout, backups, plugin runtimes |
 
 ## Testing

@@ -32,35 +32,49 @@ enabled = true
 # summarize_model = "claude-haiku-4-5"  # cheaper model for conversation summarization (CLI mode)
 
 [memory.observations]
-enabled = true                 # enable automatic observation extraction
-# extraction_interval = 3     # extract every N user turns (default: 3)
-# cooldown_seconds = 60       # min seconds between extractions (default: 60)
-# retrieval_limit = 8         # max observations in system prompt (default: 8)
-# hybrid_search = false       # enable FTS5 + vector hybrid search (default: false)
-# progressive_retrieval = false # enable 3-layer compact/expanded/detail retrieval (default: false)
-# supersession_threshold = 0.8  # confidence threshold for auto-filtering superseded observations (default: 0.8)
+enabled = true                       # enable automatic observation extraction
+# extraction_interval = 3           # extract every N user turns (default: 3)
+# extraction_model = ""             # model for extraction, e.g. "claude-haiku-4-5" (default: main model)
+# max_observations_per_conversation = 0  # cap per conversation (default: 0 = unlimited)
+# max_transcript_chars = 0          # max transcript chars sent to extractor (default: 0 = unlimited)
+# cooldown_seconds = 60             # min seconds between extractions (default: 60)
+# retrieval_limit = 8               # max observations in system prompt (default: 8)
+# retrieval_score_threshold = 0.0   # minimum score to include in results (default: 0.0)
+# hybrid_search = false             # enable FTS5 + vector hybrid search (default: false)
+# progressive_retrieval = false     # enable 3-layer compact/expanded/detail retrieval (default: false)
+# compact_limit = 0                 # max items in compact layer (default: 0)
+# expanded_limit = 0                # max items in expanded layer (default: 0)
+# supersession_threshold = 0.8      # confidence threshold for auto-filtering superseded observations (default: 0.8)
 
 [health]
 enabled = true
 port    = 8080
 ```
 
-## Email Ingest (optional)
+## Knowledge Source Ingest (optional)
 
-Background email-to-observation processing. Polls Gmail via the GWS MCP server, scores emails by importance with Claude, and extracts observations from important ones. Requires a GWS MCP server with Gmail-enabled accounts.
+Generic knowledge ingestion pipeline. Each `[[ingest.sources]]` entry is an independent source with its own schedule, caps, and trust level. Supported types: `"gmail"` (via GWS MCP), `"file"` (local directory, e.g. Obsidian vault), `"notion"` (via Notion MCP).
 
 ```toml
-[email_ingest]
-enabled = false
-interval_minutes = 15       # poll interval for new emails
-backfill_days = 30           # days of history to backfill on first run
-batch_size = 20              # emails per backfill batch
-max_daily_observations = 100 # per-account daily cap
-max_daily_llm_calls = 200    # cost circuit breaker
-min_importance = 3           # minimum importance to index (1-10)
-labels = ["INBOX"]           # Gmail labels to process
+[[ingest.sources]]
+name = "gmail"
+type = "gmail"                    # "gmail", "file", or "notion"
+enabled = true
+interval_minutes = 15             # poll interval
+backfill_days = 30                # days of history on first run
+trust_level = "untrusted"         # "trusted" or "untrusted" (blocks preference/commitment extraction)
+extraction = "llm"                # "llm", "passthrough", or "hybrid"
+max_daily_observations = 100      # per-source daily cap
+max_daily_llm_calls = 200         # cost circuit breaker
+min_importance = 3                # minimum importance to index (1-10)
+accounts = ["default"]            # Gmail-specific: which GWS accounts to poll
+
+[ingest.sources.prefilter]
+labels = ["INBOX"]
 skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
 ```
+
+> **Deprecated**: The old `[email_ingest]` section still works but auto-migrates to `[[ingest.sources]]` at startup. Prefer the new format above.
 
 ## Google Workspace (optional)
 

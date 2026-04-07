@@ -49,7 +49,7 @@ Persistent CLI subprocesses for ingest extraction. Email processing drops from ~
 - **MCP account discovery fix**: `DiscoverGmailAccounts` now unwraps the MCP text envelope, enabling multi-account discovery
 
 ### Changed
-- Ingest extraction model configurable via `extraction_model` (defaults to `claude-sonnet-4-5` instead of main model)
+- Ingest extraction model configurable via `extraction_model` (defaults to `claude-haiku-4-5` instead of main model)
 - Dockerfile NodeSource install uses GPG key + apt repo instead of curl-pipe-bash
 
 ### Fixed
