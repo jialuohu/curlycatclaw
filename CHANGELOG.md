@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.31.0] - 2026-04-07
+
+Unified docker-compose and smart embedding setup. One compose file for everyone, GPU-aware embedder selection during first-time setup.
+
+### Added
+- **Unified docker-compose.yml**: single compose file for both production (pulls GHCR images) and development (override file adds local build). No more separate `deploy/docker-compose.yml`.
+- **docker-compose.override.yml**: dev-only file that adds `build:` directives, auto-merged by Docker Compose when present. Gitignored.
+- **GPU detection in setup**: detects NVIDIA (`nvidia-smi`), AMD (`rocm-smi`/`lspci`), Apple Silicon, and Intel iGPU. Recommends the best embedding engine based on hardware.
+- **Smart embedding selection**: auto-selects Ollama for GPU users, FNV for no-GPU users, with manual override to any of the three options (Ollama/FNV/Voyage).
+- **Ollama profile**: `COMPOSE_PROFILES=ollama` enables the Ollama service. Not a hard dependency, so FNV/Voyage users skip it entirely.
+- **Updater profile**: `COMPOSE_PROFILES=updater` enables the self-update sidecar. Requires UPDATER_SECRET configuration.
+- **Generated GWS skill folders gitignored**: 95 auto-generated `skills/gws-*/` directories no longer clutter `git status`.
+
+### Changed
+- `deploy/docker-compose.yml` replaced with redirect comment pointing to root compose file
+- Setup skill (`config.sh`) generates embedder-specific vector config based on hardware detection
+- `.dockerignore` expanded to exclude dev tools, generated skills, compiled binaries
+
 ## [0.30.1] - 2026-04-07
 
 Bug fixes and security hardening for the self-update system, found by automated agent audits.
