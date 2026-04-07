@@ -74,6 +74,9 @@ curlycatclaw --version            # print version and exit
 curlycatclaw --mcp-server         # run as MCP stdio server (spawned by claude CLI)
 curlycatclaw --migrate-embedder   # wipe and rebuild vector collections with configured embedder
 curlycatclaw --migrate-embedder --dry-run  # count texts only, no modifications
+curlycatclaw --eval-export               # export conversations for manual quality labeling
+curlycatclaw --eval-seed                 # generate synthetic conversations for eval validation
+curlycatclaw --eval-export --eval-hours 48  # export last 48 hours (default: 24)
 ```
 
 ## Architecture
