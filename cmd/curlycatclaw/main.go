@@ -318,10 +318,13 @@ func run(configPath string) error {
 	extension.EnsureDefaults(extReg, wrappersDir)
 	for _, ext := range extReg.ByType(extension.TypeMCP) {
 		mcpCfg := config.MCPServerConfig{
-			Name:    ext.Name,
-			Command: ext.Command,
-			Args:    ext.Args,
-			Env:     ext.Env,
+			Name:      ext.Name,
+			Command:   ext.Command,
+			Args:      ext.Args,
+			Env:       ext.Env,
+			Transport: ext.Transport,
+			URL:       ext.URL,
+			Headers:   ext.Headers,
 		}
 		if err := mcpMgr.AddServer(ctx, mcpCfg, nil); err != nil {
 			slog.Warn("extension: failed to start MCP server", "name", ext.Name, "err", err)
