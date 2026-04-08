@@ -178,6 +178,7 @@ func (m *Manager) startHTTPServer(ctx context.Context, srv config.MCPServerConfi
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+		Timeout: 60 * time.Second,
 	}
 
 	transport := &mcp.StreamableClientTransport{
@@ -192,7 +193,6 @@ func (m *Manager) startHTTPServer(ctx context.Context, srv config.MCPServerConfi
 		return nil, fmt.Errorf("connect http %q: %w", srv.URL, err)
 	}
 
-	slog.Info("mcp: HTTP server connected", "server", srv.Name, "url", srv.URL)
 	return session, nil
 }
 
@@ -354,6 +354,9 @@ func (m *Manager) Shutdown() {
 
 	var wg sync.WaitGroup
 	for name, sc := range m.servers {
+		if sc == nil {
+			continue // AddServer reservation in progress
+		}
 		wg.Add(1)
 		go func(name string, sc *serverConn) {
 			defer wg.Done()

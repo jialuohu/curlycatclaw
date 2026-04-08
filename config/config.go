@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -472,6 +473,10 @@ func (c *Config) validate() error {
 		case "http":
 			if srv.URL == "" {
 				return fmt.Errorf("config: mcp.servers[%d].url is required for http transport", i)
+			}
+			u, err := url.Parse(srv.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+				return fmt.Errorf("config: mcp.servers[%d].url must be http:// or https://, got %q", i, srv.URL)
 			}
 			if srv.Command != "" {
 				return fmt.Errorf("config: mcp.servers[%d].command is not allowed for http transport", i)
