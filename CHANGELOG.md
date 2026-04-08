@@ -11,6 +11,17 @@ Interactive setup wizard. Claude Code now walks you through every config option 
 ### Changed
 - **Setup introduction**: now previews the three config profiles so users know what to expect.
 - **config.sh deprecated**: shell script preserved as fallback for non-interactive setups.
+- **Default model**: `claude-opus-4-6` (was `claude-sonnet-4-6-20250514`, which the CLI didn't recognize).
+- **Default thinking effort**: `medium` recommended (was `high`).
+
+### Fixed
+- **Phantom reminders after cancel**: cancelling a reminder in CLI mode updated the database but the main process's scheduler kept firing it. Now `pollNewReminders` detects cancelled jobs and removes them, and `fireReminder` re-checks DB status before sending.
+- **CLI path in Docker**: setup wizard now uses `/usr/local/bin/claude` (container path) instead of the host machine path.
+- **OAuth token whitespace**: pasted tokens with embedded newlines or spaces are now stripped.
+- **GWS credentials on headless servers**: you can now paste the JSON content directly instead of providing a file path.
+
+### Removed
+- **`confirm_tools` config option**: was broken in CLI mode (MCP tool name prefix never matched). Not needed when running in a container.
 
 ## [0.31.5] - 2026-04-08
 
