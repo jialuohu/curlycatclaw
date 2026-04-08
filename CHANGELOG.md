@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.34.0] - 2026-04-08
+
+### Added
+- **HTTP MCP extensions via chat**: `add_extension` now accepts `transport: "http"` with `url` and `headers` fields. HTTP-based MCP servers (like xiaohongshu-mcp) can be installed at runtime, persist across restarts, and hot-reload, just like stdio extensions.
+
+### Fixed
+- **Session leak on HTTP MCP re-registration**: `ConnectHTTPAndRegister` now closes the old session before replacing it, matching the stdio path's behavior. Also removes stale proxy tools when a remote server's tool set changes.
+- **URL validation**: rejects URLs with no host (e.g. `http://`) that would fail at connect time.
+
 ## [0.33.2] - 2026-04-08
 
 ### Changed
