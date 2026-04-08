@@ -93,7 +93,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 
 **Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control. `/update`, `/status`, `/rollback` for self-update management. Document attachments: PDFs sent as native document blocks (both modes), text files inlined into message (CLI) or as text blocks (API).
 
-**MCP & tools**: MCP Manager holds persistent stdio connections. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
+**MCP & tools**: MCP Manager holds persistent connections via stdio (local subprocesses) or Streamable HTTP (remote servers). Config: `transport = "http"` + `url` + `[headers]` for remote; default stdio uses `command` + `args`. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
 
 **Memory**: Four tiers: user facts (always), observations (Qdrant + FTS5 hybrid search), conversation summaries (Qdrant), sliding window (25 turns). Observation extraction auto-triggers after idle. Self-healing supersession detects stale project_state. Soft delete with archive/restore.
 
@@ -113,6 +113,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - CLI subprocess `bufio.Scanner` max is 16MB (for base64 PDF responses in stream-json). Default 64KB would crash on any document attachment.
 - Health endpoint binds to `0.0.0.0:8080` (not `127.0.0.1`) so the updater sidecar can reach it across the Docker network for liveness checks.
 - Reminder cancellation in CLI mode: `cancel_reminder` updates the DB via MCP subprocess, but the signal channel drains to /dev/null in `mcp_server.go`. `pollNewReminders` (every 10s) compensates by checking DB for cancelled jobs. `fireReminder` also re-checks DB status before sending as a safety net.
+- HTTP MCP transport: `headerRoundTripper` skips reserved headers (`content-type`, `accept`, `mcp-session-id`) to avoid breaking SDK internals. Redirects are blocked (`http.ErrUseLastResponse`) to prevent API key leakage. 60s client timeout. `DisableStandaloneSSE: true` for stateless servers. Per-server 5s shutdown timeout prevents one hung HTTP DELETE from blocking the rest.
 
 ## Key Files
 
@@ -127,7 +128,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `cmd/curlycatclaw/mcp_server.go` | MCP stdio server exposing built-in skills + proxy for runtime MCP extensions |
 | `internal/telegram/channel.go` | Telegram channel actor (go-telegram/bot v1.20.0, Bot API 9.5) |
 | `internal/memory/store.go` | SQLite storage |
-| `internal/mcp/manager.go` | MCP server lifecycle |
+| `internal/mcp/manager.go` | MCP server lifecycle (stdio + Streamable HTTP) |
 | `internal/memory/embedder.go` | Embedder interface + FNV/Ollama/Voyage implementations |
 | `internal/memory/facts.go` | User facts CRUD (sanitization, IDOR protection) |
 | `internal/memory/summarizer.go` | Conversation summarizer (transcript formatting + Claude) |
