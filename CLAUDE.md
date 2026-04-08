@@ -193,7 +193,7 @@ For self-update, generate a shared secret: `echo "UPDATER_SECRET=$(openssl rand 
 
 For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
 
-Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format, `[update]` for self-update system (`enabled`, `updater_url`, `auto_update`, `schedule`).
+Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format, `[update]` for self-update system (`enabled`, `updater_url`, `auto_update`, `schedule`), `[github]` for issue creation settings (`owner`, `repo`, used by `capture_diagnostics` + system prompt when GitHub MCP has write access).
 
 ## gstack
 
