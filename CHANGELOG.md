@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.33.0] - 2026-04-08
+
+GitHub issue templates, PR template, and diagnostics skill. Non-technical testers can now report bugs through Telegram and the bot creates structured GitHub issues with auto-captured environment diagnostics.
+
+### Added
+- **GitHub issue templates**: YAML-based forms for bug reports (with severity dropdown) and feature requests. Template chooser links to Telegram bot for non-technical testers. Blank issues disabled.
+- **PR template**: Structured pull request template with summary, changes, testing checklist, and related issues sections.
+- **CONTRIBUTING.md**: Minimal contribution guide with two paths (GitHub forms or Telegram bot), quickstart for GitHub integration setup, and example prompt for testers.
+- **`capture_diagnostics` skill**: Auto-captures version, MCP server status, recent tool call errors (last 24h, user-scoped), health checks (Qdrant/Ollama with 3s timeout), and safe config summary. Never exposes API keys or credentials (structural isolation via `DiagSafeConfig`). Best-effort, never blocks issue creation.
+- **GitHub issue creation guidance**: System prompt detects write-enabled GitHub MCP (via `create_issue` tool presence) and guides Claude through conversational issue creation with user confirmation.
+- **Startup warning**: Logs a warning when GitHub MCP is registered but in read-only mode.
+- **`[github]` config section**: Owner/repo settings for issue creation (defaults to jialuohu/curlycatclaw).
+
+### Changed
+- **MCP Manager**: Added `ServerNames()` and `IsRegistered()` methods for diagnostics integration.
+- **Store**: Added `RecentToolErrors()` and `RecentToolCallsByUser()` query methods with user scoping and 24-hour window.
+- **config.toml.example**: Expanded GitHub MCP comments with step-by-step write-mode setup instructions. Default remains `--read-only`.
+
 ## [0.32.0] - 2026-04-08
 
 Interactive setup wizard. Claude Code now walks you through every config option instead of generating a rigid default.
