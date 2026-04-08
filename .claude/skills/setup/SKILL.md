@@ -407,6 +407,9 @@ If A, present presets:
   **Note:** GWS MCP requires the `curlycatclaw-gws-mcp` binary. In Docker, it must be
   built separately or mounted into the container. The pre-built GHCR image does NOT
   include it. If Docker, warn the user about this.
+- **Google Maps** (experimental) — place search, weather, directions via remote HTTP MCP.
+  Needs: Google Maps Platform API key from Google Cloud Console.
+  Enable Places API (New), Routes API, Geocoding API. Free tier: $200/month credit.
 - **Custom** — any MCP server. Needs: name, command, args, env vars.
 
 For GitHub, ask for the Personal Access Token in plain text.
@@ -417,6 +420,17 @@ For Google Workspace, ask: "How do you want to provide GWS credentials?"
 If the user pastes JSON content, write it to `~/.curlycatclaw/gws-credentials.json`
 (with `chmod 600`) and use that path in the config. If they provide a path, use it
 directly (deployment-aware: Docker uses `/data/gws-credentials.json`).
+
+For Google Maps, ask for the API key in plain text. Strip embedded whitespace.
+Write:
+```toml
+[[mcp.servers]]
+name      = "google-maps"
+transport = "http"
+url       = "https://mapstools.googleapis.com/mcp"
+[mcp.servers.headers]
+X-Goog-Api-Key = "<key>"
+```
 
 Write the `[[mcp.servers]]` block for each server.
 After each server: "Add another MCP server? A) Yes B) Done"

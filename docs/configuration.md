@@ -130,6 +130,25 @@ GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..."
 
 Remove `--read-only` if you need write operations (create issues, comment on PRs). Rebuild and restart.
 
+### Remote MCP Servers (Streamable HTTP)
+
+curlycatclaw can connect to remote MCP servers using the Streamable HTTP transport. Set `transport = "http"` and provide the server URL and any required auth headers.
+
+Google Maps (experimental, Google public preview):
+
+```toml
+[[mcp.servers]]
+name      = "google-maps"
+transport = "http"
+url       = "https://mapstools.googleapis.com/mcp"
+[mcp.servers.headers]
+X-Goog-Api-Key = "your-google-maps-api-key"
+```
+
+Get a Google Maps API key from [Google Cloud Console](https://console.cloud.google.com/google/maps-apis/credentials). Enable Places API (New), Routes API, and Geocoding API. The $200/month free tier covers ~28,000 place searches.
+
+Headers support the `encrypted:ref:` prefix for credential encryption (see below).
+
 ## Self-Update (optional)
 
 Tell the bot `/update` in Telegram and it pulls the latest Docker image and restarts itself. Requires the `curlycatclaw-updater` sidecar container (see [docker.md](docker.md#updater-sidecar)).
