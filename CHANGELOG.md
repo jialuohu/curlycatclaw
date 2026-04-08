@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.31.2] - 2026-04-08
+
+Fix secrets not available after self-update/rollback.
+
+### Fixed
+- **401 after update/rollback**: `env_file` path (`~/.curlycatclaw/env`) didn't resolve inside the updater sidecar when it recreated containers. Replaced with `environment` + `${VAR}` substitution from `.env` in the project directory, which is accessible via the compose-project mount.
+- **Stale /status**: `/status` now does a fresh GHCR check instead of returning cached state.
+- **HOME env in base compose**: moved from dev override to base so prod mode works.
+
 ## [0.31.1] - 2026-04-08
 
 Fixes for production mode self-update. The GHCR pull flow now works end-to-end.
