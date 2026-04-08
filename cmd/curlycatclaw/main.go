@@ -718,7 +718,7 @@ func run(configPath string) error {
 	slog.Info("curlycatclaw started")
 
 	// Post-update notification: detect version change via file on shared volume.
-	go checkVersionChange(version, tg, cfg.Telegram.AllowedID)
+	go checkVersionChange(version, tg, cfg.Telegram.AllowedID, cfg.Health.Port)
 
 	// Auto-update cron: periodically check for updates and apply if configured.
 	if cfg.Update.Enabled && cfg.Update.AutoUpdate && updateClient != nil {
@@ -745,9 +745,30 @@ func run(configPath string) error {
 // checkVersionChange detects a post-update restart. Two detection methods:
 // 1. Version file: compare binary version against /data/.last-version (works for tagged releases)
 // 2. Sidecar state: if the updater reports a recent successful update (within 60s), this is a post-update restart (works for dev/build mode)
-func checkVersionChange(ver string, tg *telegram.Channel, allowedIDs []int64) {
-	// Give the Telegram channel time to connect before sending.
-	time.Sleep(5 * time.Second)
+func checkVersionChange(ver string, tg *telegram.Channel, allowedIDs []int64, healthPort int) {
+	// Wait until the health endpoint is actually responding before claiming
+	// "all systems operational." This prevents the user from seeing the
+	// notification and sending a message before the bot is ready.
+	healthURL := fmt.Sprintf("http://localhost:%d/health", healthPort)
+	deadline := time.After(60 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			slog.Warn("health endpoint not ready after 60s, sending notification anyway")
+			goto notify
+		case <-time.After(2 * time.Second):
+			resp, err := http.Get(healthURL)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					// Give Telegram channel 1 more second to finish connecting.
+					time.Sleep(1 * time.Second)
+					goto notify
+				}
+			}
+		}
+	}
+notify:
 
 	const versionFile = "/data/.last-version"
 	notified := false
