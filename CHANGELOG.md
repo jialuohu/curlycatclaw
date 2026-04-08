@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.33.0] - 2026-04-08
+
+Connect to remote MCP servers over HTTP. curlycatclaw can now talk to Google's managed MCP servers (Maps, BigQuery, Cloud Run) and any third-party remote MCP endpoint.
+
+### Added
+- **Streamable HTTP transport**: set `transport = "http"` in `[[mcp.servers]]` to connect to remote MCP servers. Supports custom auth headers with credential encryption.
+- **Google Maps MCP** (experimental): place search, weather, and directions via Google's managed MCP server. Add your API key and go.
+- **Per-server shutdown timeout**: each MCP server gets 5 seconds to close gracefully. One hung connection no longer blocks the rest.
+
+### Changed
+- **MCP Manager architecture**: `startServer()` split into `startStdioServer()` and `startHTTPServer()` helpers for clean transport separation.
+- **Config validation**: transport-aware rules. HTTP servers require `url`, stdio servers require `command`. Mixed configs are rejected.
+
 ## [0.32.0] - 2026-04-08
 
 Interactive setup wizard. Claude Code now walks you through every config option instead of generating a rigid default.
