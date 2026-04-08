@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.32.0] - 2026-04-08
+
+Interactive setup wizard. Claude Code now walks you through every config option instead of generating a rigid default.
+
+### Added
+- **Interactive config generation**: `/setup` Step 6 replaced with a conversational wizard. Three profiles: Quick start (essentials only), With memory (recommended, with "use defaults" fast-path), Full customization (every feature). Deployment-aware paths, dependency gating, config backup on overwrite, and post-write validation.
+- **`--validate-config` CLI flag**: validates config.toml and exits. Safety net for the setup wizard and CI pipelines.
+
+### Changed
+- **Setup introduction**: now previews the three config profiles so users know what to expect.
+- **config.sh deprecated**: shell script preserved as fallback for non-interactive setups.
+
 ## [0.31.5] - 2026-04-08
 
 Better post-update UX. "All systems operational" now means it.
