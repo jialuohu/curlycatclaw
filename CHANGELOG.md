@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.4] - 2026-04-08
+
+Built-in Docker healthcheck. Works on any base image without external tools.
+
+### Fixed
+- **Docker healthcheck**: replaced `curl`-based healthcheck with `curlycatclaw --health-check` flag. The previous healthcheck failed on distroless images (no curl binary), causing Docker to report containers as "unhealthy" even though the app was running fine.
+
 ## [0.31.3] - 2026-04-08
 
 Full-featured GHCR release image. Chat, MCP tools, and browser automation now work in production mode.

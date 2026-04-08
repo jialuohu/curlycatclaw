@@ -130,7 +130,7 @@ cp ~/.curlycatclaw/curlycatclaw.db ./backup.db
 
 The updater sidecar enables self-update from Telegram (`/update`, `/status`, `/rollback`). It runs as a separate container with access to the Docker socket.
 
-**Required env vars** (set in `~/.curlycatclaw/env` or docker-compose override):
+**Required env vars** (set in `.env` next to `docker-compose.yml`):
 
 | Variable | Purpose |
 |----------|---------|
@@ -151,11 +151,10 @@ schedule    = "0 3 * * 0"                          # cron (default: weekly Sunda
 
 ## Encrypted MCP Credentials
 
-Generate a master key and store it in `~/.curlycatclaw/env` (loaded via `env_file` in docker-compose, not committed to git):
+Generate a master key and store it in `.env` (next to `docker-compose.yml`, gitignored):
 
 ```bash
-echo "CURLYCATCLAW_MASTER_KEY=$(openssl rand -hex 32)" > ~/.curlycatclaw/env
-chmod 600 ~/.curlycatclaw/env
+echo "CURLYCATCLAW_MASTER_KEY=$(openssl rand -hex 32)" >> .env
 ```
 
 Then restart: `docker compose up -d`. Once configured, you can set API keys for MCP extensions via Telegram chat (e.g., "set CORE_API_KEY for paper-search-mcp") and they'll be encrypted at rest.
