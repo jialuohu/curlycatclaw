@@ -39,38 +39,6 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestRequiresConfirmation(t *testing.T) {
-	a := &Actor{
-		cfg: &config.Config{
-			ConfirmTools: []string{"cancel_reminder", "filesystem__delete"},
-		},
-	}
-
-	cases := []struct {
-		tool string
-		want bool
-	}{
-		{"cancel_reminder", true},
-		{"filesystem__delete_file", true},
-		{"web_search", false},
-		{"save_note", false},
-		{"", false},
-	}
-	for _, tc := range cases {
-		got := a.requiresConfirmation(tc.tool)
-		if got != tc.want {
-			t.Errorf("requiresConfirmation(%q) = %v, want %v", tc.tool, got, tc.want)
-		}
-	}
-}
-
-func TestRequiresConfirmation_EmptyList(t *testing.T) {
-	a := &Actor{cfg: &config.Config{}}
-
-	if a.requiresConfirmation("anything") {
-		t.Error("empty ConfirmTools list should never require confirmation")
-	}
-}
 
 // mockTelegramTransport captures outgoing messages for test assertions.
 type mockTelegramTransport struct {

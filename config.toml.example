@@ -110,9 +110,6 @@ db_path = "/data/curlycatclaw.db"
 enabled = true
 port    = 8080
 
-# Tool confirmation for sensitive operations.
-# confirm_tools = ["cancel_reminder", "filesystem__delete"]
-
 # Projects for CLI work (/project command).
 # [[projects]]
 # name = "myapp"
