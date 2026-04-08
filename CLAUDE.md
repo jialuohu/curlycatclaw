@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**curlycatclaw** is a personal AI agent assistant built in Go. It's a long-running daemon with a goroutine-based actor model, Telegram as the primary channel, Claude as the LLM (no multi-model abstraction), SQLite for storage, and MCP for tool integration.
+**curlycatclaw** is a personal AI agent assistant built in Go. It's a long-running daemon with a goroutine-based actor model, Telegram as the primary channel, Claude as the LLM (no multi-model abstraction), SQLite for storage, and MCP for tool integration. See [CONTRIBUTING.md](CONTRIBUTING.md) for bug reports and code contributions.
 
 ## Build & Run
 
@@ -137,6 +137,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `skills/observation.go` | Observation skills (search, list, get, forget, search_entities) |
 | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | `internal/session/cron.go` | CronExecutor for scheduled Claude-powered tasks |
+| `skills/registry.go` | Skill struct, Registry, UserInfo, GetUser() context helpers |
 | `skills/` | Built-in skill implementations |
 | `skills/fact.go` | User facts skills (remember, forget, list) |
 | `skills/search.go` | Web search skill (DuckDuckGo) |
