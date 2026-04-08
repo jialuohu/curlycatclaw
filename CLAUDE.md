@@ -184,7 +184,7 @@ For Google Workspace, export credentials on a machine with a browser (`gws auth 
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes).
 
-For self-update, generate a shared secret: `echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> ~/.curlycatclaw/env`. The updater sidecar and main container use this for authenticated HTTP communication.
+For self-update, generate a shared secret: `echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> .env` (in the same directory as `docker-compose.yml`). Docker Compose reads `.env` automatically and injects the secret into both the main container and the updater sidecar.
 
 For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
 

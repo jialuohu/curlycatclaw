@@ -76,7 +76,7 @@ docker compose build && docker compose up -d
 echo "COMPOSE_PROFILES=ollama,updater" > .env
 docker compose up -d                                    # now starts all services
 docker compose exec ollama ollama pull bge-m3            # first run only
-echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> ~/.curlycatclaw/env  # for self-update auth
+echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> .env               # for self-update auth
 ```
 
 Then use `/update` in Telegram to check for and apply updates.

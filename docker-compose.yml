@@ -7,11 +7,11 @@ services:
     stop_grace_period: 45s  # Must exceed SuperviseAll drain timeout (30s) + CLI shutdown (30s)
     volumes:
       - ~/.curlycatclaw:/data
-    env_file:
-      - path: ~/.curlycatclaw/env
-        required: false
     environment:
       - HOME=/data
+      # UPDATER_SECRET is read from .env via ${} substitution (not env_file)
+      # so it works both on the host and when the sidecar recreates this container.
+      - UPDATER_SECRET=${UPDATER_SECRET:-}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -30,16 +30,12 @@ services:
       - ~/.curlycatclaw:/data
       - .:/compose-project:ro
     working_dir: /compose-project
-    env_file:
-      - path: ~/.curlycatclaw/env
-        required: false
     environment:
       - HOME=${HOME}
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
       - SERVICE_NAME=curlycatclaw
       - HEALTH_URL=http://curlycatclaw:8080/health
-      # UPDATER_SECRET is loaded via env_file above; do NOT set it in
-      # environment: (host-side ${} expansion overrides the env_file value)
+      - UPDATER_SECRET=${UPDATER_SECRET:-}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/healthz"]
       interval: 10s

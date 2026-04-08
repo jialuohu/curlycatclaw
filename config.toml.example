@@ -202,7 +202,7 @@ port    = 8080
 # skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
 
 # Self-update configuration. Requires the curlycatclaw-updater sidecar container.
-# Set UPDATER_SECRET in your env file (~/.curlycatclaw/env) for authentication.
+# Set UPDATER_SECRET in .env (next to docker-compose.yml) for authentication.
 # [update]
 # enabled = false                              # Enable /update, /status, /rollback Telegram commands
 # updater_url = "http://curlycatclaw-updater:8081"  # Sidecar API URL (internal Docker network)

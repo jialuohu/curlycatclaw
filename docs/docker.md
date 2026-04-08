@@ -35,7 +35,7 @@ The setup skill (`/setup`) creates this file for you during first-time configura
 
 Available profiles:
 - **ollama** -- local embeddings (bge-m3). After first start: `docker compose exec ollama ollama pull bge-m3`
-- **updater** -- self-update sidecar. Requires `UPDATER_SECRET` in `~/.curlycatclaw/env`.
+- **updater** -- self-update sidecar. Requires `UPDATER_SECRET` in `.env` (same directory as `docker-compose.yml`).
 
 ## Services
 
