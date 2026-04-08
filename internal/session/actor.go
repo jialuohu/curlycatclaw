@@ -1829,8 +1829,10 @@ func (a *Actor) handleCallback(cb telegram.CallbackEvent) {
 }
 
 // handleStatusCommand sends the current updater sidecar status to the user.
+// Uses Check (fresh registry query) instead of Status (cached) so the user
+// always sees whether an update is actually available right now.
 func (a *Actor) handleStatusCommand(ctx context.Context, msg telegram.IncomingMessage) {
-	status, err := a.updateClient.Status(ctx)
+	status, err := a.updateClient.Check(ctx)
 	if err != nil {
 		a.trySend(telegram.OutgoingMessage{
 			ChatID: msg.ChatID,

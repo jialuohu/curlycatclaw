@@ -17,5 +17,4 @@ services:
       context: .
       dockerfile: Dockerfile.updater
     environment:
-      - HOME=${HOME}
       - BUILD_MODE=true

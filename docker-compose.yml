@@ -34,6 +34,7 @@ services:
       - path: ~/.curlycatclaw/env
         required: false
     environment:
+      - HOME=${HOME}
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
       - SERVICE_NAME=curlycatclaw
       - HEALTH_URL=http://curlycatclaw:8080/health
