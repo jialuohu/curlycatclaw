@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.33.2] - 2026-04-08
+
+### Changed
+- **Health endpoint port**: changed from 8080 to 18080 to avoid conflicts with common services.
+
 ## [0.33.1] - 2026-04-08
 
 Bugfixes for HTTP MCP transport and issue creation UX.
