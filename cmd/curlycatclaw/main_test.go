@@ -185,6 +185,66 @@ func TestHealthHandler_Returns503OnShutdown(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_Valid(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	validConfig := `
+timezone = "UTC"
+[claude]
+api_key = "sk-ant-test-key"
+model = "claude-sonnet-4-6-20250514"
+[telegram]
+token = "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+allowed_user_ids = [123456789]
+[storage]
+db_path = "` + filepath.Join(dir, "test.db") + `"
+[health]
+enabled = true
+port = 8080
+`
+	if err := os.WriteFile(cfgPath, []byte(validConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("expected valid config to load, got error: %v", err)
+	}
+	if cfg.Claude.APIKey != "sk-ant-test-key" {
+		t.Errorf("api_key = %q, want sk-ant-test-key", cfg.Claude.APIKey)
+	}
+}
+
+func TestValidateConfig_Invalid(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	// Missing required telegram.token
+	invalidConfig := `
+timezone = "UTC"
+[claude]
+api_key = "sk-ant-test-key"
+[telegram]
+allowed_user_ids = [123]
+[storage]
+db_path = "/tmp/test.db"
+`
+	if err := os.WriteFile(cfgPath, []byte(invalidConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := config.Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for missing telegram.token, got nil")
+	}
+}
+
+func TestValidateConfig_MissingFile(t *testing.T) {
+	_, err := config.Load("/nonexistent/config.toml")
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
 func TestEnsureIsolatedHome_CreatesStructure(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "isolated")
 

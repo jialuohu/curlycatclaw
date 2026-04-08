@@ -1306,18 +1306,6 @@ func (a *Actor) toolUseLoop(
 				slog.Error("failed to log tool call", "err", err)
 			}
 
-			// Check if this tool requires user confirmation.
-			if a.requiresConfirmation(call.Name) {
-				preview := fmt.Sprintf("[confirm?] %s(%s)", call.Name, truncate(string(call.Input), 120))
-				a.trySend(telegram.OutgoingMessage{ChatID: chatID, Text: preview})
-				toolResultBlocks = append(toolResultBlocks,
-					anthropic.NewToolResultBlock(call.ID,
-						"This tool requires user confirmation. The request has been shown to the user. Ask them to confirm before retrying.", true),
-				)
-				toolLines = append(toolLines, fmt.Sprintf("[tool] %s -> awaiting confirmation", call.Name))
-				continue
-			}
-
 			// Try built-in skill first, then fall back to MCP.
 			// Wrap in IIFE so defer cancels the context at iteration end, not function end.
 			var result string
@@ -3112,16 +3100,6 @@ func truncate(s string, max int) string {
 	return string(r[:max]) + "..."
 }
 
-// requiresConfirmation checks if a tool name matches any prefix in the
-// confirm_tools config list.
-func (a *Actor) requiresConfirmation(toolName string) bool {
-	for _, prefix := range a.cfg.ConfirmTools {
-		if strings.HasPrefix(toolName, prefix) {
-			return true
-		}
-	}
-	return false
-}
 
 // toSkillTools converts built-in skills to Anthropic SDK tool params.
 func toSkillTools(reg *skills.Registry) []anthropic.ToolUnionParam {

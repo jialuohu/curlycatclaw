@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# DEPRECATED: Interactive config generation is now handled by SKILL.md Step 6.
+# This script remains as a fallback for automated/non-interactive setups.
+#
 # config.sh -- Generate curlycatclaw config.toml from a credentials file.
 # Reads credentials from a temp file (NOT from env vars on cmdline) to avoid
 # exposing secrets in /proc/PID/cmdline.

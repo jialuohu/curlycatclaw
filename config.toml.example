@@ -11,7 +11,7 @@ timezone = "America/Los_Angeles"
 # Option 2: Direct API with API key (separate billing).
 # api_key  = "sk-ant-..."
 #
-model = "claude-sonnet-4-6-20250514"
+model = "claude-opus-4-6"
 # Reasoning depth: low/medium = standard reasoning, high/max = extended thinking enabled.
 # Override per session with /effort in Telegram, or env CURLYCATCLAW_THINKING_EFFORT.
 # thinking_effort = "high"
@@ -109,9 +109,6 @@ db_path = "/data/curlycatclaw.db"
 [health]
 enabled = true
 port    = 8080
-
-# Tool confirmation for sensitive operations.
-# confirm_tools = ["cancel_reminder", "filesystem__delete"]
 
 # Projects for CLI work (/project command).
 # [[projects]]

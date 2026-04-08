@@ -444,6 +444,19 @@ func (ra *ReminderActor) scheduleReminder(scheduler gocron.Scheduler, r reminder
 // fireReminder sends the reminder message via Telegram and updates the DB status.
 // If the reminder has a prompt and CronRunner is available, it invokes Claude instead.
 func (ra *ReminderActor) fireReminder(r reminderRow) {
+	// Re-check DB status before firing. The reminder may have been cancelled
+	// between scheduling and firing (e.g., cancel_reminder in CLI mode where
+	// the signal channel doesn't reach this process).
+	var status string
+	if err := ra.db.QueryRow(`SELECT status FROM reminders WHERE id = ?`, r.ID).Scan(&status); err != nil {
+		slog.Error("reminder: failed to re-check status before firing", "id", r.ID, "err", err)
+		return
+	}
+	if status != "pending" {
+		slog.Info("reminder: skipping fire, status changed", "id", r.ID, "status", status)
+		return
+	}
+
 	if r.Prompt != nil && *r.Prompt != "" && ra.cronExec != nil {
 		ra.fireCronTask(r)
 		return
@@ -530,7 +543,30 @@ func (ra *ReminderActor) markFiredIfOneTime(r reminderRow) {
 
 // pollNewReminders checks for pending reminders not yet scheduled (created by
 // the MCP server subprocess which shares the DB but not the signal channel).
+// Also detects cancelled reminders and removes their gocron jobs.
 func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.Scheduler) {
+	// Phase 1: Detect cancelled reminders that still have active gocron jobs.
+	// This handles the CLI mode case where cancel_reminder updates the DB but
+	// the signal never reaches this process (MCP subprocess drains it).
+	ra.mu.Lock()
+	var trackedIDs []int64
+	for id := range ra.jobs {
+		trackedIDs = append(trackedIDs, id)
+	}
+	ra.mu.Unlock()
+
+	for _, id := range trackedIDs {
+		var status string
+		if err := ra.db.QueryRowContext(ctx, `SELECT status FROM reminders WHERE id = ?`, id).Scan(&status); err != nil {
+			continue // Row deleted or other error, skip.
+		}
+		if status == "cancelled" || status == "fired" {
+			slog.Info("reminder: poll detected cancelled/fired job, removing", "id", id, "status", status)
+			ra.cancelJob(scheduler, id)
+		}
+	}
+
+	// Phase 2: Find new pending reminders not yet scheduled.
 	rows, err := ra.db.QueryContext(ctx,
 		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model FROM reminders WHERE status = 'pending'`,
 	)

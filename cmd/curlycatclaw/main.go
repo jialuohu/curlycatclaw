@@ -51,10 +51,20 @@ func main() {
 	evalExportHours := flag.Int("eval-hours", 168, "with --eval-export: hours of history to export (default: 168 = 1 week)")
 	evalSeedFlag := flag.Bool("eval-seed", false, "seed database with synthetic conversations for eval validation, then exit")
 	healthCheckFlag := flag.Bool("health-check", false, "check if the health endpoint is responding, then exit (for Docker healthcheck)")
+	validateConfigFlag := flag.Bool("validate-config", false, "validate config file and exit")
 	flag.Parse()
 
 	if *versionFlag {
 		fmt.Println("curlycatclaw", version)
+		return
+	}
+
+	if *validateConfigFlag {
+		if _, err := config.Load(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("config OK")
 		return
 	}
 

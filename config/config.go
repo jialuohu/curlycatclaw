@@ -26,7 +26,6 @@ type Config struct {
 	Voice            VoiceConfig            `toml:"voice"`
 	Ingest           IngestConfig           `toml:"ingest"`
 	EmailIngest      EmailIngestConfig      `toml:"email_ingest"` // deprecated: backward compat
-	ConfirmTools     []string               `toml:"confirm_tools"`
 	Projects         []ProjectConfig        `toml:"projects"`
 	SkillCollections []SkillCollectionConfig `toml:"skill_collections"`
 	Eval             EvalConfig             `toml:"eval"`

@@ -80,6 +80,7 @@ curlycatclaw --eval-export               # export conversations for manual quali
 curlycatclaw --eval-seed                 # generate synthetic conversations for eval validation
 curlycatclaw --eval-export --eval-hours 48  # export last 48 hours (default: 24)
 curlycatclaw --health-check               # check health endpoint, exit 0/1 (Docker healthcheck)
+curlycatclaw --validate-config            # validate config file and exit (for setup wizard)
 ```
 
 ## Architecture
@@ -111,6 +112,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - `send_file` in CLI mode queues to SQLite (`pending_files` table), delivered by session actor after tool loop ends. Direct API mode sends immediately via Telegram. Tool result says "File queued" to prevent Claude retries.
 - CLI subprocess `bufio.Scanner` max is 16MB (for base64 PDF responses in stream-json). Default 64KB would crash on any document attachment.
 - Health endpoint binds to `0.0.0.0:8080` (not `127.0.0.1`) so the updater sidecar can reach it across the Docker network for liveness checks.
+- Reminder cancellation in CLI mode: `cancel_reminder` updates the DB via MCP subprocess, but the signal channel drains to /dev/null in `mcp_server.go`. `pollNewReminders` (every 10s) compensates by checking DB for cancelled jobs. `fireReminder` also re-checks DB status before sending as a safety net.
 
 ## Key Files
 
@@ -141,6 +143,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `skills/semantic_search.go` | Semantic search skill (Qdrant vector search) |
 | `skills/summary.go` | Summary management skills (list_summaries, delete_summary) |
 | `skills/plugin.go` | Plugin management skills (install, uninstall, enable, disable, list) |
+| `skills/remind.go` | Reminder skills + ReminderActor (gocron scheduling, poll-based cancel detection) |
 | `internal/extension/extension.go` | Runtime extension registry (MCP servers + exec skills) |
 | `internal/mdhtml/convert.go` | Markdown to Telegram HTML converter |
 | `internal/voice/stt.go` | OpenAI Whisper speech-to-text client |

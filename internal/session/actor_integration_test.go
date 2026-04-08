@@ -428,51 +428,6 @@ func TestHandleMessage_MaxToolRounds(t *testing.T) {
 	}
 }
 
-func TestHandleMessage_ToolConfirmation(t *testing.T) {
-	llm := &mockLLM{
-		responses: []*claude.Response{
-			{
-				ToolCalls: []claude.ToolCall{
-					{ID: "tc-1", Name: "cancel_reminder_123", Input: json.RawMessage(`{}`)},
-				},
-			},
-			{TextContent: "Waiting for confirmation."},
-		},
-	}
-	store := &mockStore{convID: "conv-4"}
-	ctxb := &mockContextProvider{}
-	router := &mockToolRouter{}
-	tg := newMockTelegram()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	outbox := tg.drainInbox(ctx)
-
-	actor := newTestActor(llm, store, ctxb, router, nil, tg)
-	actor.cfg.ConfirmTools = []string{"cancel_reminder"}
-
-	msg := telegram.IncomingMessage{ChatID: 100, UserID: 42, Text: "cancel my reminder"}
-	if err := actor.handleMessage(context.Background(), msg); err != nil {
-		t.Fatalf("handleMessage: %v", err)
-	}
-
-	// Tool should NOT have been called via MCP (it requires confirmation).
-	router.mu.Lock()
-	if router.callCount != 0 {
-		t.Errorf("expected 0 tool calls (confirmation required), got %d", router.callCount)
-	}
-	router.mu.Unlock()
-
-	// Should have sent confirmation preview to Telegram.
-	select {
-	case out := <-outbox:
-		if len(out.Text) == 0 {
-			t.Error("expected confirmation preview message")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected telegram message within 1s")
-	}
-}
-
 func TestHandleMessage_VectorIndexing(t *testing.T) {
 	llm := &mockLLM{
 		responses: []*claude.Response{
