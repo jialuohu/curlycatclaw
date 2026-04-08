@@ -80,6 +80,7 @@ curlycatclaw --eval-export               # export conversations for manual quali
 curlycatclaw --eval-seed                 # generate synthetic conversations for eval validation
 curlycatclaw --eval-export --eval-hours 48  # export last 48 hours (default: 24)
 curlycatclaw --health-check               # check health endpoint, exit 0/1 (Docker healthcheck)
+curlycatclaw --validate-config            # validate config file and exit (for setup wizard)
 ```
 
 ## Architecture
