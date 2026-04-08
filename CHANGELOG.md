@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.33.1] - 2026-04-08
+
+Bugfixes for HTTP MCP transport and issue creation UX.
+
+### Fixed
+- **HTTP MCP proxy in CLI mode**: config servers with `transport = "http"` were silently dropped by the MCP subprocess. Now proxied correctly via `ConnectHTTPAndRegister`.
+- **`_user_context` injection**: external MCP servers (Google Maps) rejected unknown fields. Internal servers still get user context, external servers don't.
+- **Duplicate Telegram messages**: streaming timeout caused the post-stream fallback to re-send the response. Now tracks delivery at enqueue time.
+
+### Added
+- **Issue creation confirmation gate**: `issue_write` calls return a draft preview and require `confirmed=true` before submitting to GitHub. Prevents accidental issue creation.
+- **Dockerfile detection in install workflow**: Claude now detects container-only MCP servers and suggests `docker run` + HTTP transport config.
+- **GitHub PAT scope guidance**: setup wizard explains required token permissions and recommends read+write for issue creation.
+- **README Quick Start simplified**: detailed Docker instructions moved to `docs/docker.md`.
+
 ## [0.33.0] - 2026-04-08
 
 Remote MCP servers, GitHub issue creation, and diagnostics. curlycatclaw can now connect to remote MCP servers over HTTP and create GitHub issues directly from Telegram.
