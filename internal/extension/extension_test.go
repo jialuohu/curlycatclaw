@@ -393,3 +393,129 @@ func TestExecWithInputSchema(t *testing.T) {
 		t.Fatalf("expected schema %s, got %s", e, a)
 	}
 }
+
+func TestValidateHTTPExtension(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		ext     Extension
+		wantErr bool
+	}{
+		{
+			name: "valid http",
+			ext: Extension{
+				Name: "test-http", Type: TypeMCP,
+				Transport: "http", URL: "http://localhost:8080/mcp",
+			},
+		},
+		{
+			name: "valid https",
+			ext: Extension{
+				Name: "test-https", Type: TypeMCP,
+				Transport: "http", URL: "https://api.example.com/mcp",
+			},
+		},
+		{
+			name: "http missing url",
+			ext: Extension{
+				Name: "test", Type: TypeMCP,
+				Transport: "http",
+			},
+			wantErr: true,
+		},
+		{
+			name: "http bad scheme",
+			ext: Extension{
+				Name: "test", Type: TypeMCP,
+				Transport: "http", URL: "ftp://localhost/mcp",
+			},
+			wantErr: true,
+		},
+		{
+			name: "http with command",
+			ext: Extension{
+				Name: "test", Type: TypeMCP,
+				Transport: "http", URL: "http://localhost:8080/mcp", Command: "echo",
+			},
+			wantErr: true,
+		},
+		{
+			name: "stdio with url",
+			ext: Extension{
+				Name: "test", Type: TypeMCP,
+				Command: "echo", URL: "http://localhost:8080",
+			},
+			wantErr: true,
+		},
+		{
+			name: "unknown transport",
+			ext: Extension{
+				Name: "test", Type: TypeMCP,
+				Transport: "grpc", Command: "echo",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := reg.Add(tc.ext)
+			if tc.wantErr && err == nil {
+				t.Error("expected validation error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			// Clean up successful adds so names don't collide.
+			if err == nil {
+				_ = reg.Remove(tc.ext.Name)
+			}
+		})
+	}
+}
+
+func TestPersistHTTPExtension(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ext := Extension{
+		Name:      "remote-mcp",
+		Type:      TypeMCP,
+		Transport: "http",
+		URL:       "https://api.example.com/mcp",
+		Headers:   map[string]string{"X-Api-Key": "secret123"},
+	}
+	if err := reg.Add(ext); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload from disk.
+	reg2, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reg2.Get("remote-mcp")
+	if got == nil {
+		t.Fatal("expected HTTP extension to persist")
+	}
+	if got.Transport != "http" {
+		t.Errorf("transport = %q, want http", got.Transport)
+	}
+	if got.URL != "https://api.example.com/mcp" {
+		t.Errorf("url = %q, want https://api.example.com/mcp", got.URL)
+	}
+	if got.Headers["X-Api-Key"] != "secret123" {
+		t.Error("expected headers to persist")
+	}
+	if got.Command != "" {
+		t.Errorf("command should be empty for HTTP extension, got %q", got.Command)
+	}
+}
