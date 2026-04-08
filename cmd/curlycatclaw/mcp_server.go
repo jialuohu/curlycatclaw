@@ -699,7 +699,7 @@ func registerProxyTool(server *mcp.Server, namespacedName string, tool *mcp.Tool
 		// Gate destructive GitHub operations: require explicit user confirmation.
 		// When Claude calls create_issue without confirmed=true, return the draft
 		// content and ask Claude to show it to the user first.
-		if rawName == "create_issue" {
+		if rawName == "create_issue" || rawName == "issue_write" {
 			if confirmed, _ := input["confirmed"].(bool); !confirmed {
 				title, _ := input["title"].(string)
 				body, _ := input["body"].(string)
