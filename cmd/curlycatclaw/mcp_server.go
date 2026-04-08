@@ -405,7 +405,7 @@ func (r *mcpHotReloader) ConnectAndRegister(ctx context.Context, ext *extension.
 	var toolDescs []string
 	for _, tool := range tools {
 		namespacedName := ext.Name + mcpProxySep + tool.Name
-		registerProxyTool(r.server, namespacedName, tool, session, r.userID, r.chatID)
+		registerProxyTool(r.server, namespacedName, tool, session, r.userID, r.chatID, true)
 		toolNames = append(toolNames, namespacedName)
 		desc := tool.Name
 		if tool.Description != "" {
@@ -512,7 +512,7 @@ func (r *mcpHotReloader) ConnectHTTPAndRegister(ctx context.Context, srv config.
 	var toolNames []string
 	for _, tool := range tools {
 		namespacedName := srv.Name + mcpProxySep + tool.Name
-		registerProxyTool(r.server, namespacedName, tool, session, r.userID, r.chatID)
+		registerProxyTool(r.server, namespacedName, tool, session, r.userID, r.chatID, false)
 		toolNames = append(toolNames, namespacedName)
 	}
 
@@ -667,8 +667,13 @@ func isDangerousEnvKey(key string) bool {
 // registerProxyTool registers a proxied MCP extension tool on the server.
 // The tool's original InputSchema is preserved so Claude sees the correct
 // parameter definitions. Calls are forwarded to the extension's MCP session.
+//
+// injectUserCtx controls whether _user_context is added to tool arguments.
+// Internal MCP servers (GWS, GitHub) expect it for per-user access control.
+// External/remote servers (Google Maps) reject unknown fields, so it must be
+// disabled for HTTP transport servers.
 func registerProxyTool(server *mcp.Server, namespacedName string, tool *mcp.Tool,
-	session *mcp.ClientSession, userID, chatID int64) {
+	session *mcp.ClientSession, userID, chatID int64, injectUserCtx bool) {
 
 	proxyTool := &mcp.Tool{
 		Name:        namespacedName,
@@ -684,7 +689,7 @@ func registerProxyTool(server *mcp.Server, namespacedName string, tool *mcp.Tool
 		req *mcp.CallToolRequest,
 		input map[string]any,
 	) (*mcp.CallToolResult, skillOutput, error) {
-		if userID != 0 {
+		if injectUserCtx && userID != 0 {
 			input["_user_context"] = map[string]any{
 				"user_id": userID,
 				"chat_id": chatID,
