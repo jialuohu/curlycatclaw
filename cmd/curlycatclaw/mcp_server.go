@@ -696,6 +696,22 @@ func registerProxyTool(server *mcp.Server, namespacedName string, tool *mcp.Tool
 			}
 		}
 
+		// Gate destructive GitHub operations: require explicit user confirmation.
+		// When Claude calls create_issue without confirmed=true, return the draft
+		// content and ask Claude to show it to the user first.
+		if rawName == "create_issue" {
+			if confirmed, _ := input["confirmed"].(bool); !confirmed {
+				title, _ := input["title"].(string)
+				body, _ := input["body"].(string)
+				preview := fmt.Sprintf("ISSUE DRAFT (not yet submitted):\n\nTitle: %s\n\nBody:\n%s\n\n"+
+					"Show this draft to the user and ask for their approval. "+
+					"If they approve, call create_issue again with the same parameters plus confirmed=true. "+
+					"If they want changes, revise and show the updated draft.", title, body)
+				return nil, skillOutput{Text: preview}, nil
+			}
+			delete(input, "confirmed") // strip before forwarding to GitHub
+		}
+
 		result, err := sess.CallTool(ctx, &mcp.CallToolParams{
 			Name:      rawName,
 			Arguments: input,
