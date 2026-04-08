@@ -951,6 +951,7 @@ type streamState struct {
 	lastFlush time.Time
 	flushing  bool // true while flush() is doing I/O with mutex released
 	htmlMode  bool // when true, flush() sets HTML=true on outgoing messages (used by finalFlush)
+	delivered bool // true after any flush successfully sent content to Telegram
 	mu        sync.Mutex
 	tg        TelegramTransport
 	onFirstID func(tgMsgID int) // called once when first Telegram message ID is obtained
@@ -1064,8 +1065,11 @@ func (ss *streamState) flush() {
 		case id := <-resultCh:
 			newMsgID = id
 			gotID = true
-			if id > 0 && onFirst != nil {
-				onFirst(id)
+			if id > 0 {
+				ss.delivered = true
+				if onFirst != nil {
+					onFirst(id)
+				}
 			}
 		case <-time.After(5 * time.Second):
 			slog.Warn("timeout waiting for telegram message ID", "chat_id", chatID)
@@ -1083,6 +1087,7 @@ func (ss *streamState) flush() {
 			MessageID: msgID,
 			HTML:      useHTML,
 		}:
+			ss.delivered = true
 		default:
 			slog.Warn("telegram inbox full, dropping stream edit", "chat_id", chatID)
 		}
@@ -1596,8 +1601,10 @@ func (a *Actor) handleWithCLI(
 	}
 
 	// If we have text that was never streamed to Telegram (e.g., came only
-	// from ResultEvent.Result), send it now.
-	if fullText != "" && ss.msgID <= 0 {
+	// from ResultEvent.Result), send it now. Check ss.delivered (not msgID)
+	// to avoid duplicates when the streaming path timed out but still
+	// delivered the content via a later flush.
+	if fullText != "" && !ss.delivered {
 		a.trySend(telegram.OutgoingMessage{
 			ChatID: chatID,
 			Text:   fullText,
@@ -1608,7 +1615,7 @@ func (a *Actor) handleWithCLI(
 	// If the CLI returned an error result and nothing was delivered to the
 	// user (no streaming, no fallback text), send the error so the user
 	// isn't left waiting in silence.
-	if fullText == "" && ss.msgID <= 0 {
+	if fullText == "" && !ss.delivered {
 		for _, event := range events {
 			if r, ok := event.(claude.ResultEvent); ok && r.IsError {
 				errMsg := "[error] " + r.Subtype
