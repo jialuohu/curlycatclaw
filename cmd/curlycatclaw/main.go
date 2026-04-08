@@ -50,10 +50,23 @@ func main() {
 	evalExportFlag := flag.Bool("eval-export", false, "export recent conversations for manual quality labeling, then exit")
 	evalExportHours := flag.Int("eval-hours", 168, "with --eval-export: hours of history to export (default: 168 = 1 week)")
 	evalSeedFlag := flag.Bool("eval-seed", false, "seed database with synthetic conversations for eval validation, then exit")
+	healthCheckFlag := flag.Bool("health-check", false, "check if the health endpoint is responding, then exit (for Docker healthcheck)")
 	flag.Parse()
 
 	if *versionFlag {
 		fmt.Println("curlycatclaw", version)
+		return
+	}
+
+	if *healthCheckFlag {
+		resp, err := http.Get("http://localhost:8080/health")
+		if err != nil {
+			os.Exit(1)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
 		return
 	}
 
