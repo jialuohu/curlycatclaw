@@ -701,11 +701,15 @@ func registerProxyTool(server *mcp.Server, namespacedName string, tool *mcp.Tool
 			Arguments: input,
 		})
 		if err != nil {
+			slog.Warn("mcp-server: proxy tool call failed",
+				"tool", rawName, "namespace", namespacedName, "err", err)
 			return errResult(fmt.Sprintf("proxy call %q: %v", rawName, err)), skillOutput{}, nil
 		}
 
 		text := formatMCPResult(result)
 		if result.IsError {
+			slog.Warn("mcp-server: proxy tool returned error",
+				"tool", rawName, "namespace", namespacedName, "error_text", text[:min(200, len(text))])
 			return errResult(text), skillOutput{}, nil
 		}
 		return nil, skillOutput{Text: text}, nil

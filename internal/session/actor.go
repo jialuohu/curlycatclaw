@@ -1054,6 +1054,9 @@ func (ss *streamState) flush() {
 			ResultCh: resultCh,
 			HTML:     useHTML,
 		}:
+			// Message enqueued to Telegram channel. It WILL be delivered even
+			// if we don't get the ID back within the timeout below.
+			ss.delivered = true
 		default:
 			slog.Warn("telegram inbox full, dropping stream message", "chat_id", chatID)
 			ss.mu.Lock()
@@ -1065,11 +1068,8 @@ func (ss *streamState) flush() {
 		case id := <-resultCh:
 			newMsgID = id
 			gotID = true
-			if id > 0 {
-				ss.delivered = true
-				if onFirst != nil {
-					onFirst(id)
-				}
+			if id > 0 && onFirst != nil {
+				onFirst(id)
 			}
 		case <-time.After(5 * time.Second):
 			slog.Warn("timeout waiting for telegram message ID", "chat_id", chatID)
