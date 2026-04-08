@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Chat with curlycatclaw
+    url: https://t.me/curlycatclaw_bot
+    about: Report bugs or request features through the Telegram bot

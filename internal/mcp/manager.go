@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -448,4 +449,24 @@ func formatResult(result *mcp.CallToolResult) string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+// ServerNames returns the names of all registered MCP servers.
+func (m *Manager) ServerNames() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	names := make([]string, 0, len(m.servers))
+	for name := range m.servers {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic output
+	return names
+}
+
+// IsRegistered returns true if an MCP server with the given name is registered.
+func (m *Manager) IsRegistered(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.servers[name]
+	return ok
 }

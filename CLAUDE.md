@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**curlycatclaw** is a personal AI agent assistant built in Go. It's a long-running daemon with a goroutine-based actor model, Telegram as the primary channel, Claude as the LLM (no multi-model abstraction), SQLite for storage, and MCP for tool integration.
+**curlycatclaw** is a personal AI agent assistant built in Go. It's a long-running daemon with a goroutine-based actor model, Telegram as the primary channel, Claude as the LLM (no multi-model abstraction), SQLite for storage, and MCP for tool integration. See [CONTRIBUTING.md](CONTRIBUTING.md) for bug reports and code contributions.
 
 ## Build & Run
 
@@ -137,6 +137,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `skills/observation.go` | Observation skills (search, list, get, forget, search_entities) |
 | `internal/wasm/runtime.go` | Wasm skill runtime (wazero) |
 | `internal/session/cron.go` | CronExecutor for scheduled Claude-powered tasks |
+| `skills/registry.go` | Skill struct, Registry, UserInfo, GetUser() context helpers |
 | `skills/` | Built-in skill implementations |
 | `skills/fact.go` | User facts skills (remember, forget, list) |
 | `skills/search.go` | Web search skill (DuckDuckGo) |
@@ -144,6 +145,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `skills/summary.go` | Summary management skills (list_summaries, delete_summary) |
 | `skills/plugin.go` | Plugin management skills (install, uninstall, enable, disable, list) |
 | `skills/remind.go` | Reminder skills + ReminderActor (gocron scheduling, poll-based cancel detection) |
+| `skills/diagnostics.go` | Diagnostics capture skill (version, MCP status, recent errors, health) for bug reports |
 | `internal/extension/extension.go` | Runtime extension registry (MCP servers + exec skills) |
 | `internal/mdhtml/convert.go` | Markdown to Telegram HTML converter |
 | `internal/voice/stt.go` | OpenAI Whisper speech-to-text client |
@@ -192,7 +194,7 @@ For self-update, generate a shared secret: `echo "UPDATER_SECRET=$(openssl rand 
 
 For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
 
-Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format, `[update]` for self-update system (`enabled`, `updater_url`, `auto_update`, `schedule`).
+Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format, `[update]` for self-update system (`enabled`, `updater_url`, `auto_update`, `schedule`), `[github]` for issue creation settings (`owner`, `repo`, used by `capture_diagnostics` + system prompt when GitHub MCP has write access).
 
 ## gstack
 

@@ -322,3 +322,48 @@ func TestHeaderRoundTripper_BlocksRedirects(t *testing.T) {
 		t.Errorf("expected 302, got %d", resp.StatusCode)
 	}
 }
+
+func TestServerNames_ReturnsAllNames(t *testing.T) {
+	m := NewManager("test")
+	m.servers["bravo"] = &serverConn{}
+	m.servers["alpha"] = &serverConn{}
+	m.servers["charlie"] = &serverConn{}
+
+	names := m.ServerNames()
+	if len(names) != 3 {
+		t.Fatalf("got %d names, want 3", len(names))
+	}
+	// Should be sorted alphabetically.
+	want := []string{"alpha", "bravo", "charlie"}
+	for i, name := range names {
+		if name != want[i] {
+			t.Errorf("names[%d] = %q, want %q", i, name, want[i])
+		}
+	}
+}
+
+func TestServerNames_Empty(t *testing.T) {
+	m := NewManager("test")
+
+	names := m.ServerNames()
+	if len(names) != 0 {
+		t.Fatalf("got %d names, want 0", len(names))
+	}
+}
+
+func TestIsRegistered_True(t *testing.T) {
+	m := NewManager("test")
+	m.servers["search"] = &serverConn{}
+
+	if !m.IsRegistered("search") {
+		t.Error("IsRegistered(search) = false, want true")
+	}
+}
+
+func TestIsRegistered_False(t *testing.T) {
+	m := NewManager("test")
+
+	if m.IsRegistered("nonexistent") {
+		t.Error("IsRegistered(nonexistent) = true, want false")
+	}
+}

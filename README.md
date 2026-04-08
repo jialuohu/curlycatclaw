@@ -124,6 +124,7 @@ Everything runs as goroutine-based actors under supervision. The Channel Actor h
 | [Configuration](docs/configuration.md) | Config reference, Google Workspace, GitHub, encrypted credentials |
 | [Google Workspace Skills](docs/skills.md) | Google Workspace skills catalog |
 | [Docker Deployment](docs/docker.md) | Services, data layout, backups, plugin runtimes |
+| [Contributing](CONTRIBUTING.md) | Bug reports, feature requests, code contributions |
 
 ## Testing
 

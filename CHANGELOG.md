@@ -2,16 +2,25 @@
 
 ## [0.33.0] - 2026-04-08
 
-Connect to remote MCP servers over HTTP. curlycatclaw can now talk to Google's managed MCP servers (Maps, BigQuery, Cloud Run) and any third-party remote MCP endpoint.
+Remote MCP servers, GitHub issue creation, and diagnostics. curlycatclaw can now connect to remote MCP servers over HTTP and create GitHub issues directly from Telegram.
 
 ### Added
 - **Streamable HTTP transport**: set `transport = "http"` in `[[mcp.servers]]` to connect to remote MCP servers. Supports custom auth headers with credential encryption.
 - **Google Maps MCP** (experimental): place search, weather, and directions via Google's managed MCP server. Add your API key and go.
 - **Per-server shutdown timeout**: each MCP server gets 5 seconds to close gracefully. One hung connection no longer blocks the rest.
+- **GitHub issue templates**: YAML-based forms for bug reports (with severity dropdown) and feature requests. Template chooser links to Telegram bot for non-technical testers. Blank issues disabled.
+- **PR template**: Structured pull request template with summary, changes, testing checklist, and related issues sections.
+- **CONTRIBUTING.md**: Minimal contribution guide with two paths (GitHub forms or Telegram bot), quickstart for GitHub integration setup, and example prompt for testers.
+- **`capture_diagnostics` skill**: Bug reports now include version, MCP server status, recent errors, and health checks automatically. Credentials are never exposed. If a health check times out, the report continues without it.
+- **GitHub issue creation guidance**: System prompt detects write-enabled GitHub MCP (via `create_issue` tool presence) and guides Claude through conversational issue creation with user confirmation.
+- **Startup warning**: Logs a warning when GitHub MCP is registered but in read-only mode.
+- **`[github]` config section**: Owner/repo settings for issue creation (defaults to jialuohu/curlycatclaw).
 
 ### Changed
-- **MCP Manager architecture**: `startServer()` split into `startStdioServer()` and `startHTTPServer()` helpers for clean transport separation.
-- **Config validation**: transport-aware rules. HTTP servers require `url`, stdio servers require `command`. Mixed configs are rejected.
+- **MCP Manager architecture**: `startServer()` split into `startStdioServer()` and `startHTTPServer()` helpers for clean transport separation. Added `ServerNames()` and `IsRegistered()` methods for diagnostics integration.
+- **Config validation**: transport-aware rules. HTTP servers require `url` (http/https only), stdio servers require `command`. Mixed configs are rejected.
+- **Store**: Added `RecentToolErrors()` and `RecentToolCallsByUser()` query methods with user scoping and 24-hour window.
+- **config.toml.example**: Expanded GitHub MCP comments with step-by-step write-mode setup instructions. Default remains `--read-only`.
 
 ## [0.32.0] - 2026-04-08
 
