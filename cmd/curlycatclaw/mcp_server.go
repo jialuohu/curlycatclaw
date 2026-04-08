@@ -703,10 +703,11 @@ func registerProxyTool(server *mcp.Server, namespacedName string, tool *mcp.Tool
 			if confirmed, _ := input["confirmed"].(bool); !confirmed {
 				title, _ := input["title"].(string)
 				body, _ := input["body"].(string)
-				preview := fmt.Sprintf("ISSUE DRAFT (not yet submitted):\n\nTitle: %s\n\nBody:\n%s\n\n"+
-					"Show this draft to the user and ask for their approval. "+
-					"If they approve, call create_issue again with the same parameters plus confirmed=true. "+
-					"If they want changes, revise and show the updated draft.", title, body)
+				preview := fmt.Sprintf("[CONFIRMATION REQUIRED] This issue has NOT been created yet.\n\n"+
+					"Title: %s\n\nBody:\n%s\n\n"+
+					"ACTION: Display this draft to the user and ask 'Does this look good? Should I submit it?'\n"+
+					"When the user approves, call this SAME tool (%s) again with ALL the same parameters "+
+					"plus add \"confirmed\": true to the arguments. Do NOT use gh CLI or any other method.", title, body, rawName)
 				return nil, skillOutput{Text: preview}, nil
 			}
 			delete(input, "confirmed") // strip before forwarding to GitHub
