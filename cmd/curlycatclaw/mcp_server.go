@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"encoding/hex"
+	"net/http"
 
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/extension"
@@ -294,10 +295,26 @@ func runMCPServer() error {
 	}
 
 	// Proxy config-based MCP servers ([[mcp.servers]] in config.toml).
-	// Same pattern as runtime extensions: connect as MCP client, discover
-	// tools, register with namespaced names (server__tool).
+	// Stdio servers go through the extension hot-reloader (subprocess).
+	// HTTP servers connect directly via Streamable HTTP transport.
 	var configProxyCount int
 	for _, srv := range cfg.MCP.Servers {
+		if srv.Transport == "http" {
+			// HTTP transport: connect directly, bypassing the stdio extension path.
+			if hotReloader != nil {
+				count, err := hotReloader.ConnectHTTPAndRegister(context.Background(), srv)
+				if err != nil {
+					slog.Warn("mcp-server: failed to proxy HTTP MCP server",
+						"name", srv.Name, "url", srv.URL, "err", err)
+					continue
+				}
+				configProxyCount += count
+				slog.Info("mcp-server: proxying HTTP MCP server",
+					"name", srv.Name, "url", srv.URL, "tools", count)
+			}
+			continue
+		}
+		// Stdio transport: wrap as extension and connect via subprocess.
 		ext := &extension.Extension{
 			Name:    srv.Name,
 			Type:    extension.TypeMCP,
@@ -432,6 +449,97 @@ func (r *mcpHotReloader) ConnectAndRegister(ctx context.Context, ext *extension.
 
 	slog.Info("mcp-server: hot-reloaded MCP extension", "name", ext.Name, "tools", len(tools))
 	return toolDescs, oldCloser, nil
+}
+
+// ConnectHTTPAndRegister connects to a remote MCP server via Streamable HTTP
+// and registers its tools. Used for config servers with transport = "http".
+func (r *mcpHotReloader) ConnectHTTPAndRegister(ctx context.Context, srv config.MCPServerConfig) (int, error) {
+	// Resolve encrypted header values.
+	resolvedHeaders := make(map[string]string, len(srv.Headers))
+	for k, v := range srv.Headers {
+		resolved := v
+		if r.credStore != nil && strings.HasPrefix(v, "encrypted:ref:") {
+			got, err := r.credStore.Get(strings.TrimPrefix(v, "encrypted:ref:"))
+			if err != nil {
+				return 0, fmt.Errorf("resolve header %q: %w", k, err)
+			}
+			resolved = got
+		}
+		resolvedHeaders[k] = resolved
+	}
+
+	// Reserved headers that the SDK manages internally.
+	reserved := map[string]struct{}{
+		"content-type": {}, "accept": {}, "mcp-session-id": {},
+	}
+
+	httpClient := &http.Client{
+		Transport: headerRoundTripper{resolvedHeaders, reserved},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Timeout: 60 * time.Second,
+	}
+
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:             srv.URL,
+		HTTPClient:           httpClient,
+		DisableStandaloneSSE: true,
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "curlycatclaw", Version: version}, nil)
+	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	session, err := client.Connect(connectCtx, transport, nil)
+	if err != nil {
+		return 0, fmt.Errorf("connect http %q: %w", srv.URL, err)
+	}
+
+	var tools []*mcp.Tool
+	for tool, err := range session.Tools(connectCtx, nil) {
+		if err != nil {
+			slog.Warn("mcp-server: error listing HTTP tools", "name", srv.Name, "error", err)
+			break
+		}
+		tools = append(tools, tool)
+	}
+	if len(tools) == 0 {
+		session.Close()
+		return 0, fmt.Errorf("HTTP MCP server %q has no tools", srv.Name)
+	}
+
+	var toolNames []string
+	for _, tool := range tools {
+		namespacedName := srv.Name + mcpProxySep + tool.Name
+		registerProxyTool(r.server, namespacedName, tool, session, r.userID, r.chatID)
+		toolNames = append(toolNames, namespacedName)
+	}
+
+	r.mu.Lock()
+	r.sessions[srv.Name] = session
+	r.tools[srv.Name] = toolNames
+	r.mu.Unlock()
+
+	return len(tools), nil
+}
+
+// headerRoundTripper injects static headers into HTTP requests for MCP servers.
+// Clones the request to satisfy the http.RoundTripper contract.
+type headerRoundTripper struct {
+	headers  map[string]string
+	reserved map[string]struct{}
+}
+
+func (h headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	for k, v := range h.headers {
+		if _, ok := h.reserved[strings.ToLower(k)]; ok {
+			continue
+		}
+		clone.Header.Set(k, v)
+	}
+	return http.DefaultTransport.RoundTrip(clone)
 }
 
 func (r *mcpHotReloader) DisconnectAndUnregister(name string) error {
