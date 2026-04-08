@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -709,5 +710,161 @@ func TestAllSummaryTexts_Empty(t *testing.T) {
 	}
 	if len(texts) != 0 {
 		t.Fatalf("expected 0 texts, got %d", len(texts))
+	}
+}
+
+// --- RecentToolErrors / RecentToolCallsByUser tests ---
+
+// insertToolCall is a test helper that inserts a tool call with optional error status and timestamp override.
+func insertToolCall(t *testing.T, s *Store, convID, callID, name string, isError bool, output string, createdAt time.Time) {
+	t.Helper()
+	input, _ := json.Marshal(map[string]string{"q": "test"})
+	if err := s.LogToolCall(convID, callID, name, input); err != nil {
+		t.Fatalf("LogToolCall(%s): %v", callID, err)
+	}
+	out, _ := json.Marshal(output)
+	if err := s.CompleteToolCall(callID, out, isError); err != nil {
+		t.Fatalf("CompleteToolCall(%s): %v", callID, err)
+	}
+	if !createdAt.IsZero() {
+		if _, err := s.db.Exec(`UPDATE tool_calls SET created_at = ? WHERE id = ?`, createdAt, callID); err != nil {
+			t.Fatalf("update created_at for %s: %v", callID, err)
+		}
+	}
+}
+
+func TestRecentToolErrors_ReturnsErrorsOnly(t *testing.T) {
+	s := newTestStore(t)
+	convID, err := s.CreateConversation(1, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	now := time.Now().UTC()
+	insertToolCall(t, s, convID, "ok1", "search", false, "found", now)
+	insertToolCall(t, s, convID, "err1", "search", true, "timeout", now)
+	insertToolCall(t, s, convID, "ok2", "read", false, "data", now)
+	insertToolCall(t, s, convID, "err2", "write", true, "permission denied", now)
+
+	records, err := s.RecentToolErrors(1, 10)
+	if err != nil {
+		t.Fatalf("RecentToolErrors: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+	for _, r := range records {
+		if !r.IsError {
+			t.Errorf("expected IsError=true for %q", r.ToolName)
+		}
+	}
+}
+
+func TestRecentToolErrors_UserScoped(t *testing.T) {
+	s := newTestStore(t)
+	conv1, err := s.CreateConversation(1, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation(user1): %v", err)
+	}
+	conv2, err := s.CreateConversation(2, 200)
+	if err != nil {
+		t.Fatalf("CreateConversation(user2): %v", err)
+	}
+
+	now := time.Now().UTC()
+	insertToolCall(t, s, conv1, "u1_err1", "search", true, "err1", now)
+	insertToolCall(t, s, conv1, "u1_err2", "read", true, "err2", now)
+	insertToolCall(t, s, conv2, "u2_err1", "write", true, "err3", now)
+
+	records, err := s.RecentToolErrors(1, 10)
+	if err != nil {
+		t.Fatalf("RecentToolErrors(user1): %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("user1: got %d records, want 2", len(records))
+	}
+
+	records, err = s.RecentToolErrors(2, 10)
+	if err != nil {
+		t.Fatalf("RecentToolErrors(user2): %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("user2: got %d records, want 1", len(records))
+	}
+	if records[0].ToolName != "write" {
+		t.Errorf("user2 record tool = %q, want %q", records[0].ToolName, "write")
+	}
+}
+
+func TestRecentToolErrors_ZeroUserID(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.RecentToolErrors(0, 10)
+	if err == nil {
+		t.Fatal("expected error for zero userID")
+	}
+}
+
+func TestRecentToolErrors_EmptyTable(t *testing.T) {
+	s := newTestStore(t)
+
+	records, err := s.RecentToolErrors(1, 10)
+	if err != nil {
+		t.Fatalf("RecentToolErrors: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("got %d records, want 0", len(records))
+	}
+}
+
+func TestRecentToolCallsByUser_Limit(t *testing.T) {
+	s := newTestStore(t)
+	convID, err := s.CreateConversation(1, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		insertToolCall(t, s, convID, id, "search", false, "ok", now)
+	}
+
+	records, err := s.RecentToolCallsByUser(1, 3)
+	if err != nil {
+		t.Fatalf("RecentToolCallsByUser: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("got %d records, want 3", len(records))
+	}
+}
+
+func TestRecentToolCallsByUser_24HourScope(t *testing.T) {
+	s := newTestStore(t)
+	convID, err := s.CreateConversation(1, 100)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	now := time.Now().UTC()
+	old := now.Add(-25 * time.Hour) // 25 hours ago, outside 24h window
+
+	insertToolCall(t, s, convID, "recent1", "search", false, "ok", now)
+	insertToolCall(t, s, convID, "recent2", "read", true, "err", now)
+	insertToolCall(t, s, convID, "old1", "write", false, "ok", old)
+	insertToolCall(t, s, convID, "old2", "delete", true, "err", old)
+
+	records, err := s.RecentToolCallsByUser(1, 10)
+	if err != nil {
+		t.Fatalf("RecentToolCallsByUser: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2 (only recent)", len(records))
+	}
+	// Verify the old calls are excluded.
+	for _, r := range records {
+		if r.ToolName == "write" || r.ToolName == "delete" {
+			t.Errorf("unexpected old tool call %q in results", r.ToolName)
+		}
 	}
 }
