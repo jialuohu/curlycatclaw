@@ -111,6 +111,18 @@ db_path = "/data/curlycatclaw.db"
 # [mcp.servers.env]
 # GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..."
 
+# Google Maps via remote Streamable HTTP MCP (experimental — Google public preview).
+# Auth: create a Google Maps Platform API key at
+# https://console.cloud.google.com/google/maps-apis/credentials
+# Enable: Places API (New), Routes API, Geocoding API.
+# Free tier: $200/month credit (~28,000 place searches).
+# [[mcp.servers]]
+# name      = "google-maps"
+# transport = "http"
+# url       = "https://mapstools.googleapis.com/mcp"
+# [mcp.servers.headers]
+# X-Goog-Api-Key = "your-google-maps-api-key"
+
 # GitHub issue creation settings. Used by capture_diagnostics + system prompt
 # to create issues from Telegram conversations. Only needed if write mode is enabled.
 # [github]

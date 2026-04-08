@@ -103,8 +103,10 @@ See [configuration.md](configuration.md) for full details.
 
 ## MCP Servers & Plugin Runtimes
 
-MCP servers are launched via `exec.Command` (stdio transport). The Docker image
-includes runtimes for the most common plugin types:
+Local MCP servers are launched via `exec.Command` (stdio transport). Remote MCP servers
+use Streamable HTTP (`transport = "http"` in config) and connect over the network, requiring
+no additional runtime in the container. The Docker image includes runtimes for the most
+common local plugin types:
 
 - **npx** (Node.js) -- context7, firebase, playwright, sentry
 - **bun** -- discord, imessage, fakechat

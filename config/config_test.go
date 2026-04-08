@@ -293,6 +293,68 @@ func TestValidate_MCPServerMissingCommand(t *testing.T) {
 	}
 }
 
+func TestValidate_MCPServerTransport(t *testing.T) {
+	base := Config{
+		Timezone: "UTC",
+		Claude:   ClaudeConfig{APIKey: "sk-key"},
+		Telegram: TGConfig{Token: "tok", AllowAll: true},
+		Storage:  StorageConfig{DBPath: "/data/test.db"},
+	}
+
+	tests := []struct {
+		name    string
+		server  MCPServerConfig
+		wantErr bool
+	}{
+		{
+			name:    "stdio valid",
+			server:  MCPServerConfig{Name: "s", Command: "echo"},
+			wantErr: false,
+		},
+		{
+			name:    "stdio explicit valid",
+			server:  MCPServerConfig{Name: "s", Transport: "stdio", Command: "echo"},
+			wantErr: false,
+		},
+		{
+			name:    "http valid",
+			server:  MCPServerConfig{Name: "s", Transport: "http", URL: "https://example.com/mcp"},
+			wantErr: false,
+		},
+		{
+			name:    "http missing url",
+			server:  MCPServerConfig{Name: "s", Transport: "http"},
+			wantErr: true,
+		},
+		{
+			name:    "http with command rejected",
+			server:  MCPServerConfig{Name: "s", Transport: "http", URL: "https://x.com/mcp", Command: "echo"},
+			wantErr: true,
+		},
+		{
+			name:    "stdio with url rejected",
+			server:  MCPServerConfig{Name: "s", Command: "echo", URL: "https://x.com/mcp"},
+			wantErr: true,
+		},
+		{
+			name:    "unknown transport rejected",
+			server:  MCPServerConfig{Name: "s", Transport: "grpc", Command: "echo"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.MCP = MCPConfig{Servers: []MCPServerConfig{tt.server}}
+			err := cfg.validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidate_VectorEnabledMissingAddr(t *testing.T) {
 	cfg := &Config{
 		Timezone: "UTC",

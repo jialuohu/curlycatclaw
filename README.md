@@ -40,46 +40,26 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 ## Quick Start
 
-You need a [Telegram bot token](https://t.me/BotFather) and either a [Claude API key](https://console.anthropic.com/) or a [Claude subscription](https://claude.ai/code). CurlyCatClaw runs via Docker.
+You need a [Telegram bot token](https://t.me/BotFather) and either a [Claude API key](https://console.anthropic.com/) or a [Claude subscription](https://claude.ai/code).
 
-### Option 1: Claude Code (recommended)
-
-If you have [Claude Code](https://claude.ai/code) installed, it handles everything: Docker setup, config, credentials, and first run.
+**With Claude Code** (recommended):
 
 ```bash
 git clone https://github.com/jialuohu/curlycatclaw.git && cd curlycatclaw && claude
 ```
 
-Then type `/setup`. The skill detects your system, collects credentials, starts Docker Compose, and pulls the embedding model.
+Type `/setup`. It handles Docker, config, credentials, and first run.
 
-### Option 2: Docker (manual)
+**Without Claude Code:**
 
 ```bash
 git clone https://github.com/jialuohu/curlycatclaw.git && cd curlycatclaw
 mkdir -p ~/.curlycatclaw && cp config.toml.example ~/.curlycatclaw/config.toml
-# Edit ~/.curlycatclaw/config.toml with your credentials
-docker compose up -d                          # pulls pre-built images
+# Edit config.toml with your Telegram token and Claude credentials
+docker compose up -d
 ```
 
-Then message your Telegram bot. Done.
-
-**For developers** building from source, copy the override file first:
-
-```bash
-cp docker-compose.override.yml.example docker-compose.override.yml
-docker compose build && docker compose up -d
-```
-
-**Optional services** (Ollama for local embeddings, updater for self-updates) are enabled via a `.env` file next to `docker-compose.yml`:
-
-```bash
-echo "COMPOSE_PROFILES=ollama,updater" > .env
-docker compose up -d                                    # now starts all services
-docker compose exec ollama ollama pull bge-m3            # first run only
-echo "UPDATER_SECRET=$(openssl rand -hex 32)" >> .env               # for self-update auth
-```
-
-Then use `/update` in Telegram to check for and apply updates.
+Message your bot. Done. See [Docker Deployment](docs/docker.md) for dev builds, optional services, and profiles.
 
 ## Architecture
 
