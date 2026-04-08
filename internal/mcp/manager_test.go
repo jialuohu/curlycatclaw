@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -184,5 +186,139 @@ func TestFilteredEnv_ExplicitEnvAlwaysPresent(t *testing.T) {
 		if k == "BRAVE_API_KEY" {
 			t.Error("BRAVE_API_KEY should NOT be in filtered env (it's added via srv.Env)")
 		}
+	}
+}
+
+func TestHeaderRoundTripper_InjectsHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt := &headerRoundTripper{
+		base:    http.DefaultTransport,
+		headers: map[string]string{"X-Api-Key": "test-key-123", "X-Custom": "val"},
+	}
+	client := &http.Client{Transport: rt}
+
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if got := gotHeaders.Get("X-Api-Key"); got != "test-key-123" {
+		t.Errorf("X-Api-Key = %q, want %q", got, "test-key-123")
+	}
+	if got := gotHeaders.Get("X-Custom"); got != "val" {
+		t.Errorf("X-Custom = %q, want %q", got, "val")
+	}
+}
+
+func TestHeaderRoundTripper_DoesNotMutateOriginal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt := &headerRoundTripper{
+		base:    http.DefaultTransport,
+		headers: map[string]string{"X-Injected": "yes"},
+	}
+	client := &http.Client{Transport: rt}
+
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	originalHeader := req.Header.Clone()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// Original request header must not be modified.
+	if got := req.Header.Get("X-Injected"); got != "" {
+		t.Errorf("original request was mutated: X-Injected = %q, want empty", got)
+	}
+	if len(req.Header) != len(originalHeader) {
+		t.Errorf("original header count changed: %d -> %d", len(originalHeader), len(req.Header))
+	}
+}
+
+func TestHeaderRoundTripper_SkipsReservedHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt := &headerRoundTripper{
+		base: http.DefaultTransport,
+		headers: map[string]string{
+			"Content-Type":   "text/plain",  // reserved, should be skipped
+			"Mcp-Session-Id": "injected-id", // reserved, should be skipped
+			"X-Api-Key":      "allowed",     // not reserved, should be set
+		},
+	}
+	client := &http.Client{Transport: rt}
+
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if got := gotHeaders.Get("X-Api-Key"); got != "allowed" {
+		t.Errorf("X-Api-Key = %q, want %q", got, "allowed")
+	}
+	// Content-Type should NOT be the injected value (Go sets its own default or none).
+	if got := gotHeaders.Get("Content-Type"); got == "text/plain" {
+		t.Error("Content-Type should not be overwritten by headerRoundTripper")
+	}
+	if got := gotHeaders.Get("Mcp-Session-Id"); got == "injected-id" {
+		t.Error("Mcp-Session-Id should not be overwritten by headerRoundTripper")
+	}
+}
+
+func TestHeaderRoundTripper_BlocksRedirects(t *testing.T) {
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Api-Key"); got != "" {
+			t.Errorf("API key leaked to redirect target: %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer redirectTarget.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	rt := &headerRoundTripper{
+		base:    http.DefaultTransport,
+		headers: map[string]string{"X-Api-Key": "secret"},
+	}
+	client := &http.Client{
+		Transport: rt,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	req, _ := http.NewRequest("GET", redirector.URL, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// Should get the redirect response, not follow it.
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("expected 302, got %d", resp.StatusCode)
 	}
 }

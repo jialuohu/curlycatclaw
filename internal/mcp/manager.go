@@ -1,6 +1,6 @@
 // Package mcp manages persistent connections to MCP (Model Context Protocol)
-// servers via stdio transport, providing tool discovery and invocation across
-// all connected servers.
+// servers via stdio and Streamable HTTP transports, providing tool discovery
+// and invocation across all connected servers.
 package mcp
 
 import (
@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -67,11 +69,13 @@ func NewManager(version string) *Manager {
 func (m *Manager) Start(ctx context.Context, servers []config.MCPServerConfig, envResolver func(string) (string, error)) error {
 	for _, srv := range servers {
 		if err := m.startServer(ctx, srv, envResolver); err != nil {
-			slog.Warn("mcp: failed to start server",
-				"server", srv.Name,
-				"command", srv.Command,
-				"error", err,
-			)
+			attrs := []any{"server", srv.Name, "error", err}
+			if srv.Transport == "http" {
+				attrs = append(attrs, "url", srv.URL)
+			} else {
+				attrs = append(attrs, "command", srv.Command)
+			}
+			slog.Warn("mcp: failed to start server", attrs...)
 			continue
 		}
 		slog.Info("mcp: server started", "server", srv.Name)
@@ -80,38 +84,19 @@ func (m *Manager) Start(ctx context.Context, servers []config.MCPServerConfig, e
 }
 
 // startServer launches a single MCP server and discovers its tools.
+// It delegates to transport-specific helpers based on the config.
 func (m *Manager) startServer(ctx context.Context, srv config.MCPServerConfig, envResolver func(string) (string, error)) error {
-	// Build environment for the subprocess. Only pass through a safe
-	// baseline of env vars to avoid leaking secrets to child processes.
-	env := filteredEnv(srv.EnvInherit)
-	for k, v := range srv.Env {
-		resolved := v
-		if envResolver != nil {
-			var err error
-			resolved, err = envResolver(v)
-			if err != nil {
-				return fmt.Errorf("resolve env %q: %w", k, err)
-			}
-		}
-		env = append(env, k+"="+resolved)
+	var session *mcp.ClientSession
+	var err error
+
+	switch srv.Transport {
+	case "http":
+		session, err = m.startHTTPServer(ctx, srv, envResolver)
+	default: // "" or "stdio"
+		session, err = m.startStdioServer(ctx, srv, envResolver)
 	}
-
-	cmd := exec.CommandContext(ctx, srv.Command, srv.Args...)
-	cmd.Env = env
-
-	transport := &mcp.CommandTransport{Command: cmd}
-
-	client := mcp.NewClient(
-		&mcp.Implementation{
-			Name:    "curlycatclaw",
-			Version: m.version,
-		},
-		nil,
-	)
-
-	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return err
 	}
 
 	// Discover all tools offered by this server using the paginated iterator.
@@ -140,6 +125,101 @@ func (m *Manager) startServer(ctx context.Context, srv config.MCPServerConfig, e
 		"count", len(tools),
 	)
 	return nil
+}
+
+// startStdioServer launches a local MCP server as a subprocess.
+func (m *Manager) startStdioServer(ctx context.Context, srv config.MCPServerConfig, envResolver func(string) (string, error)) (*mcp.ClientSession, error) {
+	env := filteredEnv(srv.EnvInherit)
+	for k, v := range srv.Env {
+		resolved := v
+		if envResolver != nil {
+			var err error
+			resolved, err = envResolver(v)
+			if err != nil {
+				return nil, fmt.Errorf("resolve env %q: %w", k, err)
+			}
+		}
+		env = append(env, k+"="+resolved)
+	}
+
+	cmd := exec.CommandContext(ctx, srv.Command, srv.Args...)
+	cmd.Env = env
+
+	transport := &mcp.CommandTransport{Command: cmd}
+	client := mcp.NewClient(&mcp.Implementation{Name: "curlycatclaw", Version: m.version}, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("connect stdio: %w", err)
+	}
+	return session, nil
+}
+
+// startHTTPServer connects to a remote MCP server via Streamable HTTP.
+func (m *Manager) startHTTPServer(ctx context.Context, srv config.MCPServerConfig, envResolver func(string) (string, error)) (*mcp.ClientSession, error) {
+	resolvedHeaders := make(map[string]string, len(srv.Headers))
+	for k, v := range srv.Headers {
+		resolved := v
+		if envResolver != nil {
+			var err error
+			resolved, err = envResolver(v)
+			if err != nil {
+				return nil, fmt.Errorf("resolve header %q: %w", k, err)
+			}
+		}
+		resolvedHeaders[k] = resolved
+	}
+
+	httpClient := &http.Client{
+		Transport: &headerRoundTripper{
+			base:    http.DefaultTransport,
+			headers: resolvedHeaders,
+		},
+		// Prevent redirects from leaking API keys to unexpected hosts.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:             srv.URL,
+		HTTPClient:           httpClient,
+		DisableStandaloneSSE: true,
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "curlycatclaw", Version: m.version}, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("connect http %q: %w", srv.URL, err)
+	}
+
+	slog.Info("mcp: HTTP server connected", "server", srv.Name, "url", srv.URL)
+	return session, nil
+}
+
+// reservedHTTPHeaders must not be overwritten by user-configured headers
+// because the SDK manages them internally.
+var reservedHTTPHeaders = map[string]struct{}{
+	"content-type":   {},
+	"accept":         {},
+	"mcp-session-id": {},
+}
+
+// headerRoundTripper injects static headers into every HTTP request.
+// It clones the request before mutating to satisfy the http.RoundTripper contract.
+type headerRoundTripper struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	for k, v := range h.headers {
+		if _, reserved := reservedHTTPHeaders[strings.ToLower(k)]; reserved {
+			continue
+		}
+		clone.Header.Set(k, v)
+	}
+	return h.base.RoundTrip(clone)
 }
 
 // Tools returns all available tools across every connected server. Each tool
@@ -265,18 +345,37 @@ func (m *Manager) RemoveServer(name string) error {
 	return nil
 }
 
-// Shutdown gracefully closes all MCP server connections.
+// Shutdown gracefully closes all MCP server connections concurrently.
+// Each server gets a per-server timeout to prevent one hung connection
+// (e.g. an HTTP DELETE that never completes) from blocking the rest.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	var wg sync.WaitGroup
 	for name, sc := range m.servers {
-		if err := sc.session.Close(); err != nil {
-			slog.Warn("mcp: error closing server", "server", name, "error", err)
-		} else {
-			slog.Info("mcp: server stopped", "server", name)
-		}
+		wg.Add(1)
+		go func(name string, sc *serverConn) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			done := make(chan error, 1)
+			go func() { done <- sc.session.Close() }()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					slog.Warn("mcp: error closing server", "server", name, "error", err)
+				} else {
+					slog.Info("mcp: server stopped", "server", name)
+				}
+			case <-ctx.Done():
+				slog.Warn("mcp: timeout closing server", "server", name)
+			}
+		}(name, sc)
 	}
+	wg.Wait()
 	// Clear the map so a subsequent Shutdown is a no-op.
 	m.servers = make(map[string]*serverConn)
 }
