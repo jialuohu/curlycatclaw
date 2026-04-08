@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.5] - 2026-04-08
+
+Better post-update UX. "All systems operational" now means it.
+
+### Fixed
+- **Premature "operational" notification**: the post-update message fired after a fixed 5-second sleep, before the bot was fully ready. Users sent messages that failed. Now polls the health endpoint until it returns 200 before notifying.
+
 ## [0.31.4] - 2026-04-08
 
 Built-in Docker healthcheck. Works on any base image without external tools.
