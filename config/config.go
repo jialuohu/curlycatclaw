@@ -30,6 +30,13 @@ type Config struct {
 	SkillCollections []SkillCollectionConfig `toml:"skill_collections"`
 	Eval             EvalConfig             `toml:"eval"`
 	Update           UpdateConfig           `toml:"update"`
+	GitHub           GitHubConfig           `toml:"github"`
+}
+
+// GitHubConfig holds GitHub integration settings for issue creation from Telegram.
+type GitHubConfig struct {
+	Owner string `toml:"owner"` // repository owner, e.g. "jialuohu"
+	Repo  string `toml:"repo"`  // repository name, e.g. "curlycatclaw"
 }
 
 // UpdateConfig controls the self-update system. Requires the curlycatclaw-updater sidecar.

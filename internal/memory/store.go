@@ -2562,3 +2562,67 @@ func (s *Store) CleanupOldProcessedItems(days int) (int64, error) {
 	}
 	return result.RowsAffected()
 }
+
+// ToolCallRecord represents a single tool call row returned by query methods.
+type ToolCallRecord struct {
+	ToolName  string
+	Timestamp time.Time
+	IsError   bool
+	Output    string
+}
+
+// RecentToolErrors returns the last N tool call errors for a user, within the last 24 hours.
+func (s *Store) RecentToolErrors(userID int64, limit int) ([]ToolCallRecord, error) {
+	if userID == 0 {
+		return nil, fmt.Errorf("userID must not be zero")
+	}
+	rows, err := s.db.Query(
+		`SELECT t.name, t.created_at, t.is_error, COALESCE(t.output, '') FROM tool_calls t
+		 JOIN conversations c ON t.conversation_id = c.id
+		 WHERE c.user_id = ? AND t.is_error = TRUE AND t.created_at > datetime('now', '-24 hours')
+		 ORDER BY t.created_at DESC LIMIT ?`,
+		userID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: recent tool errors: %w", err)
+	}
+	defer rows.Close()
+
+	var records []ToolCallRecord
+	for rows.Next() {
+		var r ToolCallRecord
+		if err := rows.Scan(&r.ToolName, &r.Timestamp, &r.IsError, &r.Output); err != nil {
+			return nil, fmt.Errorf("memory: scan tool error: %w", err)
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+// RecentToolCallsByUser returns the last N tool calls for a user, within the last 24 hours.
+func (s *Store) RecentToolCallsByUser(userID int64, limit int) ([]ToolCallRecord, error) {
+	if userID == 0 {
+		return nil, fmt.Errorf("userID must not be zero")
+	}
+	rows, err := s.db.Query(
+		`SELECT t.name, t.created_at, t.is_error, COALESCE(t.output, '') FROM tool_calls t
+		 JOIN conversations c ON t.conversation_id = c.id
+		 WHERE c.user_id = ? AND t.created_at > datetime('now', '-24 hours')
+		 ORDER BY t.created_at DESC LIMIT ?`,
+		userID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory: recent tool calls: %w", err)
+	}
+	defer rows.Close()
+
+	var records []ToolCallRecord
+	for rows.Next() {
+		var r ToolCallRecord
+		if err := rows.Scan(&r.ToolName, &r.Timestamp, &r.IsError, &r.Output); err != nil {
+			return nil, fmt.Errorf("memory: scan tool call: %w", err)
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}

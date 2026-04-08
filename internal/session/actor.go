@@ -2470,6 +2470,32 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 				sb.WriteString("Available GitHub tools: ")
 				sb.WriteString(strings.Join(ghTools, ", "))
 				sb.WriteString("\n\n")
+
+				// Issue creation guidance when write tools are present
+				hasCreateIssue := false
+				for _, t := range ghTools {
+					if strings.Contains(t, "create_issue") {
+						hasCreateIssue = true
+						break
+					}
+				}
+				if hasCreateIssue {
+					owner := a.cfg.GitHub.Owner
+					repo := a.cfg.GitHub.Repo
+					if owner == "" {
+						owner = "jialuohu"
+					}
+					if repo == "" {
+						repo = "curlycatclaw"
+					}
+					sb.WriteString("### Issue Creation from Telegram\n")
+					fmt.Fprintf(&sb, "When a user reports a bug or problem, call `capture_diagnostics` first, then create a GitHub issue using `create_issue` with owner=%q, repo=%q.\n", owner, repo)
+					sb.WriteString("Format the issue body: Description, Steps to Reproduce, Expected Behavior, Actual Behavior, Environment (from diagnostics output), Severity.\n")
+					fmt.Fprintf(&sb, "When a user requests a feature, create a GitHub issue with owner=%q, repo=%q using the feature request structure: Description, Use Case, Current Workaround, Proposed Solution.\n", owner, repo)
+					sb.WriteString("Always confirm with the user before creating the issue. Show them a preview of the title and summary.\n")
+					sb.WriteString("After creating the issue, share the issue URL with the user.\n")
+					sb.WriteString("If create_issue fails, show the error, offer to retry, and as a fallback offer to paste the formatted issue body for the user to submit manually.\n\n")
+				}
 			}
 		}
 	}

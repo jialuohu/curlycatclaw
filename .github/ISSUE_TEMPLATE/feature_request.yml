@@ -1,0 +1,31 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement", "alpha"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What do you want?
+      description: Describe the feature or improvement.
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Why do you need this? What problem does it solve?
+    validations:
+      required: true
+  - type: textarea
+    id: current_workaround
+    attributes:
+      label: How do you handle this today?
+      description: Any workarounds you currently use.
+    validations:
+      required: false
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Any ideas on how it should work?
+      description: Optional design thoughts or references.
+    validations:
+      required: false

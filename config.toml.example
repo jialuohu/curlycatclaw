@@ -97,13 +97,25 @@ db_path = "/data/curlycatclaw.db"
 # GitHub via github-mcp-server (https://github.com/github/github-mcp-server).
 # Auth: create a Personal Access Token at https://github.com/settings/tokens
 # with scopes: repo, read:org, read:packages (minimum for dev workflows).
-# Remove --read-only if you need write operations (create issues, comment on PRs).
+#
+# Default is --read-only (safe: browse repos, read issues/PRs, check CI).
+# To enable issue creation from Telegram (capture_diagnostics + create_issue):
+#   1. Remove --read-only from args below
+#   2. Ensure your PAT has "repo" scope
+#   3. Create labels on your repo: gh label create bug && gh label create enhancement && gh label create alpha
+#   4. Set [github] owner/repo below
 # [[mcp.servers]]
 # name    = "github"
 # command = "github-mcp-server"
 # args    = ["stdio", "--toolsets", "repos,issues,pull_requests,actions,users", "--read-only"]
 # [mcp.servers.env]
 # GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..."
+
+# GitHub issue creation settings. Used by capture_diagnostics + system prompt
+# to create issues from Telegram conversations. Only needed if write mode is enabled.
+# [github]
+# owner = "jialuohu"
+# repo  = "curlycatclaw"
 
 # Health check endpoint (Docker/monitoring). Enabled by default.
 [health]
