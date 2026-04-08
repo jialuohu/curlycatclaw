@@ -125,6 +125,14 @@ type MCPServerConfig struct {
 	Args       []string          `toml:"args"`
 	Env        map[string]string `toml:"env"`
 	EnvInherit []string          `toml:"env_inherit"`
+	// Transport selects the MCP transport protocol: "" or "stdio" for local
+	// subprocesses (default), "http" for remote Streamable HTTP servers.
+	Transport string            `toml:"transport"`
+	// URL is the remote MCP server endpoint (required when transport is "http").
+	URL       string            `toml:"url"`
+	// Headers are sent with every HTTP request (e.g. API keys). Values
+	// support the encrypted:ref: prefix for credential decryption.
+	Headers   map[string]string `toml:"headers"`
 }
 
 type VectorConfig struct {
@@ -453,8 +461,23 @@ func (c *Config) validate() error {
 		if srv.Name == "" {
 			return fmt.Errorf("config: mcp.servers[%d].name is required", i)
 		}
-		if srv.Command == "" {
-			return fmt.Errorf("config: mcp.servers[%d].command is required", i)
+		switch srv.Transport {
+		case "", "stdio":
+			if srv.Command == "" {
+				return fmt.Errorf("config: mcp.servers[%d].command is required for stdio transport", i)
+			}
+			if srv.URL != "" {
+				return fmt.Errorf("config: mcp.servers[%d].url is not allowed for stdio transport", i)
+			}
+		case "http":
+			if srv.URL == "" {
+				return fmt.Errorf("config: mcp.servers[%d].url is required for http transport", i)
+			}
+			if srv.Command != "" {
+				return fmt.Errorf("config: mcp.servers[%d].command is not allowed for http transport", i)
+			}
+		default:
+			return fmt.Errorf("config: mcp.servers[%d].transport must be \"\", \"stdio\", or \"http\", got %q", i, srv.Transport)
 		}
 	}
 	if c.Vector.Enabled && c.Vector.QdrantAddr == "" {
