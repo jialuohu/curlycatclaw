@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.3] - 2026-04-08
+
+Full-featured GHCR release image. Chat, MCP tools, and browser automation now work in production mode.
+
+### Changed
+- **Release Docker image**: switched from distroless (~50MB) to full Debian image (~1.2GB) matching the dev Dockerfile. Includes Node.js, Claude CLI, Playwright+Chromium, GitHub CLI, GWS CLI, Python/UV. The distroless image couldn't run Claude CLI mode, making chat non-functional after self-update.
+
 ## [0.31.2] - 2026-04-08
 
 Fix secrets not available after self-update/rollback.

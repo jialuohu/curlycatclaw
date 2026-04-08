@@ -1,20 +1,36 @@
-FROM alpine:3.21 AS gws-dl
-RUN apk add --no-cache curl && \
-    GWS_ARCH=$(uname -m) && \
-    curl -fsSL "https://github.com/googleworkspace/cli/releases/latest/download/google-workspace-cli-${GWS_ARCH}-unknown-linux-musl.tar.gz" \
-    | tar -xz -C /tmp ./gws
-
-FROM alpine:3.21 AS github-mcp-dl
-RUN apk add --no-cache curl && \
-    GH_MCP_ARCH=$(uname -m | sed 's/aarch64/arm64/') && \
-    curl -fsSL "https://github.com/github/github-mcp-server/releases/download/v0.32.0/github-mcp-server_Linux_${GH_MCP_ARCH}.tar.gz" \
-    | tar -xz -C /tmp github-mcp-server
-
-FROM gcr.io/distroless/static-debian12:nonroot
-COPY curlycatclaw /usr/bin/curlycatclaw
-COPY curlycatclaw-gws-mcp /usr/bin/curlycatclaw-gws-mcp
-COPY --from=gws-dl /tmp/gws /usr/bin/gws
-COPY --from=github-mcp-dl /tmp/github-mcp-server /usr/bin/github-mcp-server
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata curl git python3 pipx gnupg \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs gh \
+    && npm install -g @anthropic-ai/claude-code bun \
+    && ln -sf /usr/bin/claude /usr/local/bin/claude \
+    && PIPX_HOME=/usr/local/pipx PIPX_BIN_DIR=/usr/local/bin pipx install uv \
+    && rm -rf /var/lib/apt/lists/* \
+    && GWS_ARCH=$(dpkg --print-architecture | sed 's/amd64/x86_64/;s/arm64/aarch64/') \
+    && curl -fsSL "https://github.com/googleworkspace/cli/releases/latest/download/google-workspace-cli-${GWS_ARCH}-unknown-linux-musl.tar.gz" \
+       | tar -xz --strip-components=0 -C /usr/local/bin ./gws \
+    && GH_MCP_ARCH=$(dpkg --print-architecture | sed 's/amd64/x86_64/') \
+    && curl -fsSL "https://github.com/github/github-mcp-server/releases/download/v0.32.0/github-mcp-server_Linux_${GH_MCP_ARCH}.tar.gz" \
+       | tar -xz -C /usr/local/bin github-mcp-server
+# Install Playwright Chromium for scrapling-mcp browser-based tools.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN /usr/local/bin/uv pip install --system --break-system-packages playwright \
+    && playwright install --with-deps chromium \
+    && chmod -R o+rX /opt/playwright
+# Pre-built binaries from GoReleaser (no build step needed).
+COPY curlycatclaw /usr/local/bin/curlycatclaw
+COPY curlycatclaw-gws-mcp /usr/local/bin/curlycatclaw-gws-mcp
 COPY config.toml.example /etc/curlycatclaw/config.toml.example
-ENTRYPOINT ["/usr/bin/curlycatclaw"]
-CMD ["--config", "/etc/curlycatclaw/config.toml"]
+RUN useradd -m -d /data curlycatclaw
+USER curlycatclaw
+VOLUME /data
+ENTRYPOINT ["curlycatclaw"]
+CMD ["--config", "/data/config.toml"]
