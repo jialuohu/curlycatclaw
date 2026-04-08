@@ -144,6 +144,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `skills/summary.go` | Summary management skills (list_summaries, delete_summary) |
 | `skills/plugin.go` | Plugin management skills (install, uninstall, enable, disable, list) |
 | `skills/remind.go` | Reminder skills + ReminderActor (gocron scheduling, poll-based cancel detection) |
+| `skills/diagnostics.go` | Diagnostics capture skill (version, MCP status, recent errors, health) for bug reports |
 | `internal/extension/extension.go` | Runtime extension registry (MCP servers + exec skills) |
 | `internal/mdhtml/convert.go` | Markdown to Telegram HTML converter |
 | `internal/voice/stt.go` | OpenAI Whisper speech-to-text client |

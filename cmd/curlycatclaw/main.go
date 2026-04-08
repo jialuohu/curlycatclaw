@@ -261,6 +261,34 @@ func run(configPath string) error {
 		}
 	}
 	skillReg.Register(skills.NewSendFileSkill(tg))
+
+	// Initialize diagnostics skill (capture_diagnostics).
+	diagSafeCfg := skills.DiagSafeConfig{
+		EvalEnabled:   cfg.Eval.Enabled,
+		IngestEnabled: len(cfg.Ingest.Sources) > 0,
+		VoiceEnabled:  cfg.Voice.Enabled,
+		WasmEnabled:   cfg.Wasm.Enabled,
+		MCPServers:    mcpServerNames(cfg),
+		EmbedModel:    cfg.Vector.OllamaModel,
+		LogLevel:      cfg.Logging.Level,
+	}
+	qdrantURL := ""
+	if cfg.Vector.Enabled {
+		qdrantURL = cfg.Vector.QdrantAddr
+	}
+	ollamaURL := ""
+	if cfg.Vector.OllamaURL != "" {
+		ollamaURL = cfg.Vector.OllamaURL
+	}
+	for _, s := range skills.InitDiagnosticsSkills(version, store.DB(), mcpMgr, diagSafeCfg, qdrantURL, ollamaURL) {
+		skillReg.Register(s)
+	}
+
+	// Warn if GitHub MCP is registered but in read-only mode (no create_issue).
+	if hasGitHubMCP(mcpMgr) && !hasGitHubWriteTools(mcpMgr) {
+		slog.Warn("GitHub MCP in read-only mode, issue creation disabled. Remove --read-only from GitHub MCP args to enable.")
+	}
+
 	slog.Info("skills registered", "count", len(skillReg.All()))
 
 	// Load external skill collections (exec-based skills from disk).
@@ -1354,4 +1382,33 @@ func (a *entitySkillAdapter) SearchEntitiesFTS(query string, entityType string, 
 		}
 	}
 	return out, nil
+}
+
+// mcpServerNames returns the configured MCP server names for diagnostics.
+func mcpServerNames(cfg *config.Config) []string {
+	names := make([]string, len(cfg.MCP.Servers))
+	for i, s := range cfg.MCP.Servers {
+		names[i] = s.Name
+	}
+	return names
+}
+
+// hasGitHubMCP returns true if a GitHub MCP server is registered.
+func hasGitHubMCP(mgr *mcp.Manager) bool {
+	for _, name := range mgr.ServerNames() {
+		if name == "github" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasGitHubWriteTools returns true if the GitHub MCP server has write tools (create_issue).
+func hasGitHubWriteTools(mgr *mcp.Manager) bool {
+	for _, t := range mgr.Tools() {
+		if t.ServerName == "github" && t.RawName == "create_issue" {
+			return true
+		}
+	}
+	return false
 }
