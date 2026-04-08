@@ -291,21 +291,26 @@ the user provided. **Input validation rules:**
 - Reject any value containing double-quote characters `"` (TOML injection prevention)
 - Telegram user ID must be numeric (digits only)
 - Trim leading/trailing whitespace from all values
+- Strip any embedded newlines or spaces from OAuth tokens and API keys (pasting can introduce line breaks)
 
 **Timezone:** Use the auto-detected timezone from detect.sh. Confirm with the user:
 "Detected timezone: [TIMEZONE]. Is this correct?" If not, ask for the correct IANA
 timezone (e.g., `America/New_York`, `Europe/London`).
 
 **Thinking effort:** Ask in plain text: "Claude reasoning depth? Options: low, medium
-(faster responses), high (recommended, extended thinking), max (maximum reasoning, slowest)"
+(recommended, good balance), high (extended thinking, slower), max (maximum reasoning, slowest)"
 
 **Show tool calls:** Use AskUserQuestion: "Show tool call notifications in Telegram?"
 - A) Yes (recommended) — see what the bot is doing
 - B) No — cleaner messages
 
 **Determine paths based on `INSTALL_METHOD`:**
-- If `docker`: `db_path = "/data/curlycatclaw.db"`
-- If `github_releases`: `db_path = "$HOME/.curlycatclaw/curlycatclaw.db"` (expand `$HOME` to actual path)
+- If `docker`: `db_path = "/data/curlycatclaw.db"`, `cli_path = "/usr/local/bin/claude"` (container path, NOT the host path)
+- If `github_releases`: `db_path = "$HOME/.curlycatclaw/curlycatclaw.db"` (expand `$HOME` to actual path), `cli_path` from detect.sh `CLAUDE_CLI_PATH` value
+
+**Important:** For Docker installs with CLI subprocess mode, always use `/usr/local/bin/claude`
+as the cli_path. The host machine's Claude CLI path (e.g., `/Users/you/.local/bin/claude`)
+does not exist inside the container.
 
 Assemble the required TOML:
 
@@ -314,11 +319,11 @@ timezone = "<TIMEZONE>"
 
 [claude]
 # For OAuth token mode:
-cli_path    = "<CLAUDE_CLI_PATH>"
+cli_path    = "<CLI_PATH>"
 oauth_token = "<ANTHROPIC_AUTH_TOKEN>"
 # For API key mode:
 api_key = "<ANTHROPIC_API_KEY>"
-model   = "claude-sonnet-4-6-20250514"
+model   = "claude-opus-4-6"
 thinking_effort = "<low|medium|high|max>"
 
 [telegram]
@@ -397,12 +402,23 @@ stt_model = "whisper-1"
 **MCP Servers:**
 Use AskUserQuestion: "Add MCP server integrations? A) Add a server B) Skip"
 If A, present presets:
-- **Brave Search** — web search. Needs: Brave API key.
 - **GitHub** — repos, issues, PRs. Needs: GitHub Personal Access Token.
-- **Google Workspace** — Gmail, Calendar, Drive. Needs: GWS credentials file path.
+- **Google Workspace** — Gmail, Calendar, Drive. Needs: GWS credentials.
+  **Note:** GWS MCP requires the `curlycatclaw-gws-mcp` binary. In Docker, it must be
+  built separately or mounted into the container. The pre-built GHCR image does NOT
+  include it. If Docker, warn the user about this.
 - **Custom** — any MCP server. Needs: name, command, args, env vars.
 
-For each preset, ask for the required API key/path. Write the `[[mcp.servers]]` block.
+For GitHub, ask for the Personal Access Token in plain text.
+
+For Google Workspace, ask: "How do you want to provide GWS credentials?"
+- Paste the JSON content (for headless servers where you can't browse to a file)
+- Provide the file path (if the credentials file is already on disk)
+If the user pastes JSON content, write it to `~/.curlycatclaw/gws-credentials.json`
+(with `chmod 600`) and use that path in the config. If they provide a path, use it
+directly (deployment-aware: Docker uses `/data/gws-credentials.json`).
+
+Write the `[[mcp.servers]]` block for each server.
 After each server: "Add another MCP server? A) Yes B) Done"
 
 **Projects:**
@@ -413,10 +429,6 @@ Write `[[projects]]` blocks. Validate paths exist before writing.
 **Skill collections:**
 Ask in plain text: "Add external skill collection paths? Enter path or 'skip'."
 Write `[[skill_collections]]` blocks. Deployment-aware paths.
-
-**Confirm tools:**
-Use AskUserQuestion: "Require confirmation for sensitive tool calls? A) Yes (recommended) B) Skip"
-If A: write `confirm_tools = ["cancel_reminder", "filesystem__delete"]`
 
 **Self-update system:**
 **Gate:** "The self-update system requires the updater sidecar container and a shared
@@ -458,7 +470,7 @@ Allow multiple selections.
 
 1. Assemble the complete TOML string from all sections above, in this order:
    `timezone` → `[claude]` → `[telegram]` → `[storage]` → `[vector]` → `[memory]` →
-   `[memory.observations]` → `[[mcp.servers]]` → `[health]` → `confirm_tools` →
+   `[memory.observations]` → `[[mcp.servers]]` → `[health]` →
    `[[projects]]` → `[logging]` → `[[skill_collections]]` → `[voice]` →
    `[[ingest.sources]]` → `[update]` → `[eval]`
 
