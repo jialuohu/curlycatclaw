@@ -34,7 +34,7 @@ services:
       - HOME=${HOME}
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-curlycatclaw}
       - SERVICE_NAME=curlycatclaw
-      - HEALTH_URL=http://curlycatclaw:8080/health
+      - HEALTH_URL=http://curlycatclaw:18080/health
       - UPDATER_SECRET=${UPDATER_SECRET:-}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/healthz"]

@@ -28,7 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	healthURL := envOrDefault("HEALTH_URL", "http://curlycatclaw:8080/health")
+	healthURL := envOrDefault("HEALTH_URL", "http://curlycatclaw:18080/health")
 	composeProject := os.Getenv("COMPOSE_PROJECT_NAME")
 
 	statePath := envOrDefault("STATE_PATH", "/data/update-state.json")

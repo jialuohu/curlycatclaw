@@ -169,7 +169,7 @@ vector_search_timeout_seconds = 5
 
 [health]
 enabled = true
-port    = 8080
+port    = 18080
 TOML_EOF
 
 # Secure the config file (contains API keys)

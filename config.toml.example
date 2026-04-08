@@ -132,7 +132,7 @@ db_path = "/data/curlycatclaw.db"
 # Health check endpoint (Docker/monitoring). Enabled by default.
 [health]
 enabled = true
-port    = 8080
+port    = 18080
 
 # Projects for CLI work (/project command).
 # [[projects]]

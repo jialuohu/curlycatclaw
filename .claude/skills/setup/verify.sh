@@ -4,7 +4,7 @@
 set -euo pipefail
 
 CONFIG_PATH="${1:-$HOME/.curlycatclaw/config.toml}"
-HEALTH_PORT="${2:-8080}"
+HEALTH_PORT="${2:-18080}"
 
 # Check config file exists and has correct permissions
 CONFIG_VALID="false"

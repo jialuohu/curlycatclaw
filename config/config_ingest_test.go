@@ -195,6 +195,6 @@ func minimalConfig() *Config {
 		Claude:   ClaudeConfig{APIKey: "test-key", Model: "test"},
 		Telegram: TGConfig{Token: "test", AllowedID: []int64{1}},
 		Storage:  StorageConfig{DBPath: "/tmp/test.db"},
-		Health:   HealthConfig{Enabled: true, Port: 8080},
+		Health:   HealthConfig{Enabled: true, Port: 18080},
 	}
 }

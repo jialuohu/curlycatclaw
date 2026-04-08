@@ -74,7 +74,7 @@ drive all subsequent decisions. Key fields:
 - `HAS_BROWSER` — whether a browser is available (for OAuth flow)
 - `QDRANT_RUNNING` — skip Qdrant setup if already running
 - `CONFIG_EXISTS` — prompt before overwriting
-- `PORT_8080` — health endpoint port availability
+- `PORT_18080` — health endpoint port availability
 - `GPU_TYPE` — `nvidia`, `apple_silicon`, `nvidia_no_driver`, `amd_no_driver`, `intel_igpu`, or `none`
 - `GPU_NAME` — human-readable GPU name (empty if none detected)
 - `OLLAMA_RUNNING` — whether Ollama is already running
@@ -336,7 +336,7 @@ db_path = "<DB_PATH>"
 
 [health]
 enabled = true
-port    = 8080
+port    = 18080
 ```
 
 Include only the applicable Claude auth fields (cli_path+oauth_token OR api_key, never both).
@@ -575,8 +575,8 @@ bash .claude/skills/setup/config.sh "$CREDS_FILE"
 
 ## 7. Start Service
 
-**If `PORT_8080=in_use`:** Warn the user that port 8080 is already in use. Ask if they
-want to pick a different port. If yes, use the Edit tool to change `port = 8080` in
+**If `PORT_18080=in_use`:** Warn the user that port 18080 is already in use. Ask if they
+want to pick a different port. If yes, use the Edit tool to change `port = 18080` in
 the config file, then proceed.
 
 **If `INSTALL_METHOD=docker`:**
@@ -654,7 +654,7 @@ I'll check if it started..."
 Then poll the health endpoint with a 30-second timeout:
 ```bash
 for i in $(seq 1 30); do
-  if curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1; then
+  if curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1; then
     echo "Health check passed!"
     break
   fi

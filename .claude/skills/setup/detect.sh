@@ -102,21 +102,21 @@ else
   CONFIG_EXISTS="false"
 fi
 
-# Port 8080 availability (health endpoint default)
+# Port 18080 availability (health endpoint default)
 if command -v ss >/dev/null 2>&1; then
-  if ss -tlnp 2>/dev/null | grep -q ':8080 '; then
-    PORT_8080="in_use"
+  if ss -tlnp 2>/dev/null | grep -q ':18080 '; then
+    PORT_18080="in_use"
   else
-    PORT_8080="free"
+    PORT_18080="free"
   fi
 elif command -v lsof >/dev/null 2>&1; then
-  if lsof -i :8080 >/dev/null 2>&1; then
-    PORT_8080="in_use"
+  if lsof -i :18080 >/dev/null 2>&1; then
+    PORT_18080="in_use"
   else
-    PORT_8080="free"
+    PORT_18080="free"
   fi
 else
-  PORT_8080="unknown"
+  PORT_18080="unknown"
 fi
 
 # GPU detection
@@ -166,7 +166,7 @@ HAS_BROWSER=$HAS_BROWSER
 LATEST_VERSION=$LATEST_VERSION
 QDRANT_RUNNING=$QDRANT_RUNNING
 CONFIG_EXISTS=$CONFIG_EXISTS
-PORT_8080=$PORT_8080
+PORT_18080=$PORT_18080
 GPU_TYPE=$GPU_TYPE
 GPU_NAME=$GPU_NAME
 OLLAMA_RUNNING=$OLLAMA_RUNNING

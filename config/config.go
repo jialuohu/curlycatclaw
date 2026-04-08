@@ -358,7 +358,7 @@ func Load(path string) (*Config, error) {
 		},
 		Health: HealthConfig{
 			Enabled: true,
-			Port:    8080,
+			Port:    18080,
 		},
 		Voice: VoiceConfig{
 			Enabled:  false,

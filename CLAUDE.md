@@ -111,7 +111,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - GWS multi-account: `GWS_ACCOUNT_<NAME>_SERVICES` env vars must not collide with account names. `parseAccountsFromEnv()` skips keys ending in `_SERVICES`. Account names validated as `[a-zA-Z0-9_-]+`. `"account"` is in `reservedFlags` to prevent LLM injection as a gws CLI flag. Credential paths must be absolute and exist at startup (fatal otherwise).
 - `send_file` in CLI mode queues to SQLite (`pending_files` table), delivered by session actor after tool loop ends. Direct API mode sends immediately via Telegram. Tool result says "File queued" to prevent Claude retries.
 - CLI subprocess `bufio.Scanner` max is 16MB (for base64 PDF responses in stream-json). Default 64KB would crash on any document attachment.
-- Health endpoint binds to `0.0.0.0:8080` (not `127.0.0.1`) so the updater sidecar can reach it across the Docker network for liveness checks.
+- Health endpoint binds to `0.0.0.0:18080` (not `127.0.0.1`) so the updater sidecar can reach it across the Docker network for liveness checks.
 - Reminder cancellation in CLI mode: `cancel_reminder` updates the DB via MCP subprocess, but the signal channel drains to /dev/null in `mcp_server.go`. `pollNewReminders` (every 10s) compensates by checking DB for cancelled jobs. `fireReminder` also re-checks DB status before sending as a safety net.
 - HTTP MCP transport: `headerRoundTripper` skips reserved headers (`content-type`, `accept`, `mcp-session-id`) to avoid breaking SDK internals. Redirects are blocked (`http.ErrUseLastResponse`) to prevent API key leakage. 60s client timeout. `DisableStandaloneSSE: true` for stateless servers. Per-server 5s shutdown timeout prevents one hung HTTP DELETE from blocking the rest.
 

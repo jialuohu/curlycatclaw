@@ -48,7 +48,7 @@ enabled = true                       # enable automatic observation extraction
 
 [health]
 enabled = true
-port    = 8080
+port    = 18080
 ```
 
 ## Knowledge Source Ingest (optional)

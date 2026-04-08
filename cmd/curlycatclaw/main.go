@@ -69,7 +69,7 @@ func main() {
 	}
 
 	if *healthCheckFlag {
-		resp, err := http.Get("http://localhost:8080/health")
+		resp, err := http.Get("http://localhost:18080/health")
 		if err != nil {
 			os.Exit(1)
 		}

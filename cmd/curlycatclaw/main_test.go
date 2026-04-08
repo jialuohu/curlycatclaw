@@ -200,7 +200,7 @@ allowed_user_ids = [123456789]
 db_path = "` + filepath.Join(dir, "test.db") + `"
 [health]
 enabled = true
-port = 8080
+port = 18080
 `
 	if err := os.WriteFile(cfgPath, []byte(validConfig), 0600); err != nil {
 		t.Fatal(err)
