@@ -402,7 +402,7 @@ stt_model = "whisper-1"
 **MCP Servers:**
 Use AskUserQuestion: "Add MCP server integrations? A) Add a server B) Skip"
 If A, present presets:
-- **GitHub** — repos, issues, PRs. Needs: GitHub Personal Access Token.
+- **GitHub** — repos, issues, PRs, CI status. Needs: GitHub Personal Access Token (classic).
 - **Google Workspace** — Gmail, Calendar, Drive. Needs: GWS credentials.
   **Note:** GWS MCP requires the `curlycatclaw-gws-mcp` binary. In Docker, it must be
   built separately or mounted into the container. The pre-built GHCR image does NOT
@@ -412,7 +412,62 @@ If A, present presets:
   Enable Places API (New), Routes API, Geocoding API. Free tier: $200/month credit.
 - **Custom** — any MCP server. Needs: name, command, args, env vars.
 
-For GitHub, ask for the Personal Access Token in plain text.
+For GitHub, first ask about access level using AskUserQuestion:
+"How do you want to use GitHub from Telegram?
+A) Read + write (recommended) — browse repos, check CI, AND create issues from Telegram
+B) Read-only — browse repos, check CI, read issues/PRs only"
+
+**If A (read + write):**
+Ask for the PAT in plain text with this guidance:
+"Create a Classic PAT at https://github.com/settings/tokens/new
+
+Required scopes:
+  - `repo` (full access — needed to create issues from Telegram)
+  - `read:org` (read org membership, needed if your repos are in an org)
+
+The `repo` scope with full access lets the bot create GitHub issues when you report
+bugs through Telegram. Without it, issue creation will fail with a permission error.
+
+Paste your token (starts with ghp_):"
+
+Strip embedded whitespace. Write config WITHOUT `--read-only`:
+```toml
+[[mcp.servers]]
+name    = "github"
+command = "github-mcp-server"
+args    = ["stdio", "--toolsets", "repos,issues,pull_requests,actions,users"]
+[mcp.servers.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "<token>"
+```
+
+Then ask for the repo: "What's your GitHub repo? (format: owner/repo, e.g. jialuohu/curlycatclaw)"
+Parse owner and repo from the response. Write:
+```toml
+[github]
+owner = "<owner>"
+repo  = "<repo>"
+```
+
+**If B (read-only):**
+Ask for the PAT in plain text with this guidance:
+"Create a Classic PAT at https://github.com/settings/tokens/new
+
+Required scopes for read-only mode:
+  - `repo` (read access to private repos, issues, PRs, actions)
+  - `read:org` (read org membership, needed if your repos are in an org)
+
+Paste your token (starts with ghp_):"
+
+Strip embedded whitespace. Write config with `--read-only`:
+```toml
+[[mcp.servers]]
+name    = "github"
+command = "github-mcp-server"
+args    = ["stdio", "--toolsets", "repos,issues,pull_requests,actions,users", "--read-only"]
+[mcp.servers.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "<token>"
+```
+No `[github]` section needed for read-only mode (issue creation is not available).
 
 For Google Workspace, ask: "How do you want to provide GWS credentials?"
 - Paste the JSON content (for headless servers where you can't browse to a file)
