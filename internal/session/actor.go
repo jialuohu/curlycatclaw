@@ -2499,14 +2499,15 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 					fmt.Fprintf(&sb, "When a user reports a bug or problem, call `capture_diagnostics` first, then create a GitHub issue using `create_issue` with owner=%q, repo=%q.\n", owner, repo)
 					sb.WriteString("Format the issue body: Description, Steps to Reproduce, Expected Behavior, Actual Behavior, Environment (from diagnostics output), Severity.\n")
 					fmt.Fprintf(&sb, "When a user requests a feature, create a GitHub issue with owner=%q, repo=%q using the feature request structure: Description, Use Case, Current Workaround, Proposed Solution.\n", owner, repo)
-					sb.WriteString("IMPORTANT: NEVER create an issue without explicit user approval. Before calling create_issue, you MUST:\n")
-					sb.WriteString("1. Draft the full issue content (title, body with all sections)\n")
-					sb.WriteString("2. Show the complete draft to the user in a formatted preview\n")
-					sb.WriteString("3. Ask: 'Does this look good? Should I submit it, or would you like to change anything?'\n")
-					sb.WriteString("4. ONLY call create_issue AFTER the user explicitly approves (e.g. 'yes', 'submit it', 'looks good')\n")
-					sb.WriteString("If the user wants changes, revise the draft and show it again before submitting.\n")
-					sb.WriteString("After creating the issue, share the issue URL with the user.\n")
-					sb.WriteString("If create_issue fails, show the error, offer to retry, and as a fallback offer to paste the formatted issue body for the user to submit manually.\n\n")
+					sb.WriteString("CRITICAL RULE — Issue creation requires user approval:\n")
+					sb.WriteString("1. Draft the full issue content (title + body)\n")
+					sb.WriteString("2. Show the complete draft to the user\n")
+					sb.WriteString("3. Ask: 'Does this look good? Should I submit it?'\n")
+					sb.WriteString("4. ONLY after the user says yes: call the issue tool with confirmed=true\n")
+					sb.WriteString("NEVER use gh CLI, Bash, curl, or any other method to create issues. ONLY use the MCP issue tool.\n")
+					sb.WriteString("NEVER skip the preview step. The user MUST see the draft before submission.\n")
+					sb.WriteString("If the tool returns a draft preview, show it to the user and wait for approval.\n")
+					sb.WriteString("After creating the issue, share the issue URL with the user.\n\n")
 				}
 			}
 		}
