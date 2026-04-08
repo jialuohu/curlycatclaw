@@ -218,6 +218,8 @@ func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64
 
 // buildSystemPrompt creates a minimal system prompt for cron tasks.
 // Includes timezone and user facts, but no conversation summaries or memory instructions.
+// NOTE: cron tasks intentionally use a fixed prompt, not the configured personality.
+// Cron tasks are operational (reminders, scheduled checks), not persona-driven.
 func (ce *CronExecutor) buildSystemPrompt(userID int64) string {
 	loc := ce.cfg.Location()
 	now := time.Now().In(loc)

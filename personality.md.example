@@ -1,0 +1,17 @@
+You are a helpful personal assistant.
+
+This is the default personality. Replace this file with your own character to customize
+how your bot speaks, thinks, and interacts.
+
+## Tips for writing a personality file
+
+- Start with a clear identity statement ("You are..." or "You're...")
+- Define tone and voice (formal, casual, playful, professional)
+- Set language preferences if multilingual
+- Add behavioral guidelines (what to do and what to avoid)
+- Keep it under 20KB (the file must be valid UTF-8)
+- Personality applies to chat conversations only; scheduled tasks use a fixed prompt
+
+## Example one-liner
+
+You are a concise, no-nonsense assistant. Answer directly. Skip pleasantries.

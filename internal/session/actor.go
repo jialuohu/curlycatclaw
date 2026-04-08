@@ -24,6 +24,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
+	"github.com/jialuohu/curlycatclaw/internal/personality"
 	"github.com/jialuohu/curlycatclaw/internal/update"
 	"github.com/jialuohu/curlycatclaw/internal/voice"
 	"github.com/jialuohu/curlycatclaw/skills"
@@ -109,6 +110,9 @@ type Actor struct {
 
 	// updateClient communicates with the curlycatclaw-updater sidecar (nil when update not configured).
 	updateClient *update.Client
+
+	// persona holds the loaded agent personality (from config or default).
+	persona *personality.Persona
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -164,7 +168,24 @@ func New(
 		debugOverride:  make(map[userKey]bool),
 		fileDrainer:    store,
 		updateClient:   updateClient,
+		persona:        loadPersona(cfg),
 	}
+}
+
+// loadPersona loads the personality from config or returns the default.
+func loadPersona(cfg *config.Config) *personality.Persona {
+	if cfg.Personality.File == "" {
+		return personality.Default()
+	}
+	p, err := personality.Load(cfg.Personality.File)
+	if err != nil {
+		// Config validation already checks file exists and is readable,
+		// but Load does additional validation (UTF-8, size, empty).
+		slog.Error("failed to load personality file, using default", "path", cfg.Personality.File, "error", err)
+		return personality.Default()
+	}
+	slog.Info("personality loaded", "path", p.FilePath, "hash", p.ContentHash[:12], "chars", len(p.Content))
+	return p
 }
 
 func (a *Actor) Name() string { return "session" }
@@ -283,6 +304,12 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 	// Handle /effort command (session-level thinking effort override).
 	if msg.Text == "/effort" || strings.HasPrefix(msg.Text, "/effort ") {
 		a.handleEffortCommand(msg)
+		return nil
+	}
+
+	// Handle /persona command (display active personality info, owner-only).
+	if msg.Text == "/persona" {
+		a.handlePersonaCommand(msg)
 		return nil
 	}
 
@@ -2124,6 +2151,33 @@ func (a *Actor) handleDebugCommand(msg telegram.IncomingMessage) {
 	}
 }
 
+func (a *Actor) handlePersonaCommand(msg telegram.IncomingMessage) {
+	// Restrict to owner (first allowed user ID) to prevent prompt leak with allow_all.
+	if len(a.cfg.Telegram.AllowedID) > 0 && msg.UserID != a.cfg.Telegram.AllowedID[0] {
+		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "The /persona command is restricted to the bot owner."})
+		return
+	}
+	p := a.persona
+	if p.FilePath == "" {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   "**Persona:** default (no personality file configured)",
+		})
+		return
+	}
+	preview := p.Content
+	const maxPreview = 200
+	if len([]rune(preview)) > maxPreview {
+		runes := []rune(preview)
+		preview = string(runes[:maxPreview]) + "..."
+	}
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text: fmt.Sprintf("**Persona**\nFile: `%s`\nHash: `%s`\nLength: %d chars\n\n```\n%s\n```",
+			p.FilePath, p.ContentHash[:12], len(p.Content), preview),
+	})
+}
+
 // showToolCalls returns whether tool calls should be shown for this user,
 // checking session override first, then config default.
 func (a *Actor) showToolCalls(key userKey) bool {
@@ -2449,7 +2503,13 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	now := time.Now().In(loc)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "You are a helpful personal assistant.\n\n")
+	// NOTE: personality content is injected as system prompt prefix. Operator-controlled only.
+	// If per-user personas are added later, this becomes an injection vector.
+	p := a.persona
+	if p == nil {
+		p = personality.Default()
+	}
+	fmt.Fprintf(&sb, "%s\n\n", p.Content)
 	sb.WriteString("You are communicating via Telegram. Format responses for mobile readability:\n")
 	sb.WriteString("- Use bullet points and numbered lists instead of markdown tables.\n")
 	sb.WriteString("- Tables render poorly in Telegram. Always convert tabular data to a list format.\n")

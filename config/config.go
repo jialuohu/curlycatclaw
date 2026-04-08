@@ -32,6 +32,12 @@ type Config struct {
 	Eval             EvalConfig             `toml:"eval"`
 	Update           UpdateConfig           `toml:"update"`
 	GitHub           GitHubConfig           `toml:"github"`
+	Personality      PersonalityConfig      `toml:"personality"`
+}
+
+// PersonalityConfig controls the agent's persona via an external markdown file.
+type PersonalityConfig struct {
+	File string `toml:"file"` // absolute path to personality markdown file
 }
 
 // GitHubConfig holds GitHub integration settings for issue creation from Telegram.
@@ -542,6 +548,14 @@ func (c *Config) validate() error {
 	}
 	if c.Voice.Enabled && c.Voice.OpenAIAPIKey == "" {
 		return fmt.Errorf("config: voice.openai_api_key is required when voice is enabled")
+	}
+	if c.Personality.File != "" {
+		if !filepath.IsAbs(c.Personality.File) {
+			return fmt.Errorf("config: personality.file must be an absolute path, got %q (e.g. /data/personality.md)", c.Personality.File)
+		}
+		if _, err := os.Stat(c.Personality.File); err != nil {
+			return fmt.Errorf("config: personality.file %q does not exist or is not readable: %w", c.Personality.File, err)
+		}
 	}
 	for i, src := range c.Ingest.Sources {
 		if !src.Enabled {

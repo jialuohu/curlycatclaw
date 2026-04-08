@@ -28,6 +28,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
+	"github.com/jialuohu/curlycatclaw/internal/personality"
 	"github.com/jialuohu/curlycatclaw/internal/security"
 	"github.com/jialuohu/curlycatclaw/internal/session"
 	"github.com/jialuohu/curlycatclaw/internal/skillloader"
@@ -727,6 +728,14 @@ func run(configPath string) error {
 		}()
 	}
 
+	// Compute personality hash for eval metadata.
+	var personalityHash string
+	if cfg.Personality.File != "" {
+		if p, err := personality.Load(cfg.Personality.File); err == nil {
+			personalityHash = p.ContentHash
+		}
+	}
+
 	// Start eval actor if enabled.
 	actors := []actor.Actor{tg, sess, reminderActor}
 	if cfg.Eval.Enabled {
@@ -752,6 +761,7 @@ func run(configPath string) error {
 			MaxCandidatesPerRun: cfg.Eval.MaxCandidatesPerRun,
 			AutoCommit:          cfg.Eval.AutoCommit,
 			CandidateExpiryDays: cfg.Eval.CandidateExpiryDays,
+			PersonalityHash:     personalityHash,
 		}, store, tg.Inbox(), evalLLM)
 		if evalErr != nil {
 			slog.Error("eval actor creation failed", "err", evalErr)
