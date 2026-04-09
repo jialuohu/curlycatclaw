@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.36.2] - 2026-04-09
+
+### Fixed
+- **`UPDATER_SECRET` not passed to MCP subprocess**: The CLI subprocess env allowlist blocked `UPDATER_SECRET`, so the MCP server subprocess couldn't create the update client and `manage_service` never registered. Added to `spawnEnvAllowlist`.
+
 ## [0.36.1] - 2026-04-09
 
 ### Fixed

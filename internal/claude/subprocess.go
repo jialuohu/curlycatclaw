@@ -827,6 +827,8 @@ var spawnEnvAllowlist = map[string]struct{}{
 	"TERM": {}, "COLORTERM": {},
 	// Playwright (needed by scrapling-mcp browser tools).
 	"PLAYWRIGHT_BROWSERS_PATH": {},
+	// Updater sidecar (needed by manage_service skill in MCP subprocess).
+	"UPDATER_SECRET": {},
 }
 
 // filteredSpawnEnv returns a copy of the current process environment filtered
