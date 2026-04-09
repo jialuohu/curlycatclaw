@@ -37,7 +37,7 @@ func Load(filePath string) (*Persona, error) {
 	if content == "" {
 		return nil, fmt.Errorf("personality: file %q is empty after trimming whitespace", filePath)
 	}
-	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 	return &Persona{
 		Content:     content,
 		ContentHash: hash,
