@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.35.0] - 2026-04-08
+
+### Added
+- **Companion service management**: The `manage_service` skill lets the agent register, start, stop, and check status of companion Docker services from Telegram. Services are defined dynamically (no docker-compose.yml changes needed), persisted in a service catalog, and orchestrated via Docker Compose overlays. Powered by the updater sidecar's new `/v1/services` API.
+
+### Security
+- **Volume name validation**: Companion service volume names are validated against a strict regex to prevent host bind mounts (blocks `/var/run/docker.sock` or `/etc` as volume names).
+- **Healthcheck YAML injection prevention**: Healthcheck test strings are now properly escaped in generated Compose overlays.
+- **Port validation**: Port mappings require numeric values only.
+
+## [0.34.0] - 2026-04-08
+
+### Added
+- **HTTP MCP extensions via chat**: `add_extension` now accepts `transport: "http"` with `url` and `headers` fields. HTTP-based MCP servers (like xiaohongshu-mcp) can be installed at runtime, persist across restarts, and hot-reload, just like stdio extensions.
+
+### Fixed
+- **Session leak on HTTP MCP re-registration**: `ConnectHTTPAndRegister` now closes the old session before replacing it, matching the stdio path's behavior. Also removes stale proxy tools when a remote server's tool set changes.
+- **URL validation**: rejects URLs with no host (e.g. `http://`) that would fail at connect time.
+
 ## [0.33.2] - 2026-04-08
 
 ### Changed

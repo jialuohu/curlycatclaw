@@ -239,7 +239,12 @@ func runMCPServer() error {
 		// mcpMgr is nil in MCP server subprocess mode.
 		var cfgServers []extension.ConfigMCPServer
 		for _, srv := range cfg.MCP.Servers {
-			cfgServers = append(cfgServers, extension.ConfigMCPServer{Name: srv.Name, Command: srv.Command})
+			cfgServers = append(cfgServers, extension.ConfigMCPServer{
+				Name:      srv.Name,
+				Command:   srv.Command,
+				Transport: srv.Transport,
+				URL:       srv.URL,
+			})
 		}
 		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore, cfgServers) {
 			reg.Register(s)
@@ -383,6 +388,29 @@ func newMCPHotReloader(server *mcp.Server, userID, chatID int64, credStore *secu
 }
 
 func (r *mcpHotReloader) ConnectAndRegister(ctx context.Context, ext *extension.Extension) ([]string, func(), error) {
+	// HTTP extensions delegate to ConnectHTTPAndRegister which handles
+	// the full Streamable HTTP lifecycle (header resolution, transport, etc.).
+	if ext.Transport == "http" {
+		cfg := config.MCPServerConfig{
+			Name:      ext.Name,
+			Transport: ext.Transport,
+			URL:       ext.URL,
+			Headers:   ext.Headers,
+		}
+		count, err := r.ConnectHTTPAndRegister(ctx, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		r.mu.Lock()
+		toolNames := r.tools[ext.Name]
+		r.mu.Unlock()
+		descs := make([]string, 0, count)
+		for _, n := range toolNames {
+			descs = append(descs, strings.TrimPrefix(n, ext.Name+mcpProxySep))
+		}
+		return descs, nil, nil
+	}
+
 	resolvedEnv := ext.Env
 	if r.credStore != nil && len(ext.Env) > 0 {
 		var err error
@@ -516,10 +544,35 @@ func (r *mcpHotReloader) ConnectHTTPAndRegister(ctx context.Context, srv config.
 		toolNames = append(toolNames, namespacedName)
 	}
 
+	// Swap session and tools, closing the old session if one exists.
+	// Remove any stale tools that disappeared (same pattern as stdio path).
 	r.mu.Lock()
+	oldSession := r.sessions[srv.Name]
+	oldToolNames := r.tools[srv.Name]
 	r.sessions[srv.Name] = session
 	r.tools[srv.Name] = toolNames
 	r.mu.Unlock()
+
+	if len(oldToolNames) > 0 {
+		newSet := make(map[string]struct{}, len(toolNames))
+		for _, n := range toolNames {
+			newSet[n] = struct{}{}
+		}
+		var stale []string
+		for _, n := range oldToolNames {
+			if _, ok := newSet[n]; !ok {
+				stale = append(stale, n)
+			}
+		}
+		if len(stale) > 0 {
+			r.server.RemoveTools(stale...)
+			slog.Info("mcp-server: removed stale HTTP proxy tools", "name", srv.Name, "removed", stale)
+		}
+	}
+
+	if oldSession != nil {
+		oldSession.Close()
+	}
 
 	return len(tools), nil
 }

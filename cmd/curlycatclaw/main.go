@@ -284,6 +284,11 @@ func run(configPath string) error {
 		skillReg.Register(s)
 	}
 
+	// Register service management skill (requires updater sidecar).
+	if updateClient != nil {
+		skillReg.Register(skills.NewManageServiceSkill(updateClient))
+	}
+
 	// Warn if GitHub MCP is registered but in read-only mode (no create_issue).
 	if hasGitHubMCP(mcpMgr) && !hasGitHubWriteTools(mcpMgr) {
 		slog.Warn("GitHub MCP in read-only mode, issue creation disabled. Remove --read-only from GitHub MCP args to enable.")
@@ -318,10 +323,13 @@ func run(configPath string) error {
 	extension.EnsureDefaults(extReg, wrappersDir)
 	for _, ext := range extReg.ByType(extension.TypeMCP) {
 		mcpCfg := config.MCPServerConfig{
-			Name:    ext.Name,
-			Command: ext.Command,
-			Args:    ext.Args,
-			Env:     ext.Env,
+			Name:      ext.Name,
+			Command:   ext.Command,
+			Args:      ext.Args,
+			Env:       ext.Env,
+			Transport: ext.Transport,
+			URL:       ext.URL,
+			Headers:   ext.Headers,
 		}
 		if err := mcpMgr.AddServer(ctx, mcpCfg, nil); err != nil {
 			slog.Warn("extension: failed to start MCP server", "name", ext.Name, "err", err)

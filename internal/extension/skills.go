@@ -75,13 +75,16 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 			"properties": {
 				"name":         {"type": "string", "description": "Unique name for the extension (alphanumeric, hyphens, underscores)"},
 				"type":         {"type": "string", "enum": ["mcp", "exec", "prompt"], "description": "Extension type: mcp (MCP server), exec (standalone executable skill), or prompt (markdown instructions)"},
-				"command":      {"type": "string", "description": "For mcp/exec: command to run. For prompt: directory path containing SKILL.md"},
-				"args":         {"type": "array", "items": {"type": "string"}, "description": "Command arguments"},
+				"command":      {"type": "string", "description": "For mcp (stdio)/exec: command to run. For prompt: directory path containing SKILL.md"},
+				"args":         {"type": "array", "items": {"type": "string"}, "description": "Command arguments (stdio only)"},
 				"env":          {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables for the extension"},
 				"description":  {"type": "string", "description": "What this tool does (required for exec type)"},
-				"input_schema": {"type": "object", "description": "JSON Schema for exec skill input parameters"}
+				"input_schema": {"type": "object", "description": "JSON Schema for exec skill input parameters"},
+				"transport":    {"type": "string", "enum": ["stdio", "http"], "description": "MCP transport: stdio (default, spawns subprocess) or http (connects to running server)"},
+				"url":          {"type": "string", "description": "HTTP endpoint URL (required when transport is http, e.g. http://localhost:8080/mcp)"},
+				"headers":      {"type": "object", "additionalProperties": {"type": "string"}, "description": "HTTP request headers (e.g. API keys). Only used with http transport"}
 			},
-			"required": ["name", "type", "command"]
+			"required": ["name", "type"]
 		}`),
 		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
@@ -92,6 +95,9 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				Env         map[string]string `json:"env"`
 				Description string            `json:"description"`
 				InputSchema json.RawMessage   `json:"input_schema"`
+				Transport   string            `json:"transport"`
+				URL         string            `json:"url"`
+				Headers     map[string]string `json:"headers"`
 			}
 			if err := json.Unmarshal(input, &params); err != nil {
 				return "", fmt.Errorf("invalid input: %w", err)
@@ -120,6 +126,9 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				Description: params.Description,
 				InputSchema: params.InputSchema,
 				AddedAt:     time.Now(),
+				Transport:   params.Transport,
+				URL:         params.URL,
+				Headers:     params.Headers,
 			}
 
 			switch params.Type {
@@ -139,10 +148,13 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reloadFunc func(), hotReloader MCPHotReloader, ext Extension) (string, error) {
 	if mcpMgr != nil {
 		cfg := config.MCPServerConfig{
-			Name:    ext.Name,
-			Command: ext.Command,
-			Args:    ext.Args,
-			Env:     ext.Env,
+			Name:      ext.Name,
+			Command:   ext.Command,
+			Args:      ext.Args,
+			Env:       ext.Env,
+			Transport: ext.Transport,
+			URL:       ext.URL,
+			Headers:   ext.Headers,
 		}
 		if err := mcpMgr.AddServer(ctx, cfg, nil); err != nil {
 			return "", fmt.Errorf("failed to start MCP server: %w", err)
@@ -164,7 +176,7 @@ func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reload
 		if reloadFunc != nil {
 			reloadFunc()
 		}
-		slog.Info("extension: MCP server added", "name", ext.Name, "command", ext.Command)
+		slog.Info("extension: MCP server added", "name", ext.Name, "transport", ext.Transport, "command", ext.Command, "url", ext.URL)
 		return fmt.Sprintf("Extension %q added (MCP server). Tools are available immediately.", ext.Name), nil
 	}
 
@@ -189,7 +201,7 @@ func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reload
 	if reloadFunc != nil {
 		reloadFunc()
 	}
-	slog.Info("extension: MCP server added (CLI mode, pending reload)", "name", ext.Name, "command", ext.Command)
+	slog.Info("extension: MCP server added (CLI mode, pending reload)", "name", ext.Name, "transport", ext.Transport, "command", ext.Command, "url", ext.URL)
 	return fmt.Sprintf("Extension %q added (MCP server). Tools will be available on the next message.", ext.Name), nil
 }
 
@@ -292,8 +304,10 @@ func removeExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regis
 // ConfigMCPServer is the minimal info needed to display config-based MCP servers
 // in list_extensions. Avoids importing the config package.
 type ConfigMCPServer struct {
-	Name    string
-	Command string
+	Name      string
+	Command   string
+	Transport string
+	URL       string
 }
 
 func listExtensionsSkill(reg *Registry, configServers []ConfigMCPServer) *skills.Skill {
@@ -313,8 +327,13 @@ func listExtensionsSkill(reg *Registry, configServers []ConfigMCPServer) *skills
 			if len(configServers) > 0 {
 				sb.WriteString("**Config MCP servers** (from config.toml):\n\n")
 				for _, srv := range configServers {
-					fmt.Fprintf(&sb, "- **%s** (type: mcp, config)\n", srv.Name)
-					fmt.Fprintf(&sb, "  Command: `%s`\n", srv.Command)
+					if srv.Transport == "http" {
+						fmt.Fprintf(&sb, "- **%s** (type: mcp, config, http)\n", srv.Name)
+						fmt.Fprintf(&sb, "  URL: `%s`\n", srv.URL)
+					} else {
+						fmt.Fprintf(&sb, "- **%s** (type: mcp, config)\n", srv.Name)
+						fmt.Fprintf(&sb, "  Command: `%s`\n", srv.Command)
+					}
 				}
 				sb.WriteString("\n")
 			}
@@ -322,12 +341,17 @@ func listExtensionsSkill(reg *Registry, configServers []ConfigMCPServer) *skills
 			if len(all) > 0 {
 				sb.WriteString("**Runtime extensions** (added via chat):\n\n")
 				for _, ext := range all {
-					fmt.Fprintf(&sb, "- **%s** (type: %s)\n", ext.Name, ext.Type)
-					fmt.Fprintf(&sb, "  Command: `%s", ext.Command)
-					if len(ext.Args) > 0 {
-						fmt.Fprintf(&sb, " %s", strings.Join(ext.Args, " "))
+					if ext.Transport == "http" {
+						fmt.Fprintf(&sb, "- **%s** (type: %s, http)\n", ext.Name, ext.Type)
+						fmt.Fprintf(&sb, "  URL: `%s`\n", ext.URL)
+					} else {
+						fmt.Fprintf(&sb, "- **%s** (type: %s)\n", ext.Name, ext.Type)
+						fmt.Fprintf(&sb, "  Command: `%s", ext.Command)
+						if len(ext.Args) > 0 {
+							fmt.Fprintf(&sb, " %s", strings.Join(ext.Args, " "))
+						}
+						sb.WriteString("`\n")
 					}
-					sb.WriteString("`\n")
 					if ext.Description != "" {
 						fmt.Fprintf(&sb, "  Description: %s\n", ext.Description)
 					}

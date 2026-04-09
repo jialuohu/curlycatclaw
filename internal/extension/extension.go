@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,12 +29,16 @@ const (
 type Extension struct {
 	Name        string            `json:"name"`
 	Type        Type              `json:"type"`
-	Command     string            `json:"command"`
+	Command     string            `json:"command,omitempty"`
 	Args        []string          `json:"args,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
 	Description string            `json:"description,omitempty"`
 	InputSchema json.RawMessage   `json:"input_schema,omitempty"`
 	AddedAt     time.Time         `json:"added_at"`
+	// HTTP transport fields (MCP type only).
+	Transport string            `json:"transport,omitempty"` // "" or "stdio" (default), "http"
+	URL       string            `json:"url,omitempty"`       // required when transport is "http"
+	Headers   map[string]string `json:"headers,omitempty"`   // HTTP request headers
 }
 
 // Registry manages a persistent set of runtime extensions.
@@ -156,6 +161,12 @@ func (r *Registry) Update(name string, mutate func(*Extension)) error {
 		snapshot.Args = make([]string, len(ext.Args))
 		copy(snapshot.Args, ext.Args)
 	}
+	if ext.Headers != nil {
+		snapshot.Headers = make(map[string]string, len(ext.Headers))
+		for k, v := range ext.Headers {
+			snapshot.Headers[k] = v
+		}
+	}
 	mutate(ext)
 
 	if err := r.persistLocked(); err != nil {
@@ -228,17 +239,44 @@ func validate(ext Extension) error {
 	if ext.Type != TypeMCP && ext.Type != TypeExec && ext.Type != TypePrompt {
 		return fmt.Errorf("extension: type must be %q, %q, or %q, got %q", TypeMCP, TypeExec, TypePrompt, ext.Type)
 	}
-	if ext.Command == "" {
-		return errors.New("extension: command is required")
-	}
-	if ext.Type == TypeExec && ext.Description == "" {
-		return errors.New("extension: description is required for exec extensions")
-	}
-	if ext.Type == TypePrompt {
+	switch ext.Type {
+	case TypeMCP:
+		switch ext.Transport {
+		case "", "stdio":
+			if ext.Command == "" {
+				return errors.New("extension: command is required for stdio MCP servers")
+			}
+			if ext.URL != "" {
+				return errors.New("extension: url is not allowed for stdio transport")
+			}
+		case "http":
+			if ext.URL == "" {
+				return errors.New("extension: url is required for http transport")
+			}
+			u, err := url.Parse(ext.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("extension: url must be http:// or https:// with a host, got %q", ext.URL)
+			}
+			if ext.Command != "" {
+				return errors.New("extension: command is not allowed for http transport")
+			}
+		default:
+			return fmt.Errorf("extension: transport must be \"\", \"stdio\", or \"http\", got %q", ext.Transport)
+		}
+	case TypeExec:
+		if ext.Command == "" {
+			return errors.New("extension: command is required")
+		}
+		if ext.Description == "" {
+			return errors.New("extension: description is required for exec extensions")
+		}
+	case TypePrompt:
+		if ext.Command == "" {
+			return errors.New("extension: command is required")
+		}
 		if ext.Description == "" {
 			return errors.New("extension: description is required for prompt skills")
 		}
-		// Command is the directory path; it must contain SKILL.md.
 		skillPath := filepath.Join(ext.Command, "SKILL.md")
 		if _, err := os.Stat(skillPath); err != nil {
 			return fmt.Errorf("extension: prompt skill directory must contain SKILL.md: %w", err)

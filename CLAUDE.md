@@ -87,13 +87,13 @@ curlycatclaw --validate-config            # validate config file and exit (for s
 
 Goroutine-based actor model under supervision. See [docs/architecture.md](docs/architecture.md) for full diagrams and details.
 
-**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Ingest Actor (background multi-source knowledge ingestion). Each actor panics safely and restarts with exponential backoff. A separate **updater sidecar** (`curlycatclaw-updater`) runs alongside the main container, holding the Docker socket and managing image pulls, container restarts, and rollbacks via an authenticated HTTP API.
+**Core pattern**: Supervisor runs Channel Actor (Telegram I/O), Session Actor (Claude + tools + memory), Reminder Actor (cron tasks), Eval Actor (background self-evaluation), and Ingest Actor (background multi-source knowledge ingestion). Each actor panics safely and restarts with exponential backoff. A separate **updater sidecar** (`curlycatclaw-updater`) runs alongside the main container, holding the Docker socket and managing image pulls, container restarts, rollbacks, and **companion service management** (dynamic Docker Compose service registration, start/stop, health polling) via an authenticated HTTP API. The `manage_service` skill gives the agent the ability to register and start companion Docker services (e.g., HTTP MCP servers) from Telegram chat.
 
 **Ingest pipeline**: Generic `IngestActor` processes configured knowledge sources (Gmail via MCP, Obsidian via filesystem, Notion via MCP). Config-driven via `[[ingest.sources]]`. Each source implements `Source` interface (Discover/Read/Prefilter). Three extractors: LLM (trusted/untrusted prompts), Passthrough (YAML front matter), Hybrid. Per-source cursors, daily caps, trust levels. Content fingerprint tracking for mutable-source re-extraction. Stale "running" state recovery on startup. Deprecated `[email_ingest]` auto-migrates.
 
 **Claude integration**: Two modes via `[claude]` config. Direct API (`api_key`) uses anthropic-sdk-go with streaming. CLI subprocess (`cli_path` + `oauth_token`) spawns long-lived `claude` processes per user. `thinking_effort` controls extended thinking (high=10K, max=32K budget tokens). `/effort`, `/retry`, `/debug` Telegram commands for runtime control. `/update`, `/status`, `/rollback` for self-update management. Document attachments: PDFs sent as native document blocks (both modes), text files inlined into message (CLI) or as text blocks (API).
 
-**MCP & tools**: MCP Manager holds persistent connections via stdio (local subprocesses) or Streamable HTTP (remote servers). Config: `transport = "http"` + `url` + `[headers]` for remote; default stdio uses `command` + `args`. Runtime extensions proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
+**MCP & tools**: MCP Manager holds persistent connections via stdio (local subprocesses) or Streamable HTTP (remote servers). Config: `transport = "http"` + `url` + `[headers]` for remote; default stdio uses `command` + `args`. Runtime extensions support both stdio and HTTP transports via `add_extension` (with `transport`, `url`, `headers` fields for HTTP). Extensions are proxied through curlycatclaw-skills MCP subprocess with hot-reload (`AddTool`/`RemoveTools`). Three env allowlists in chain: subprocess.go -> mcp_server.go -> extension. `PLAYWRIGHT_BROWSERS_PATH` must be in all three for scrapling browser tools. GWS MCP supports multi-account via `GWS_ACCOUNT_*` env vars with per-account credential switching and optional `GWS_ACCOUNT_<NAME>_SERVICES` restrictions. `gws_list_accounts` tool for account discovery.
 
 **Memory**: Four tiers: user facts (always), observations (Qdrant + FTS5 hybrid search), conversation summaries (Qdrant), sliding window (25 turns). Observation extraction auto-triggers after idle. Self-healing supersession detects stale project_state. Soft delete with archive/restore.
 
@@ -114,6 +114,8 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - Health endpoint binds to `0.0.0.0:18080` (not `127.0.0.1`) so the updater sidecar can reach it across the Docker network for liveness checks.
 - Reminder cancellation in CLI mode: `cancel_reminder` updates the DB via MCP subprocess, but the signal channel drains to /dev/null in `mcp_server.go`. `pollNewReminders` (every 10s) compensates by checking DB for cancelled jobs. `fireReminder` also re-checks DB status before sending as a safety net.
 - HTTP MCP transport: `headerRoundTripper` skips reserved headers (`content-type`, `accept`, `mcp-session-id`) to avoid breaking SDK internals. Redirects are blocked (`http.ErrUseLastResponse`) to prevent API key leakage. 60s client timeout. `DisableStandaloneSSE: true` for stateless servers. Per-server 5s shutdown timeout prevents one hung HTTP DELETE from blocking the rest.
+- HTTP MCP extensions: `add_extension` supports `transport: "http"` with `url` and `headers` fields. Persists to `extensions.json`, auto-resurrects on restart, hot-reloads. Headers are currently stored in plaintext (encrypted credential store integration planned).
+- Companion service management: `manage_service` skill requires updater sidecar. ServiceCatalog persists to `/data/managed-services.json`. Compose overlay generated at `/data/docker-compose.managed.yml`. `ALLOWED_IMAGES` env var restricts registerable images (empty = allow all). Volume names validated against `isValidServiceName` regex to prevent host bind mounts.
 
 ## Key Files
 
@@ -173,9 +175,12 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `cmd/curlycatclaw-gws-mcp/executor.go` | GWS CLI subprocess runner, account resolution, service validation, per-call env overrides |
 | `cmd/curlycatclaw-gws-mcp/discovery.go` | GWS skill discovery, tool registration, account field injection, `gws_list_accounts` |
 | `cmd/curlycatclaw-updater/main.go` | Updater sidecar entrypoint, HTTP server, shared secret auth |
-| `cmd/curlycatclaw-updater/handler.go` | Update/rollback/status HTTP handlers, digest blacklist, stale lock recovery |
-| `cmd/curlycatclaw-updater/docker.go` | Docker client wrapper for image pull, container restart, rollback |
-| `internal/update/client.go` | HTTP client for updater sidecar API (used by session actor and auto-update cron) |
+| `cmd/curlycatclaw-updater/handler.go` | Update/rollback/status HTTP handlers, companion service management, digest blacklist |
+| `cmd/curlycatclaw-updater/docker.go` | Docker client wrapper for image pull, container restart, rollback, companion service compose commands |
+| `cmd/curlycatclaw-updater/catalog.go` | ServiceCatalog for persistent companion service specs (JSON, atomic write) |
+| `cmd/curlycatclaw-updater/compose_gen.go` | Docker Compose overlay generator from service catalog |
+| `internal/update/client.go` | HTTP client for updater sidecar API (update + service management) |
+| `skills/service.go` | manage_service skill (register/start/stop/status/list companion Docker services) |
 | `Dockerfile` | Container build (CGO_ENABLED=0, Debian bookworm-slim) |
 | `Dockerfile.updater` | Updater sidecar container build |
 | `docker-compose.yml` | curlycatclaw + Qdrant + Ollama orchestration |

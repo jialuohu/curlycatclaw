@@ -16,16 +16,18 @@ import (
 
 // mockMCPAdder records calls for testing.
 type mockMCPAdder struct {
-	added   []string
-	removed []string
-	addErr  error
+	added      []config.MCPServerConfig
+	addedNames []string
+	removed    []string
+	addErr     error
 }
 
 func (m *mockMCPAdder) AddServer(_ context.Context, cfg config.MCPServerConfig, _ func(string) (string, error)) error {
 	if m.addErr != nil {
 		return m.addErr
 	}
-	m.added = append(m.added, cfg.Name)
+	m.added = append(m.added, cfg)
+	m.addedNames = append(m.addedNames, cfg.Name)
 	return nil
 }
 
@@ -74,8 +76,8 @@ func TestAddMCPExtension(t *testing.T) {
 	if !strings.Contains(result, "immediately") {
 		t.Fatalf("expected immediate availability message, got: %s", result)
 	}
-	if len(mcpMgr.added) != 1 || mcpMgr.added[0] != "brave" {
-		t.Fatalf("expected MCP AddServer called with brave, got: %v", mcpMgr.added)
+	if len(mcpMgr.addedNames) != 1 || mcpMgr.addedNames[0] != "brave" {
+		t.Fatalf("expected MCP AddServer called with brave, got: %v", mcpMgr.addedNames)
 	}
 	if reg.Get("brave") == nil {
 		t.Fatal("expected extension to be persisted")
@@ -480,5 +482,173 @@ func TestRemoveMCPExtensionHotReloadFallback(t *testing.T) {
 	}
 	if !reloadCalled {
 		t.Fatal("expected reloadFunc called on hot-unload failure")
+	}
+}
+
+func TestAddHTTPMCPExtension(t *testing.T) {
+	reg, mcpMgr, _, ss := setupTest(t)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"remote-api","type":"mcp","transport":"http","url":"http://localhost:18060/mcp","headers":{"X-Api-Key":"secret"}}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "immediately") {
+		t.Fatalf("expected immediate availability, got: %s", result)
+	}
+
+	// Verify MCPServerConfig received correct fields.
+	if len(mcpMgr.added) != 1 {
+		t.Fatalf("expected 1 AddServer call, got %d", len(mcpMgr.added))
+	}
+	cfg := mcpMgr.added[0]
+	if cfg.Transport != "http" {
+		t.Errorf("config transport = %q, want http", cfg.Transport)
+	}
+	if cfg.URL != "http://localhost:18060/mcp" {
+		t.Errorf("config url = %q, want http://localhost:18060/mcp", cfg.URL)
+	}
+	if cfg.Headers["X-Api-Key"] != "secret" {
+		t.Error("expected headers passed through to MCPServerConfig")
+	}
+	if cfg.Command != "" {
+		t.Errorf("config command should be empty for HTTP, got %q", cfg.Command)
+	}
+
+	// Verify persistence.
+	got := reg.Get("remote-api")
+	if got == nil {
+		t.Fatal("expected extension to be persisted")
+	}
+	if got.Transport != "http" {
+		t.Errorf("persisted transport = %q, want http", got.Transport)
+	}
+	if got.URL != "http://localhost:18060/mcp" {
+		t.Errorf("persisted url = %q", got.URL)
+	}
+}
+
+func TestAddHTTPMCPExtensionMissingURL(t *testing.T) {
+	_, _, _, ss := setupTest(t)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"no-url","type":"mcp","transport":"http"}`
+	_, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err == nil {
+		t.Fatal("expected error for HTTP extension without URL")
+	}
+	if !strings.Contains(err.Error(), "url is required") {
+		t.Fatalf("expected url-required error, got: %v", err)
+	}
+}
+
+func TestAddHTTPMCPExtensionWithCommand(t *testing.T) {
+	_, _, _, ss := setupTest(t)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"bad","type":"mcp","transport":"http","url":"http://localhost:8080/mcp","command":"echo"}`
+	_, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err == nil {
+		t.Fatal("expected error for HTTP extension with command")
+	}
+	if !strings.Contains(err.Error(), "command is not allowed") {
+		t.Fatalf("expected command-not-allowed error, got: %v", err)
+	}
+}
+
+func TestAddStdioMCPExtensionWithURL(t *testing.T) {
+	_, _, _, ss := setupTest(t)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"bad","type":"mcp","command":"echo","url":"http://localhost:8080"}`
+	_, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err == nil {
+		t.Fatal("expected error for stdio extension with URL")
+	}
+	if !strings.Contains(err.Error(), "url is not allowed") {
+		t.Fatalf("expected url-not-allowed error, got: %v", err)
+	}
+}
+
+func TestAddHTTPMCPExtensionWithHeaders(t *testing.T) {
+	reg, mcpMgr, _, ss := setupTest(t)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"authed-api","type":"mcp","transport":"http","url":"https://api.example.com/mcp","headers":{"Authorization":"Bearer tok","X-Custom":"val"}}`
+	if _, err := skill.Execute(context.Background(), json.RawMessage(input)); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := mcpMgr.added[0]
+	if cfg.Headers["Authorization"] != "Bearer tok" {
+		t.Error("expected Authorization header")
+	}
+	if cfg.Headers["X-Custom"] != "val" {
+		t.Error("expected X-Custom header")
+	}
+
+	got := reg.Get("authed-api")
+	if got.Headers["Authorization"] != "Bearer tok" {
+		t.Error("expected headers persisted")
+	}
+}
+
+func TestListExtensionsHTTP(t *testing.T) {
+	_, _, _, ss := setupTest(t)
+	addSkill := findSkill(ss, "add_extension")
+	listSkill := findSkill(ss, "list_extensions")
+
+	// Add an HTTP extension.
+	input := `{"name":"http-mcp","type":"mcp","transport":"http","url":"http://localhost:18060/mcp"}`
+	if _, err := addSkill.Execute(context.Background(), json.RawMessage(input)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := listSkill.Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "http") {
+		t.Fatalf("expected http indicator in listing, got: %s", result)
+	}
+	if !strings.Contains(result, "http://localhost:18060/mcp") {
+		t.Fatalf("expected URL in listing, got: %s", result)
+	}
+	// HTTP extensions should not show "Command:".
+	lines := strings.Split(result, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "http-mcp") {
+			// Next line should be URL, not Command.
+			if i+1 < len(lines) && strings.Contains(lines[i+1], "Command:") {
+				t.Fatal("HTTP extension should show URL, not Command")
+			}
+			break
+		}
+	}
+}
+
+func TestRemoveHTTPMCPExtension(t *testing.T) {
+	reg, mcpMgr, _, ss := setupTest(t)
+	addSkill := findSkill(ss, "add_extension")
+	removeSkill := findSkill(ss, "remove_extension")
+
+	input := `{"name":"rm-http","type":"mcp","transport":"http","url":"http://localhost:18060/mcp"}`
+	if _, err := addSkill.Execute(context.Background(), json.RawMessage(input)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := removeSkill.Execute(context.Background(), json.RawMessage(`{"name":"rm-http"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "removed") {
+		t.Fatalf("expected removal message, got: %s", result)
+	}
+	if len(mcpMgr.removed) != 1 || mcpMgr.removed[0] != "rm-http" {
+		t.Fatalf("expected RemoveServer called, got: %v", mcpMgr.removed)
+	}
+	if reg.Get("rm-http") != nil {
+		t.Fatal("expected HTTP extension to be removed")
 	}
 }
