@@ -307,12 +307,6 @@ func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage)
 		return nil
 	}
 
-	// Handle /persona command (display active personality info, owner-only).
-	if msg.Text == "/persona" {
-		a.handlePersonaCommand(msg)
-		return nil
-	}
-
 	// Handle /retry command (replay last message at specified effort).
 	if msg.Text == "/retry" || strings.HasPrefix(msg.Text, "/retry ") {
 		return a.handleRetryCommand(ctx, msg)
@@ -2149,34 +2143,6 @@ func (a *Actor) handleDebugCommand(msg telegram.IncomingMessage) {
 	default:
 		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "Usage: /debug [on|off|reset]"})
 	}
-}
-
-func (a *Actor) handlePersonaCommand(msg telegram.IncomingMessage) {
-	// Restrict to owner (first allowed user ID) to prevent prompt leak with allow_all.
-	// If no AllowedID is set (pure allow_all mode), reject entirely since there's no defined owner.
-	if len(a.cfg.Telegram.AllowedID) == 0 || msg.UserID != a.cfg.Telegram.AllowedID[0] {
-		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "The /persona command is restricted to the bot owner."})
-		return
-	}
-	p := a.persona
-	if p.FilePath == "" {
-		a.trySend(telegram.OutgoingMessage{
-			ChatID: msg.ChatID,
-			Text:   "**Persona:** default (no personality file configured)",
-		})
-		return
-	}
-	runes := []rune(p.Content)
-	const maxPreview = 200
-	preview := p.Content
-	if len(runes) > maxPreview {
-		preview = string(runes[:maxPreview]) + "..."
-	}
-	a.trySend(telegram.OutgoingMessage{
-		ChatID: msg.ChatID,
-		Text: fmt.Sprintf("**Persona**\nFile: `%s`\nHash: `%s`\nLength: %d chars\n\n```\n%s\n```",
-			p.FilePath, p.ContentHash[:12], len(p.Content), preview),
-	})
 }
 
 // showToolCalls returns whether tool calls should be shown for this user,
