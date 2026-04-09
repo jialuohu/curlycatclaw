@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.36.4] - 2026-04-09
+
+### Fixed
+- **Agent doesn't use `manage_service` for MCP server installation**: Added explicit guidance to the system prompt telling the agent to use `manage_service` for Docker service lifecycle instead of downloading binaries or running Docker commands manually.
+
 ## [0.36.3] - 2026-04-09
 
 ### Fixed

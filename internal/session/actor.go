@@ -2552,6 +2552,17 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	sb.WriteString("Call set_reminder directly without searching for tools first.\n")
 	sb.WriteString("\nIMPORTANT: To add, remove, or list MCP servers and external tools, ALWAYS use the add_extension, remove_extension, and list_extensions tools (via MCP). ")
 	sb.WriteString("NEVER create or edit .mcp.json files manually. The extension system handles persistence and server lifecycle automatically.\n")
+	if a.cfg.Update.Enabled {
+		sb.WriteString("\n## Installing MCP Servers\n")
+		sb.WriteString("You have a manage_service tool that can register, start, stop, and check Docker services.\n")
+		sb.WriteString("When asked to install an MCP server that runs as a Docker container:\n")
+		sb.WriteString("1. Call manage_service(action:register, name:..., image:..., ports:..., volumes:..., healthcheck:...) to register the service\n")
+		sb.WriteString("2. Call manage_service(action:start, name:...) to start the container\n")
+		sb.WriteString("3. Call manage_service(action:status, name:...) to confirm it's running and healthy\n")
+		sb.WriteString("4. Call add_extension(type:mcp, transport:http, url:http://<name>:<port>/mcp) to register the MCP tools\n")
+		sb.WriteString("Do NOT download binaries, install Docker, or run docker commands manually. Use manage_service.\n")
+		sb.WriteString("Do NOT use the setup-xhs-mcp prompt skill for server setup. Use manage_service instead.\n")
+	}
 	sb.WriteString("\nIMPORTANT: When the user asks what skills, plugins, extensions, tools, or capabilities are available (regardless of which word they use), you MUST call BOTH list_plugins AND list_extensions and present a SINGLE unified list. ")
 	sb.WriteString("Also include these built-in skills: web_search, save_note, search_notes, set_reminder, list_reminders, cancel_reminder, semantic_search, remember_fact, forget_fact, list_facts, list_summaries, delete_summary, load_prompt_skill.\n")
 	sb.WriteString("NEVER answer from memory, conversation history, or previous tool results. EVERY TIME the user asks, you MUST make fresh tool calls, even if you just fetched the same data moments ago. Extensions can change between messages.\n")
