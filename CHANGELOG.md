@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.36.3] - 2026-04-09
+
+### Fixed
+- **`UPDATER_SECRET` not passed to MCP server subprocess via buildMCPConfig**: The env var was in the CLI subprocess allowlist (v0.36.2) but not in the `mcpEnv` map that the Claude CLI passes to the `curlycatclaw --mcp-server` subprocess. The MCP subprocess has its own explicit env, not inherited from the CLI.
+
 ## [0.36.2] - 2026-04-09
 
 ### Fixed

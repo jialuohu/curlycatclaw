@@ -2265,6 +2265,10 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	if a.cfg.Claude.CLIPath != "" {
 		mcpEnv["CURLYCATCLAW_CLI_PATH"] = a.cfg.Claude.CLIPath
 	}
+	// Pass updater secret so the MCP subprocess can register manage_service.
+	if secret := os.Getenv("UPDATER_SECRET"); secret != "" {
+		mcpEnv["UPDATER_SECRET"] = secret
+	}
 	// Pass master key via a per-PID file so the MCP server subprocess
 	// can encrypt/decrypt extension env vars. Using a file avoids exposing
 	// the key in /proc/PID/cmdline (the JSON is a CLI argument).
