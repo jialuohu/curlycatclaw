@@ -100,13 +100,57 @@ func TestLoad(t *testing.T) {
 	})
 }
 
+func TestLoad_ExactMaxSize(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "exact.md")
+	data := make([]byte, maxFileSize)
+	for i := range data {
+		data[i] = 'A'
+	}
+	if err := os.WriteFile(f, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(f)
+	if err != nil {
+		t.Fatalf("file at exactly maxFileSize should be accepted, got %v", err)
+	}
+	if len(p.Content) != maxFileSize {
+		t.Fatalf("expected %d chars, got %d", maxFileSize, len(p.Content))
+	}
+}
+
+func TestLoad_HashDeterminism(t *testing.T) {
+	f := writeTemp(t, "You are a pirate captain.")
+	p1, _ := Load(f)
+	p2, _ := Load(f)
+	if p1.ContentHash != p2.ContentHash {
+		t.Fatal("same file should produce the same hash")
+	}
+
+	f2 := writeTemp(t, "You are a space explorer.")
+	p3, _ := Load(f2)
+	if p1.ContentHash == p3.ContentHash {
+		t.Fatal("different content should produce different hashes")
+	}
+}
+
+func TestLoad_HashOnTrimmedContent(t *testing.T) {
+	f1 := writeTemp(t, "hello")
+	f2 := writeTemp(t, "  \nhello\n  ")
+	p1, _ := Load(f1)
+	p2, _ := Load(f2)
+	if p1.ContentHash != p2.ContentHash {
+		t.Fatal("files with same trimmed content should have the same hash")
+	}
+}
+
 func TestDefault(t *testing.T) {
 	p := Default()
 	if p.Content != defaultPersonality {
 		t.Fatalf("got %q, want %q", p.Content, defaultPersonality)
 	}
-	if p.ContentHash != "" {
-		t.Fatal("default should have empty hash")
+	if p.ContentHash == "" {
+		t.Fatal("default should have a computed hash")
 	}
 	if p.FilePath != "" {
 		t.Fatal("default should have empty path")

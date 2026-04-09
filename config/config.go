@@ -560,6 +560,9 @@ func (c *Config) validate() error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("config: personality.file %q is not a regular file", c.Personality.File)
 		}
+		if info.Size() > 20*1024 {
+			return fmt.Errorf("config: personality.file %q is %d bytes, max allowed is 20KB", c.Personality.File, info.Size())
+		}
 	}
 	for i, src := range c.Ingest.Sources {
 		if !src.Enabled {

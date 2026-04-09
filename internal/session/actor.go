@@ -23,8 +23,8 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
-	"github.com/jialuohu/curlycatclaw/internal/telegram"
 	"github.com/jialuohu/curlycatclaw/internal/personality"
+	"github.com/jialuohu/curlycatclaw/internal/telegram"
 	"github.com/jialuohu/curlycatclaw/internal/update"
 	"github.com/jialuohu/curlycatclaw/internal/voice"
 	"github.com/jialuohu/curlycatclaw/skills"
@@ -2166,10 +2166,10 @@ func (a *Actor) handlePersonaCommand(msg telegram.IncomingMessage) {
 		})
 		return
 	}
-	preview := p.Content
+	runes := []rune(p.Content)
 	const maxPreview = 200
-	if len([]rune(preview)) > maxPreview {
-		runes := []rune(preview)
+	preview := p.Content
+	if len(runes) > maxPreview {
 		preview = string(runes[:maxPreview]) + "..."
 	}
 	a.trySend(telegram.OutgoingMessage{

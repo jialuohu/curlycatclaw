@@ -733,6 +733,8 @@ func run(configPath string) error {
 	if cfg.Personality.File != "" {
 		if p, err := personality.Load(cfg.Personality.File); err == nil {
 			personalityHash = p.ContentHash
+		} else {
+			slog.Warn("failed to load personality for eval hash", "path", cfg.Personality.File, "error", err)
 		}
 	}
 
