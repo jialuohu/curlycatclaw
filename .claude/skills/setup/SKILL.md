@@ -343,18 +343,18 @@ Include only the applicable Claude auth fields (cli_path+oauth_token OR api_key,
 
 **Agent personality:** Use AskUserQuestion: "Choose your bot's personality:"
 - A) **Default assistant** — "You are a helpful personal assistant." Clean and neutral.
-- B) **Er Bao / 二宝** — A warm, goofy orange cat who speaks Chinese by default and mixes in English for tech terms. Competent but playful.
+- B) **Da Bao / 大宝** — A warm, goofy orange cat who speaks Chinese by default and mixes in English for tech terms. Competent but playful.
 - C) **Custom** — Write your own personality in a markdown file.
 
 **If A:** No personality section needed (the default is built in).
 
-**If B:** Write the 二宝 personality from the bundled example file.
+**If B:** Write the 大宝 personality from the bundled example file.
 
 **Determine personality file path based on `INSTALL_METHOD`:**
 - If `docker`: personality file path = `/data/personality.md`
 - If `github_releases`: personality file path = `$HOME/.curlycatclaw/personality.md` (expand `$HOME`)
 
-Copy `personality-erbao.md.example` to the personality file path (or write its content
+Copy `personality-dabao.md.example` to the personality file path (or write its content
 directly). Then add to the config:
 
 ```toml

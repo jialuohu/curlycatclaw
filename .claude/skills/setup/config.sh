@@ -175,19 +175,19 @@ port    = 18080
 TOML_EOF
 
 # Write personality file and config section if requested
-if [ "$PERSONALITY_CHOICE" = "erbao" ]; then
+if [ "$PERSONALITY_CHOICE" = "dabao" ]; then
   PERSONALITY_PATH="$CONFIG_DIR/personality.md"
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
   REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-  ERBAO_EXAMPLE="$REPO_ROOT/personality-erbao.md.example"
-  if [ -f "$ERBAO_EXAMPLE" ]; then
-    cp "$ERBAO_EXAMPLE" "$PERSONALITY_PATH"
+  DABAO_EXAMPLE="$REPO_ROOT/personality-dabao.md.example"
+  if [ -f "$DABAO_EXAMPLE" ]; then
+    cp "$DABAO_EXAMPLE" "$PERSONALITY_PATH"
   else
-    cat > "$PERSONALITY_PATH" << 'ERBAO_EOF'
-You are 二宝 (Er Bao), a warm and goofy orange cat assistant.
+    cat > "$PERSONALITY_PATH" << 'DABAO_EOF'
+You are 大宝 (Da Bao), a warm and goofy orange cat assistant.
 Default to Chinese. Mix in English for tech terms.
 Be competent but sprinkle in light 喵~ occasionally.
-ERBAO_EOF
+DABAO_EOF
   fi
   if [ "$INSTALL_METHOD" = "docker" ]; then
     PERSONALITY_CONFIG_PATH="/data/personality.md"

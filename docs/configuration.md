@@ -172,7 +172,7 @@ Replace the default "helpful personal assistant" persona with a custom character
 file = "/data/personality.md"  # absolute path, max 20KB, UTF-8 only
 ```
 
-The file content is injected as the system prompt prefix for chat conversations. Cron/scheduled tasks use a fixed operational prompt and are not affected. See `personality.md.example` and `personality-erbao.md.example` for format reference.
+The file content is injected as the system prompt prefix for chat conversations. Cron/scheduled tasks use a fixed operational prompt and are not affected. See `personality.md.example` and `personality-dabao.md.example` for format reference.
 
 ## Encrypted MCP Credentials
 
