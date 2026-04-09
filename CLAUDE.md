@@ -116,6 +116,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 - HTTP MCP transport: `headerRoundTripper` skips reserved headers (`content-type`, `accept`, `mcp-session-id`) to avoid breaking SDK internals. Redirects are blocked (`http.ErrUseLastResponse`) to prevent API key leakage. 60s client timeout. `DisableStandaloneSSE: true` for stateless servers. Per-server 5s shutdown timeout prevents one hung HTTP DELETE from blocking the rest.
 - HTTP MCP extensions: `add_extension` supports `transport: "http"` with `url` and `headers` fields. Persists to `extensions.json`, auto-resurrects on restart, hot-reloads. Headers are currently stored in plaintext (encrypted credential store integration planned).
 - Companion service management: `manage_service` skill requires updater sidecar. ServiceCatalog persists to `/data/managed-services.json`. Compose overlay generated at `/data/docker-compose.managed.yml`. `ALLOWED_IMAGES` env var restricts registerable images (empty = allow all). Volume names validated against `isValidServiceName` regex to prevent host bind mounts.
+- Personality file is injected as system prompt prefix in `buildSystemPrompt()`. Operator-controlled only. CronExecutor (`cron.go`) intentionally uses a fixed prompt, not the configured personality. Config validates absolute path, regular file, and 20KB size limit. `personality.Load()` additionally validates UTF-8 and non-empty content. Hash is computed on trimmed content for consistent drift detection.
 
 ## Key Files
 
@@ -167,6 +168,7 @@ Goroutine-based actor model under supervision. See [docs/architecture.md](docs/a
 | `internal/eval/miner.go` | FailureMiner: cluster low-scoring conversations by failure type |
 | `internal/eval/candidate.go` | CandidateGenerator: Claude proposes memory fixes per failure |
 | `internal/eval/gate.go` | CommitGate: confidence-based gating with approve/reject |
+| `internal/personality/personality.go` | Personality loader (file reading, UTF-8/size validation, SHA-256 hashing) |
 | `internal/security/credential.go` | AES-256-GCM encrypted credential store for MCP server secrets |
 | `internal/memory/context.go` | Memory context builder for conversation priming |
 | `skills/note.go` | Note management skills (create, list, read, delete) |
@@ -200,7 +202,7 @@ For self-update, generate a shared secret: `echo "UPDATER_SECRET=$(openssl rand 
 
 For self-evaluation, add `[eval]` section: `enabled = true`, `schedule = "0 3 * * *"` (cron), `lookback_hours = 24`, `score_threshold = 0.6`. Use `--eval-export` to dump conversations for manual labeling, `--eval-seed` to generate synthetic test data.
 
-Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format, `[update]` for self-update system (`enabled`, `updater_url`, `auto_update`, `schedule`), `[github]` for issue creation settings (`owner`, `repo`, used by `capture_diagnostics` + system prompt when GitHub MCP has write access).
+Optional config sections: `[[projects]]` for CLI work context (`/project` command, `name` + `path`), `[[skill_collections]]` for external skill paths, `[wasm]` for wazero plugin runtime, `[voice]` for OpenAI Whisper STT, `[logging]` for log level/file/format, `[update]` for self-update system (`enabled`, `updater_url`, `auto_update`, `schedule`), `[github]` for issue creation settings (`owner`, `repo`, used by `capture_diagnostics` + system prompt when GitHub MCP has write access), `[personality]` for agent persona via markdown file (`file` path, replaces default system prompt personality).
 
 ## gstack
 
