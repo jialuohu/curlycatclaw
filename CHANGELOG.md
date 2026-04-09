@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.36.0] - 2026-04-08
+
+### Added
+- **Configurable agent personality**: Load personality from a markdown file (`personality.md`) instead of the hardcoded system prompt. Set `[personality] file = "personality.md"` in config.toml. Hot-reload on file change. Falls back to built-in personality if file is missing. Personality hash tracked in conversation context for cache invalidation.
+- **HTTP MCP extensions via chat**: `add_extension` now accepts `transport: "http"` with `url` and `headers` fields. HTTP-based MCP servers can be installed at runtime, persist across restarts, and hot-reload.
+- **Companion service management**: `manage_service` skill registers, starts, stops, and checks Docker services from Telegram. Dynamic provisioning via ServiceCatalog + Docker Compose overlays.
+
+### Security
+- **Volume name validation**: Prevents host bind mounts in companion service specs.
+- **Healthcheck YAML injection prevention**: Test strings properly escaped in compose overlays.
+- **Session leak fix**: `ConnectHTTPAndRegister` closes old sessions on re-registration.
+
 ## [0.35.0] - 2026-04-08
 
 ### Added
