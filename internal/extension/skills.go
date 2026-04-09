@@ -107,6 +107,17 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				return "", fmt.Errorf("input_schema is not valid JSON")
 			}
 
+			// Auto-detect HTTP URLs passed as command (common LLM mistake).
+			// Convert command="http://host/path" to transport="http" + url.
+			if params.Type == TypeMCP && params.Transport == "" &&
+				(strings.HasPrefix(params.Command, "http://") || strings.HasPrefix(params.Command, "https://")) {
+				params.Transport = "http"
+				params.URL = params.Command
+				params.Command = ""
+				slog.Info("extension: auto-detected HTTP URL in command field, converting to http transport",
+					"name", params.Name, "url", params.URL)
+			}
+
 			// If command contains spaces and no args were provided,
 			// split it (Claude often passes "uvx foo" as one string).
 			cmd := params.Command

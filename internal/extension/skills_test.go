@@ -652,3 +652,45 @@ func TestRemoveHTTPMCPExtension(t *testing.T) {
 		t.Fatal("expected HTTP extension to be removed")
 	}
 }
+
+func TestAddMCPExtensionHTTPAutoDetect(t *testing.T) {
+	reg, mcpMgr, _, ss := setupTest(t)
+	skill := findSkill(ss, "add_extension")
+
+	// Pass an HTTP URL as "command" (common LLM mistake) — should auto-convert to http transport.
+	input := `{"name":"auto-http","type":"mcp","command":"http://localhost:18060/mcp"}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "immediately") {
+		t.Fatalf("expected immediate availability, got: %s", result)
+	}
+
+	// Verify the MCPServerConfig got transport=http and url, not command.
+	if len(mcpMgr.added) != 1 {
+		t.Fatalf("expected 1 AddServer call, got %d", len(mcpMgr.added))
+	}
+	cfg := mcpMgr.added[0]
+	if cfg.Transport != "http" {
+		t.Errorf("expected auto-detected transport=http, got %q", cfg.Transport)
+	}
+	if cfg.URL != "http://localhost:18060/mcp" {
+		t.Errorf("expected url from command, got %q", cfg.URL)
+	}
+	if cfg.Command != "" {
+		t.Errorf("expected empty command after auto-detect, got %q", cfg.Command)
+	}
+
+	// Verify persistence has correct fields.
+	got := reg.Get("auto-http")
+	if got == nil {
+		t.Fatal("expected extension to persist")
+	}
+	if got.Transport != "http" {
+		t.Errorf("persisted transport = %q, want http", got.Transport)
+	}
+	if got.URL != "http://localhost:18060/mcp" {
+		t.Errorf("persisted url = %q", got.URL)
+	}
+}

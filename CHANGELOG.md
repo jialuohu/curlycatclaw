@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.36.1] - 2026-04-09
+
+### Fixed
+- **`manage_service` skill missing in CLI mode**: The skill was only registered in API mode (`main.go`), not in the MCP server subprocess (`mcp_server.go`). CLI mode deployments couldn't use companion service management.
+- **HTTP URL auto-detection in `add_extension`**: When the LLM passes an HTTP URL as `command` (e.g. `command: "http://localhost:18060/mcp"`), it's now auto-converted to `transport: "http"` + `url`. Previously this created a broken stdio extension that tried to execute the URL as a binary.
+
 ## [0.36.0] - 2026-04-08
 
 ### Added

@@ -22,6 +22,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/internal/security"
 	"github.com/jialuohu/curlycatclaw/internal/skillloader"
+	"github.com/jialuohu/curlycatclaw/internal/update"
 	"github.com/jialuohu/curlycatclaw/skills"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -248,6 +249,16 @@ func runMCPServer() error {
 		}
 		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore, cfgServers) {
 			reg.Register(s)
+		}
+	}
+
+	// Register manage_service skill (requires updater sidecar, same as main.go).
+	if cfg.Update.Enabled {
+		secret := os.Getenv("UPDATER_SECRET")
+		if secret != "" {
+			uc := update.NewClient(cfg.Update.UpdaterURL, secret)
+			reg.Register(skills.NewManageServiceSkill(uc))
+			slog.Info("mcp-server: manage_service skill registered", "url", cfg.Update.UpdaterURL)
 		}
 	}
 
