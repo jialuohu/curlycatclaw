@@ -43,6 +43,8 @@ type Handler struct {
 	statePath      string
 	startTime      time.Time
 	buildMode      bool // dev mode: compose build instead of compose pull
+	catalog        *ServiceCatalog
+	allowedImages  []string
 
 	mu    sync.Mutex
 	state *UpdateState
@@ -517,6 +519,200 @@ func saveState(path string, state *UpdateState) error {
 		return fmt.Errorf("rename state: %w", err)
 	}
 	return nil
+}
+
+const managedOverlayPath = "/data/docker-compose.managed.yml"
+
+// isImageAllowed checks whether the image matches the allowlist prefixes.
+// An empty allowlist permits all images.
+// isImageAllowed checks whether the image matches the allowlist prefixes.
+// An empty allowlist permits all images (single-user trust model).
+func (h *Handler) isImageAllowed(image string) bool {
+	if len(h.allowedImages) == 0 {
+		return true
+	}
+	for _, prefix := range h.allowedImages {
+		if strings.HasPrefix(image, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isNumericPort returns true if s looks like a valid port number.
+func isNumericPort(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// handleRegisterService registers a new managed companion service.
+func (h *Handler) handleRegisterService(w http.ResponseWriter, r *http.Request) {
+	var spec ServiceSpec
+	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid JSON: %v", err)})
+		return
+	}
+
+	if !isValidServiceName(spec.Name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid service name"})
+		return
+	}
+
+	if spec.Image == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image is required"})
+		return
+	}
+
+	if !h.isImageAllowed(spec.Image) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image not in allowlist"})
+		return
+	}
+
+	// Security: volume names must be named volumes, not host paths.
+	// Bind mounts would give containers access to the host filesystem.
+	for volName := range spec.Volumes {
+		if !isValidServiceName(volName) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("invalid volume name %q: must be alphanumeric with hyphens/underscores (no paths)", volName),
+			})
+			return
+		}
+	}
+
+	// Security: port mappings must be numeric.
+	for host, container := range spec.Ports {
+		if !isNumericPort(host) || !isNumericPort(container) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("invalid port mapping %s:%s: must be numeric", host, container),
+			})
+			return
+		}
+	}
+
+	if err := h.catalog.Add(spec); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := GenerateOverlay(h.catalog.All(), managedOverlayPath); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("generate overlay: %v", err)})
+		return
+	}
+
+	slog.Info("registered managed service", "name", spec.Name, "image", spec.Image)
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "service registered", "name": spec.Name})
+}
+
+// handleRemoveService removes a managed companion service.
+func (h *Handler) handleRemoveService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !isValidServiceName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid service name"})
+		return
+	}
+
+	if h.catalog.Get(name) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "service not found"})
+		return
+	}
+
+	// Stop and remove the container before removing from catalog.
+	if err := composeServiceStop(name); err != nil {
+		slog.Warn("failed to stop service during removal", "name", name, "error", err)
+	}
+	if err := composeServiceRM(name); err != nil {
+		slog.Warn("failed to remove service container", "name", name, "error", err)
+	}
+
+	if err := h.catalog.Remove(name); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := GenerateOverlay(h.catalog.All(), managedOverlayPath); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("generate overlay: %v", err)})
+		return
+	}
+
+	slog.Info("removed managed service", "name", name)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "service removed", "name": name})
+}
+
+// handleListServices returns the status of all managed services.
+func (h *Handler) handleListServices(w http.ResponseWriter, _ *http.Request) {
+	specs := h.catalog.All()
+	result := make([]ServiceStatus, 0, len(specs))
+	for _, spec := range specs {
+		result = append(result, composeServicePS(spec.Name))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleServiceStart starts a managed service asynchronously.
+func (h *Handler) handleServiceStart(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !isValidServiceName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid service name"})
+		return
+	}
+
+	if h.catalog.Get(name) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "service not found"})
+		return
+	}
+
+	go func() {
+		if err := composeServiceUp(name); err != nil {
+			slog.Error("failed to start managed service", "name", name, "error", err)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"message": "start requested", "name": name})
+}
+
+// handleServiceStop stops a managed service.
+func (h *Handler) handleServiceStop(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !isValidServiceName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid service name"})
+		return
+	}
+
+	if h.catalog.Get(name) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "service not found"})
+		return
+	}
+
+	if err := composeServiceStop(name); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "service stopped", "name": name})
+}
+
+// handleServiceStatus returns the runtime status of a managed service.
+func (h *Handler) handleServiceStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !isValidServiceName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid service name"})
+		return
+	}
+
+	if h.catalog.Get(name) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "service not found"})
+		return
+	}
+
+	status := composeServicePS(name)
+	writeJSON(w, http.StatusOK, status)
 }
 
 // writeJSON sends a JSON response.

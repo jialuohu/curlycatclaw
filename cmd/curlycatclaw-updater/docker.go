@@ -317,3 +317,113 @@ func mapToEnv(m map[string]string) []string {
 	}
 	return result
 }
+
+// composeServiceUp starts a managed service using the base + managed overlay.
+func composeServiceUp(name string) error {
+	slog.Info("starting managed service", "name", name)
+	cmd := exec.Command("docker", "compose",
+		"-f", "/compose-project/docker-compose.yml",
+		"-f", "/data/docker-compose.managed.yml",
+		"up", "-d", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker compose up %s: %w: %s", name, err, string(out))
+	}
+	return nil
+}
+
+// composeServiceStop stops a managed service.
+func composeServiceStop(name string) error {
+	slog.Info("stopping managed service", "name", name)
+	cmd := exec.Command("docker", "compose",
+		"-f", "/compose-project/docker-compose.yml",
+		"-f", "/data/docker-compose.managed.yml",
+		"stop", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker compose stop %s: %w: %s", name, err, string(out))
+	}
+	return nil
+}
+
+// composeServiceRM removes a stopped managed service container.
+func composeServiceRM(name string) error {
+	cmd := exec.Command("docker", "compose",
+		"-f", "/compose-project/docker-compose.yml",
+		"-f", "/data/docker-compose.managed.yml",
+		"rm", "-f", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker compose rm %s: %w: %s", name, err, string(out))
+	}
+	return nil
+}
+
+// ServiceStatus represents the runtime state of a managed service.
+type ServiceStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // "running", "exited", "not_found"
+	Health string `json:"health"` // "healthy", "unhealthy", "starting", ""
+}
+
+// composeServicePS gets the status of a managed service.
+func composeServicePS(name string) ServiceStatus {
+	cmd := exec.Command("docker", "compose",
+		"-f", "/compose-project/docker-compose.yml",
+		"-f", "/data/docker-compose.managed.yml",
+		"ps", "--format", "json", name)
+	out, err := cmd.Output()
+	if err != nil {
+		return ServiceStatus{Name: name, Status: "not_found"}
+	}
+
+	// Handle both JSON array (compose v2.20+) and NDJSON (older) formats.
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" || trimmed == "[]" {
+		return ServiceStatus{Name: name, Status: "not_found"}
+	}
+
+	type composePSEntry struct {
+		Name   string `json:"Name"`
+		State  string `json:"State"`
+		Health string `json:"Health"`
+	}
+
+	var entries []composePSEntry
+	if strings.HasPrefix(trimmed, "[") {
+		// JSON array format
+		_ = json.Unmarshal([]byte(trimmed), &entries)
+	} else {
+		// NDJSON: one JSON object per line
+		for _, line := range strings.Split(trimmed, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var e composePSEntry
+			if json.Unmarshal([]byte(line), &e) == nil {
+				entries = append(entries, e)
+			}
+		}
+	}
+
+	if len(entries) == 0 {
+		return ServiceStatus{Name: name, Status: "not_found"}
+	}
+	e := entries[0]
+	return ServiceStatus{Name: name, Status: e.State, Health: e.Health}
+}
+
+// inspectHealth gets the health status of a container by ID or name.
+//
+//nolint:unused // available for future health enrichment in service handlers
+func inspectHealth(containerNameOrID string) string {
+	cmd := exec.Command("docker", "inspect",
+		"--format", "{{.State.Health.Status}}",
+		containerNameOrID)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}

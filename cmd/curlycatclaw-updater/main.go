@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -48,6 +49,22 @@ func main() {
 		}
 	}
 
+	catalog, err := LoadServiceCatalog("/data/managed-services.json")
+	if err != nil {
+		slog.Error("failed to load service catalog", "error", err)
+		os.Exit(1)
+	}
+
+	var allowedImages []string
+	if raw := os.Getenv("ALLOWED_IMAGES"); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				allowedImages = append(allowedImages, s)
+			}
+		}
+	}
+
 	h := &Handler{
 		secret:         secret,
 		serviceName:    serviceName,
@@ -57,6 +74,8 @@ func main() {
 		state:          state,
 		startTime:      time.Now(),
 		buildMode:      buildMode,
+		catalog:        catalog,
+		allowedImages:  allowedImages,
 	}
 
 	mux := http.NewServeMux()
@@ -67,6 +86,12 @@ func main() {
 	mux.HandleFunc("POST /v1/check", h.authMiddleware(h.handleCheck))
 	mux.HandleFunc("POST /v1/update", h.authMiddleware(h.handleUpdate))
 	mux.HandleFunc("POST /v1/rollback", h.authMiddleware(h.handleRollback))
+	mux.HandleFunc("GET /v1/services", h.authMiddleware(h.handleListServices))
+	mux.HandleFunc("POST /v1/services", h.authMiddleware(h.handleRegisterService))
+	mux.HandleFunc("DELETE /v1/services/{name}", h.authMiddleware(h.handleRemoveService))
+	mux.HandleFunc("POST /v1/services/{name}/start", h.authMiddleware(h.handleServiceStart))
+	mux.HandleFunc("POST /v1/services/{name}/stop", h.authMiddleware(h.handleServiceStop))
+	mux.HandleFunc("GET /v1/services/{name}/status", h.authMiddleware(h.handleServiceStatus))
 
 	srv := &http.Server{
 		Addr:         ":8081",
