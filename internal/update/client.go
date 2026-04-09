@@ -1,6 +1,7 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,36 @@ type StatusResponse struct {
 	LatestVersion   string   `json:"latest_version,omitempty"`
 	LatestDigest    string   `json:"latest_digest,omitempty"`
 	Updating        bool     `json:"updating"`
+}
+
+// ServiceSpec defines a managed companion service.
+type ServiceSpec struct {
+	Name        string              `json:"name"`
+	Image       string              `json:"image"`
+	Ports       map[string]string   `json:"ports,omitempty"`
+	Volumes     map[string]string   `json:"volumes,omitempty"`
+	Env         map[string]string   `json:"env,omitempty"`
+	Healthcheck *ServiceHealthcheck `json:"healthcheck,omitempty"`
+}
+
+// ServiceHealthcheck defines a Docker healthcheck for a managed service.
+type ServiceHealthcheck struct {
+	Test     []string `json:"test"`
+	Interval string   `json:"interval,omitempty"`
+	Timeout  string   `json:"timeout,omitempty"`
+	Retries  int      `json:"retries,omitempty"`
+}
+
+// ServiceStatus is the runtime state of a managed service.
+type ServiceStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Health string `json:"health"`
+}
+
+// ServiceListResponse wraps the list of services.
+type ServiceListResponse struct {
+	Services []ServiceStatus `json:"services"`
 }
 
 // Client communicates with the curlycatclaw-updater sidecar.
@@ -113,6 +144,129 @@ func (c *Client) Rollback(ctx context.Context) error {
 		return nil
 	}
 	return c.readError(resp)
+}
+
+// ServiceRegister registers a new managed service (POST /v1/services, 30s timeout).
+func (c *Client) ServiceRegister(ctx context.Context, spec ServiceSpec) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	body, err := json.Marshal(spec)
+	if err != nil {
+		return fmt.Errorf("service register: marshal: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/services", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("service register: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.secret)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("service register: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return c.readError(resp)
+}
+
+// ServiceRemove removes a managed service (DELETE /v1/services/{name}, 30s timeout).
+func (c *Client) ServiceRemove(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/services/"+name, nil)
+	if err != nil {
+		return fmt.Errorf("service remove: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.secret)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("service remove: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return c.readError(resp)
+}
+
+// ServiceList returns all managed services with their status (GET /v1/services, 5s timeout).
+func (c *Client) ServiceList(ctx context.Context) ([]ServiceStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var resp ServiceListResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/services", &resp); err != nil {
+		return nil, fmt.Errorf("service list: %w", err)
+	}
+	return resp.Services, nil
+}
+
+// ServiceStart starts a managed service (POST /v1/services/{name}/start, 10s timeout).
+// Returns immediately (202 Accepted). Use ServiceStatus to poll for readiness.
+func (c *Client) ServiceStart(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/services/"+name+"/start", nil)
+	if err != nil {
+		return fmt.Errorf("service start: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.secret)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("service start: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	return c.readError(resp)
+}
+
+// ServiceStop stops a managed service (POST /v1/services/{name}/stop, 30s timeout).
+func (c *Client) ServiceStop(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/services/"+name+"/stop", nil)
+	if err != nil {
+		return fmt.Errorf("service stop: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.secret)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("service stop: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return c.readError(resp)
+}
+
+// ServiceStatusCheck gets the runtime status of a managed service (GET /v1/services/{name}/status, 5s timeout).
+func (c *Client) ServiceStatusCheck(ctx context.Context, name string) (*ServiceStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var resp ServiceStatus
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/services/"+name+"/status", &resp); err != nil {
+		return nil, fmt.Errorf("service status: %w", err)
+	}
+	return &resp, nil
 }
 
 // maxResponseBytes is the maximum response body size accepted from the

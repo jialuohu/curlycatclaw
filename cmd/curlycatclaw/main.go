@@ -284,6 +284,11 @@ func run(configPath string) error {
 		skillReg.Register(s)
 	}
 
+	// Register service management skill (requires updater sidecar).
+	if updateClient != nil {
+		skillReg.Register(skills.NewManageServiceSkill(updateClient))
+	}
+
 	// Warn if GitHub MCP is registered but in read-only mode (no create_issue).
 	if hasGitHubMCP(mcpMgr) && !hasGitHubWriteTools(mcpMgr) {
 		slog.Warn("GitHub MCP in read-only mode, issue creation disabled. Remove --read-only from GitHub MCP args to enable.")
