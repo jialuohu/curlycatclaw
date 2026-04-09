@@ -553,8 +553,12 @@ func (c *Config) validate() error {
 		if !filepath.IsAbs(c.Personality.File) {
 			return fmt.Errorf("config: personality.file must be an absolute path, got %q (e.g. /data/personality.md)", c.Personality.File)
 		}
-		if _, err := os.Stat(c.Personality.File); err != nil {
+		info, err := os.Stat(c.Personality.File)
+		if err != nil {
 			return fmt.Errorf("config: personality.file %q does not exist or is not readable: %w", c.Personality.File, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("config: personality.file %q is not a regular file", c.Personality.File)
 		}
 	}
 	for i, src := range c.Ingest.Sources {

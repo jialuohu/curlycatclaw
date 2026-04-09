@@ -2153,7 +2153,8 @@ func (a *Actor) handleDebugCommand(msg telegram.IncomingMessage) {
 
 func (a *Actor) handlePersonaCommand(msg telegram.IncomingMessage) {
 	// Restrict to owner (first allowed user ID) to prevent prompt leak with allow_all.
-	if len(a.cfg.Telegram.AllowedID) > 0 && msg.UserID != a.cfg.Telegram.AllowedID[0] {
+	// If no AllowedID is set (pure allow_all mode), reject entirely since there's no defined owner.
+	if len(a.cfg.Telegram.AllowedID) == 0 || msg.UserID != a.cfg.Telegram.AllowedID[0] {
 		a.trySend(telegram.OutgoingMessage{ChatID: msg.ChatID, Text: "The /persona command is restricted to the bot owner."})
 		return
 	}
