@@ -24,6 +24,7 @@ type ActorConfig struct {
 	MaxCandidatesPerRun int     // cap on memory candidates per run
 	AutoCommit          bool    // Phase 3: enable auto-commit for high-confidence candidates
 	CandidateExpiryDays int     // pending candidates expire after N days (0 = no expiry)
+	PersonalityHash     string  // SHA-256 hash of loaded personality file (empty = default)
 }
 
 // Actor is a supervised actor that runs the self-evaluation pipeline on a schedule.
@@ -263,8 +264,17 @@ func (a *Actor) runPipeline(ctx context.Context) {
 
 // completeRun updates an eval_run's status and summary.
 func (a *Actor) completeRun(runID, status string, scanned, failures, candidates int, errMsg string) {
-	summary := fmt.Sprintf(`{"scanned":%d,"failures":%d,"candidates":%d,"error":%q}`,
-		scanned, failures, candidates, errMsg)
+	summaryMap := map[string]any{
+		"scanned":    scanned,
+		"failures":   failures,
+		"candidates": candidates,
+		"error":      errMsg,
+	}
+	if a.cfg.PersonalityHash != "" {
+		summaryMap["personality_hash"] = a.cfg.PersonalityHash
+	}
+	summaryBytes, _ := json.Marshal(summaryMap)
+	summary := string(summaryBytes)
 	_, err := a.store.DB().Exec(
 		`UPDATE eval_runs SET status = ?, completed_at = ?, conversations_scanned = ?, failures_found = ?, candidates_generated = ?, summary = ? WHERE id = ?`,
 		status, time.Now().UTC(), scanned, failures, candidates, summary, runID,

@@ -341,6 +341,40 @@ port    = 18080
 
 Include only the applicable Claude auth fields (cli_path+oauth_token OR api_key, never both).
 
+**Agent personality:** Use AskUserQuestion: "Choose your bot's personality:"
+- A) **Default assistant** — "You are a helpful personal assistant." Clean and neutral.
+- B) **Da Bao / 大宝** — A warm, goofy orange cat who speaks Chinese by default and mixes in English for tech terms. Competent but playful.
+- C) **Custom** — Write your own personality in a markdown file.
+
+**If A:** No personality section needed (the default is built in).
+
+**If B:** Write the 大宝 personality from the bundled example file.
+
+**Determine personality file path based on `INSTALL_METHOD`:**
+- If `docker`: personality file path = `/data/personality.md`
+- If `github_releases`: personality file path = `$HOME/.curlycatclaw/personality.md` (expand `$HOME`)
+
+Copy `personality-dabao.md.example` to the personality file path (or write its content
+directly). Then add to the config:
+
+```toml
+[personality]
+file = "<PERSONALITY_FILE_PATH>"
+```
+
+**If C:** Tell the user: "Create a markdown file with your personality spec. See
+`personality.md.example` for the format (identity, voice, language, behavioral rules).
+Then add to config.toml:"
+
+```toml
+[personality]
+file = "<absolute path to your personality.md>"
+```
+
+If using Docker, remind them: "The file must be inside the mounted config directory
+(e.g., `~/.curlycatclaw/personality.md` on the host, which maps to `/data/personality.md`
+in the container). Use the container path in config.toml."
+
 ### 6d. Memory Sections (With memory + Full customization)
 
 **Determine addresses based on `INSTALL_METHOD`:**

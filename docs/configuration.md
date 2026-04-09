@@ -163,6 +163,17 @@ schedule    = "0 3 * * 0"                          # cron (default: weekly Sunda
 
 Telegram commands: `/update` (check + confirm), `/status` (version, uptime, available update), `/rollback` (revert to previous image with confirmation).
 
+## Agent Personality
+
+Replace the default "helpful personal assistant" persona with a custom character by pointing to a markdown file:
+
+```toml
+[personality]
+file = "/data/personality.md"  # absolute path, max 20KB, UTF-8 only
+```
+
+The file content is injected as the system prompt prefix for chat conversations. Cron/scheduled tasks use a fixed operational prompt and are not affected. See `personality.md.example` and `personality-dabao.md.example` for format reference.
+
 ## Encrypted MCP Credentials
 
 For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes). MCP servers, Wasm plugins, cron tasks, and other advanced options are documented in `config.toml.example`.

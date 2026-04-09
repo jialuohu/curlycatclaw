@@ -23,6 +23,7 @@ import (
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 	"github.com/jialuohu/curlycatclaw/internal/mcp"
 	"github.com/jialuohu/curlycatclaw/internal/memory"
+	"github.com/jialuohu/curlycatclaw/internal/personality"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 	"github.com/jialuohu/curlycatclaw/internal/update"
 	"github.com/jialuohu/curlycatclaw/internal/voice"
@@ -109,6 +110,9 @@ type Actor struct {
 
 	// updateClient communicates with the curlycatclaw-updater sidecar (nil when update not configured).
 	updateClient *update.Client
+
+	// persona holds the loaded agent personality (from config or default).
+	persona *personality.Persona
 }
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
@@ -164,7 +168,24 @@ func New(
 		debugOverride:  make(map[userKey]bool),
 		fileDrainer:    store,
 		updateClient:   updateClient,
+		persona:        loadPersona(cfg),
 	}
+}
+
+// loadPersona loads the personality from config or returns the default.
+func loadPersona(cfg *config.Config) *personality.Persona {
+	if cfg.Personality.File == "" {
+		return personality.Default()
+	}
+	p, err := personality.Load(cfg.Personality.File)
+	if err != nil {
+		// Config validation already checks file exists and is readable,
+		// but Load does additional validation (UTF-8, size, empty).
+		slog.Error("failed to load personality file, using default", "path", cfg.Personality.File, "error", err)
+		return personality.Default()
+	}
+	slog.Info("personality loaded", "path", p.FilePath, "hash", p.ContentHash[:12], "chars", len(p.Content))
+	return p
 }
 
 func (a *Actor) Name() string { return "session" }
@@ -2449,7 +2470,13 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 	now := time.Now().In(loc)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "You are a helpful personal assistant.\n\n")
+	// NOTE: personality content is injected as system prompt prefix. Operator-controlled only.
+	// If per-user personas are added later, this becomes an injection vector.
+	p := a.persona
+	if p == nil {
+		p = personality.Default()
+	}
+	fmt.Fprintf(&sb, "%s\n\n", p.Content)
 	sb.WriteString("You are communicating via Telegram. Format responses for mobile readability:\n")
 	sb.WriteString("- Use bullet points and numbered lists instead of markdown tables.\n")
 	sb.WriteString("- Tables render poorly in Telegram. Always convert tabular data to a list format.\n")

@@ -222,6 +222,12 @@ port    = 18080
 # labels = ["INBOX"]
 # skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
 
+# Agent personality. Loads a markdown file to replace the default "helpful personal assistant" persona.
+# The file defines how the bot speaks, its character, language preferences, and behavioral rules.
+# Note: cron/scheduled tasks use a separate fixed prompt, not this personality.
+# [personality]
+# file = "/data/personality.md"                # Absolute path. Max 20KB. UTF-8 only.
+
 # Self-update configuration. Requires the curlycatclaw-updater sidecar container.
 # Set UPDATER_SECRET in .env (next to docker-compose.yml) for authentication.
 # [update]

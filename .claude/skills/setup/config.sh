@@ -45,6 +45,7 @@ while IFS='=' read -r key value; do
     EMBEDDER_CHOICE)      EMBEDDER_CHOICE="$value" ;;
     VOYAGE_API_KEY)       VOYAGE_API_KEY="$value" ;;
     INSTALL_METHOD)       INSTALL_METHOD="$value" ;;
+    PERSONALITY_CHOICE)   PERSONALITY_CHOICE="$value" ;;
   esac
 done < "$CREDS_FILE"
 
@@ -52,6 +53,7 @@ done < "$CREDS_FILE"
 EMBEDDER_CHOICE="${EMBEDDER_CHOICE:-fnv}"
 VOYAGE_API_KEY="${VOYAGE_API_KEY:-}"
 INSTALL_METHOD="${INSTALL_METHOD:-docker}"
+PERSONALITY_CHOICE="${PERSONALITY_CHOICE:-default}"
 
 # Validate required fields: need exactly one of API key or auth token
 if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
@@ -171,6 +173,33 @@ vector_search_timeout_seconds = 5
 enabled = true
 port    = 18080
 TOML_EOF
+
+# Write personality file and config section if requested
+if [ "$PERSONALITY_CHOICE" = "dabao" ]; then
+  PERSONALITY_PATH="$CONFIG_DIR/personality.md"
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  DABAO_EXAMPLE="$REPO_ROOT/personality-dabao.md.example"
+  if [ -f "$DABAO_EXAMPLE" ]; then
+    cp "$DABAO_EXAMPLE" "$PERSONALITY_PATH"
+  else
+    cat > "$PERSONALITY_PATH" << 'DABAO_EOF'
+You are 大宝 (Da Bao), a warm and goofy orange cat assistant.
+Default to Chinese. Mix in English for tech terms.
+Be competent but sprinkle in light 喵~ occasionally.
+DABAO_EOF
+  fi
+  if [ "$INSTALL_METHOD" = "docker" ]; then
+    PERSONALITY_CONFIG_PATH="/data/personality.md"
+  else
+    PERSONALITY_CONFIG_PATH="$PERSONALITY_PATH"
+  fi
+  cat >> "$CONFIG_PATH" << PERS_EOF
+
+[personality]
+file = "$PERSONALITY_CONFIG_PATH"
+PERS_EOF
+fi
 
 # Secure the config file (contains API keys)
 chmod 600 "$CONFIG_PATH"
