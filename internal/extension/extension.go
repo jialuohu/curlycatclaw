@@ -39,6 +39,10 @@ type Extension struct {
 	Transport string            `json:"transport,omitempty"` // "" or "stdio" (default), "http"
 	URL       string            `json:"url,omitempty"`       // required when transport is "http"
 	Headers   map[string]string `json:"headers,omitempty"`   // HTTP request headers
+	// Companion Docker service fields (HTTP MCP extensions only).
+	// When set, add_extension can auto-register and start the service.
+	Image string            `json:"image,omitempty"` // Docker image for managed service
+	Ports map[string]string `json:"ports,omitempty"` // host:container port mappings
 }
 
 // Registry manages a persistent set of runtime extensions.

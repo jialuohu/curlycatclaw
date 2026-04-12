@@ -70,7 +70,7 @@ func TestCronExecutor_SimplePrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Summarize my day", "")
+	result, err := ce.Execute(ctx, 1, 10, "Summarize my day", "", time.Now())
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestCronExecutor_WithToolUse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Search for test", "")
+	result, err := ce.Execute(ctx, 1, 10, "Search for test", "", time.Now())
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestCronExecutor_ToolError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Use broken tool", "")
+	result, err := ce.Execute(ctx, 1, 10, "Use broken tool", "", time.Now())
 	if err != nil {
 		t.Fatalf("Execute should succeed (tool error fed back to Claude): %v", err)
 	}
@@ -217,7 +217,7 @@ func TestCronExecutor_UserContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := ce.Execute(ctx, 42, 10, "check user context", "")
+	_, err := ce.Execute(ctx, 42, 10, "check user context", "", time.Now())
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestCronExecutor_Semaphore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := ce.Execute(ctx, 1, 10, "blocked", "")
+	_, err := ce.Execute(ctx, 1, 10, "blocked", "", time.Now())
 	if err == nil {
 		t.Fatal("expected error when semaphore is full and context times out")
 	}
@@ -276,11 +276,35 @@ func TestCronExecutor_SystemPromptIncludesFacts(t *testing.T) {
 		facts,
 	)
 
-	prompt := ce.buildSystemPrompt(1)
+	prompt := ce.buildSystemPrompt(1, time.Now())
 	if !strings.Contains(prompt, "Acme Corp") {
 		t.Errorf("system prompt should include user facts, got: %s", prompt)
 	}
 	if !strings.Contains(prompt, "scheduled task") {
 		t.Errorf("system prompt should mention scheduled task, got: %s", prompt)
+	}
+}
+
+// TestBuildSystemPrompt_IncludesScheduledAt guards against regression of the
+// cron time-drift bug: the prompt must state the scheduled fire time (not just
+// the wall time at execution) so Claude quotes the intended time in its reply.
+func TestBuildSystemPrompt_IncludesScheduledAt(t *testing.T) {
+	ce := newTestCronExecutor(
+		&mockLLM{responses: []*claude.Response{{TextContent: "ok"}}},
+		&mockCronFactProvider{},
+	)
+
+	// Pick a fixed UTC time so the rendered local-tz string is deterministic for
+	// the config's default timezone. Using the configured location for rendering.
+	loc := ce.cfg.Location()
+	scheduled := time.Date(2026, 4, 12, 15, 0, 0, 0, time.UTC)
+	wantScheduled := scheduled.In(loc).Format("2006-01-02 15:04 MST")
+
+	prompt := ce.buildSystemPrompt(1, scheduled)
+	if !strings.Contains(prompt, wantScheduled) {
+		t.Errorf("prompt must include scheduled fire time %q, got:\n%s", wantScheduled, prompt)
+	}
+	if !strings.Contains(prompt, "SCHEDULED") {
+		t.Errorf("prompt must instruct Claude to use the SCHEDULED time, got:\n%s", prompt)
 	}
 }

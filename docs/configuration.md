@@ -78,14 +78,37 @@ skip_senders = ["noreply@", "no-reply@", "notifications@", "mailer-daemon@"]
 
 ## Google Workspace (optional)
 
-Add Gmail, Calendar, Drive, Sheets, Docs, Tasks access. On a machine with a browser:
+Add Gmail, Calendar, Drive, Sheets, Docs, Tasks access. GWS auth needs an OAuth consent flow in a real browser, so on headless servers the auth happens on your laptop and credentials get transferred over.
+
+**Step 1 — On a machine with a browser (laptop/desktop)**
+
+Install the `gws` CLI (needs Node.js):
+
+```bash
+npm install -g @googleworkspace/cli
+```
+
+Log in. This opens your browser to Google's OAuth consent screen — approve the scopes:
 
 ```bash
 gws auth login -s drive,gmail,calendar,sheets,docs,tasks
-gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json
 ```
 
-Then add to `config.toml`:
+Export the authorized credentials to a file:
+
+```bash
+gws auth export --unmasked > gws-credentials.json
+```
+
+**Step 2 — Transfer `gws-credentials.json` to your server**
+
+Use `scp`, `rsync`, or any other method. Put it at `~/.curlycatclaw/gws-credentials.json` with `chmod 600`.
+
+> **Do NOT run `gws auth login` on a headless server.** It opens a browser and will hang forever. The whole point of the steps above is to do the browser step where a browser exists, then ship the credentials.
+
+**Step 3 — Configure curlycatclaw**
+
+Add to `config.toml`:
 
 ```toml
 [[mcp.servers]]

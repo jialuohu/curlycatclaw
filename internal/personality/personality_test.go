@@ -144,6 +144,81 @@ func TestLoad_HashOnTrimmedContent(t *testing.T) {
 	}
 }
 
+func TestSave(t *testing.T) {
+	t.Run("happy path", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "personality.md")
+		p, err := Save(f, "You are a pirate captain.")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Content != "You are a pirate captain." {
+			t.Fatalf("got content %q", p.Content)
+		}
+		if p.ContentHash == "" {
+			t.Fatal("expected non-empty hash")
+		}
+		// Verify file was written.
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(data)) != "You are a pirate captain." {
+			t.Fatalf("file content mismatch: %q", string(data))
+		}
+	})
+
+	t.Run("trims whitespace", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "personality.md")
+		p, err := Save(f, "  \n  Hello world  \n  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Content != "Hello world" {
+			t.Fatalf("got %q, want trimmed", p.Content)
+		}
+	})
+
+	t.Run("empty content", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "personality.md")
+		_, err := Save(f, "")
+		if err == nil {
+			t.Fatal("expected error for empty content")
+		}
+	})
+
+	t.Run("oversized content", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "personality.md")
+		big := strings.Repeat("A", maxFileSize+1)
+		_, err := Save(f, big)
+		if err == nil {
+			t.Fatal("expected error for oversized content")
+		}
+	})
+
+	t.Run("roundtrip with Load", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "personality.md")
+		saved, err := Save(f, "You are a space explorer.")
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := Load(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.ContentHash != loaded.ContentHash {
+			t.Fatal("Save and Load should produce the same hash")
+		}
+		if saved.Content != loaded.Content {
+			t.Fatalf("content mismatch: saved=%q loaded=%q", saved.Content, loaded.Content)
+		}
+	})
+}
+
 func TestDefault(t *testing.T) {
 	p := Default()
 	if p.Content != defaultPersonality {

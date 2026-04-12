@@ -46,6 +46,30 @@ func Load(filePath string) (*Persona, error) {
 	}, nil
 }
 
+// Save validates and writes personality content to filePath.
+// It applies the same validation as Load: non-empty, valid UTF-8, <= 20KB.
+func Save(filePath, content string) (*Persona, error) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return nil, fmt.Errorf("personality: content is empty after trimming whitespace")
+	}
+	if len(trimmed) > maxFileSize {
+		return nil, fmt.Errorf("personality: content is %d bytes, max allowed is 20KB (%d bytes)", len(trimmed), maxFileSize)
+	}
+	if !utf8.Valid([]byte(trimmed)) {
+		return nil, fmt.Errorf("personality: content contains invalid UTF-8")
+	}
+	if err := os.WriteFile(filePath, []byte(trimmed+"\n"), 0644); err != nil {
+		return nil, fmt.Errorf("personality: write %q: %w", filePath, err)
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(trimmed)))
+	return &Persona{
+		Content:     trimmed,
+		ContentHash: hash,
+		FilePath:    filePath,
+	}, nil
+}
+
 // Default returns a Persona with the hardcoded default personality.
 func Default() *Persona {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(defaultPersonality)))

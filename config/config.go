@@ -46,6 +46,24 @@ type GitHubConfig struct {
 	Repo  string `toml:"repo"`  // repository name, e.g. "curlycatclaw"
 }
 
+// OwnerOrDefault returns the configured owner or the curlycatclaw default
+// when unset. Used for agent self-reports (bugs about curlycatclaw itself).
+func (g GitHubConfig) OwnerOrDefault() string {
+	if g.Owner == "" {
+		return "jialuohu"
+	}
+	return g.Owner
+}
+
+// RepoOrDefault returns the configured repo or the curlycatclaw default
+// when unset. Used for agent self-reports (bugs about curlycatclaw itself).
+func (g GitHubConfig) RepoOrDefault() string {
+	if g.Repo == "" {
+		return "curlycatclaw"
+	}
+	return g.Repo
+}
+
 // UpdateConfig controls the self-update system. Requires the curlycatclaw-updater sidecar.
 type UpdateConfig struct {
 	Enabled    bool   `toml:"enabled"`

@@ -72,9 +72,19 @@ db_path = "/data/curlycatclaw.db"
 # BRAVE_API_KEY = "your-brave-api-key"
 
 # Google Workspace via gws CLI (https://github.com/googleworkspace/cli).
-# Auth: on a machine with a browser, run:
-#   gws auth login -s drive,gmail,calendar,sheets,docs,tasks
-#   gws auth export --unmasked > ~/.curlycatclaw/gws-credentials.json
+#
+# Auth uses an OAuth browser consent flow. On headless servers, do the
+# browser step on your laptop and copy the credentials over:
+#
+#   ON YOUR LAPTOP (needs Node.js + browser):
+#     npm install -g @googleworkspace/cli
+#     gws auth login -s drive,gmail,calendar,sheets,docs,tasks
+#     gws auth export --unmasked > gws-credentials.json
+#
+#   THEN transfer gws-credentials.json to this server and place at
+#   ~/.curlycatclaw/gws-credentials.json (chmod 600).
+#
+#   DO NOT run `gws auth login` on a headless server — it will hang.
 # [[mcp.servers]]
 # name    = "gws"
 # command = "curlycatclaw-gws-mcp"
@@ -84,9 +94,11 @@ db_path = "/data/curlycatclaw.db"
 # GWS_SKILLS_DIR = ""           # optional: pre-generated skills dir (skip gws generate-skills)
 # GWS_FILTER = "gmail_*,calendar_*,drive_*,sheets_*,docs_*,slides_*,tasks_*"  # optional: glob filter
 #
-# Multi-account: authenticate each account separately, export to separate files:
+# Multi-account: on your laptop, authenticate each account separately and
+# export to separate files:
 #   gws auth login -s drive,gmail,calendar   # log in with account #2
-#   gws auth export --unmasked > ~/.curlycatclaw/gws-work-credentials.json
+#   gws auth export --unmasked > gws-work-credentials.json
+# Then transfer each file to the server under ~/.curlycatclaw/.
 # Then replace GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE with GWS_ACCOUNT_* vars:
 # GWS_ACCOUNT_PERSONAL          = "/data/gws-credentials.json"
 # GWS_ACCOUNT_PERSONAL_SERVICES = "gmail,calendar,drive,sheets,docs,slides,tasks"

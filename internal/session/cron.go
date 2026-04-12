@@ -49,7 +49,9 @@ func NewCronExecutor(
 
 // Execute runs a prompt through Claude with a clean context (facts only, no
 // conversation history) and returns the text result. It supports tool use.
-func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, prompt, model string) (string, error) {
+// scheduledAt is the intended fire time (passed through to the system prompt
+// so Claude references the scheduled time rather than the wall time at execution).
+func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error) {
 	// Acquire concurrency slot.
 	select {
 	case ce.sem <- struct{}{}:
@@ -58,18 +60,18 @@ func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, promp
 		return "", fmt.Errorf("cron: context cancelled waiting for semaphore: %w", ctx.Err())
 	}
 
-	slog.Info("cron: executing", "user_id", userID, "chat_id", chatID)
+	slog.Info("cron: executing", "user_id", userID, "chat_id", chatID, "scheduled_at", scheduledAt)
 
 	if ce.cfg.Claude.UseCLI() && ce.cliMgr != nil {
-		return ce.executeWithCLI(ctx, userID, chatID, prompt, model)
+		return ce.executeWithCLI(ctx, userID, chatID, prompt, model, scheduledAt)
 	}
 
-	return ce.executeWithAPI(ctx, userID, chatID, prompt)
+	return ce.executeWithAPI(ctx, userID, chatID, prompt, scheduledAt)
 }
 
 // executeWithAPI runs the prompt through the direct Claude API with tool support.
-func (ce *CronExecutor) executeWithAPI(ctx context.Context, userID, chatID int64, prompt string) (string, error) {
-	systemPrompt := ce.buildSystemPrompt(userID)
+func (ce *CronExecutor) executeWithAPI(ctx context.Context, userID, chatID int64, prompt string, scheduledAt time.Time) (string, error) {
+	systemPrompt := ce.buildSystemPrompt(userID, scheduledAt)
 
 	// Collect tools from skills + MCP.
 	tools := toSkillTools(ce.skills)
@@ -173,9 +175,10 @@ func (ce *CronExecutor) runToolLoop(
 }
 
 // executeWithCLI runs the prompt through a one-shot CLI subprocess.
-func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt, model string) (string, error) {
+func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error) {
+	_ = chatID // reserved for future per-chat routing
 	proc, err := ce.cliMgr.SpawnOneShot(ctx, claude.SpawnParams{
-		SystemPrompt: ce.buildSystemPrompt(userID),
+		SystemPrompt: ce.buildSystemPrompt(userID, scheduledAt),
 		InitialMsg:   claude.BuildUserMessage(prompt),
 		Model:        model,
 	})
@@ -217,16 +220,21 @@ func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64
 }
 
 // buildSystemPrompt creates a minimal system prompt for cron tasks.
-// Includes timezone and user facts, but no conversation summaries or memory instructions.
+// Includes timezone, the scheduled fire time, and user facts, but no conversation
+// summaries or memory instructions.
 // NOTE: cron tasks intentionally use a fixed prompt, not the configured personality.
 // Cron tasks are operational (reminders, scheduled checks), not persona-driven.
-func (ce *CronExecutor) buildSystemPrompt(userID int64) string {
+func (ce *CronExecutor) buildSystemPrompt(userID int64, scheduledAt time.Time) string {
 	loc := ce.cfg.Location()
 	now := time.Now().In(loc)
+	scheduledLocal := scheduledAt.In(loc)
 
 	var sb strings.Builder
 	sb.WriteString("You are executing a scheduled task. Be concise and actionable.\n\n")
-	fmt.Fprintf(&sb, "The user's timezone is %s. Current local time: %s.\n", ce.cfg.Timezone, now.Format("2006-01-02 15:04 MST"))
+	fmt.Fprintf(&sb, "The user's timezone is %s.\n", ce.cfg.Timezone)
+	fmt.Fprintf(&sb, "This task was SCHEDULED to fire at: %s.\n", scheduledLocal.Format("2006-01-02 15:04 MST"))
+	fmt.Fprintf(&sb, "Current local time at execution: %s.\n", now.Format("2006-01-02 15:04 MST"))
+	sb.WriteString("When referencing \"this reminder\" or the scheduled time in your reply, use the SCHEDULED time above, not the current execution time. They may differ by minutes if execution lagged.\n")
 
 	// Include user facts (Tier 1) so Claude knows about the user.
 	if ce.cfg.Memory.Enabled && ce.facts != nil {

@@ -190,7 +190,12 @@ func yamlQuote(s string) string {
 		needsQuote = true
 	}
 	if needsQuote {
-		return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+		// Escape backslashes FIRST so our own quote-escape doesn't collide.
+		// Without this, a value like `foo\nbar` (literal 8 chars) would emit
+		// `"foo\nbar"` which YAML parses as a newline (7 chars).
+		escaped := strings.ReplaceAll(s, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		return `"` + escaped + `"`
 	}
 	return s
 }

@@ -29,6 +29,23 @@ type MCPAdder interface {
 	RemoveServer(name string) error
 }
 
+// ServiceRegInfo provides Docker service details for auto-registration.
+// When non-nil and the service isn't in the catalog, the auto-starter
+// registers it before starting.
+type ServiceRegInfo struct {
+	Image string
+	Ports map[string]string
+	Env   map[string]string
+}
+
+// ServiceAutoStarter attempts to start a companion Docker service for an
+// HTTP MCP server that isn't reachable. Called automatically by add_extension
+// when an HTTP connection fails. Returns a status message on success.
+// When reg is non-nil with a non-empty Image and the service isn't in the
+// catalog, it auto-registers the service before starting.
+// Nil callback means auto-start is not available (updater sidecar disabled).
+type ServiceAutoStarter func(ctx context.Context, name string, reg *ServiceRegInfo) (statusMsg string, err error)
+
 // MCPHotReloader handles dynamic MCP extension tool registration without
 // subprocess restart. When non-nil and mcpMgr is nil (MCP subprocess mode),
 // MCP extensions are hot-reloaded instead of requiring a restart.
@@ -52,9 +69,9 @@ type MCPHotReloader interface {
 // subprocess respawn; it may be nil if no reload is needed.
 // hotReloader, when non-nil, enables MCP extension hot-reload without
 // subprocess restart (MCP server subprocess mode only).
-func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, credStore *security.CredentialStore, configServers []ConfigMCPServer) []*skills.Skill {
+func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, credStore *security.CredentialStore, configServers []ConfigMCPServer, autoStarter ServiceAutoStarter) []*skills.Skill {
 	ss := []*skills.Skill{
-		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader),
+		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader, autoStarter),
 		removeExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader),
 		listExtensionsSkill(reg, configServers),
 		loadPromptSkill(reg),
@@ -66,10 +83,10 @@ func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regist
 	return ss
 }
 
-func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader) *skills.Skill {
+func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, autoStarter ServiceAutoStarter) *skills.Skill {
 	return &skills.Skill{
 		Name:        "add_extension",
-		Description: "Add a runtime extension (MCP server, exec skill, or prompt skill). MCP servers provide tools via the MCP protocol. Exec skills run a command as a subprocess with JSON input/output. Prompt skills are markdown instruction files (SKILL.md) that modify behavior.",
+		Description: "Add a runtime extension (MCP server, exec skill, or prompt skill). MCP servers provide tools via the MCP protocol. Exec skills run a command as a subprocess with JSON input/output. Prompt skills are markdown instruction files (SKILL.md) that modify behavior. FOR HTTP MCP SERVERS: always include 'image' (Docker image name from the repo README) and 'ports' (host:container port mapping) so the service is automatically registered and started. Without these, the server won't auto-start. For prompt skills, use /data/extension-wrappers/<name>/ as the directory path (never use ~ or /root).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -82,7 +99,9 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				"input_schema": {"type": "object", "description": "JSON Schema for exec skill input parameters"},
 				"transport":    {"type": "string", "enum": ["stdio", "http"], "description": "MCP transport: stdio (default, spawns subprocess) or http (connects to running server)"},
 				"url":          {"type": "string", "description": "HTTP endpoint URL (required when transport is http, e.g. http://localhost:8080/mcp)"},
-				"headers":      {"type": "object", "additionalProperties": {"type": "string"}, "description": "HTTP request headers (e.g. API keys). Only used with http transport"}
+				"headers":      {"type": "object", "additionalProperties": {"type": "string"}, "description": "HTTP request headers (e.g. API keys). Only used with http transport"},
+				"image":        {"type": "string", "description": "Docker image for companion service (REQUIRED for HTTP transport). Provide this so the service auto-registers and starts. Find it in the repo README, Dockerfile, or docker-compose.yml. Example: xpzouying/xiaohongshu-mcp"},
+				"ports":        {"type": "object", "additionalProperties": {"type": "string"}, "description": "Host:container port mappings (REQUIRED for HTTP transport). Example: {\"18060\": \"18060\"}"}
 			},
 			"required": ["name", "type"]
 		}`),
@@ -98,6 +117,8 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				Transport   string            `json:"transport"`
 				URL         string            `json:"url"`
 				Headers     map[string]string `json:"headers"`
+				Image       string            `json:"image"`
+				Ports       map[string]string `json:"ports"`
 			}
 			if err := json.Unmarshal(input, &params); err != nil {
 				return "", fmt.Errorf("invalid input: %w", err)
@@ -140,11 +161,67 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				Transport:   params.Transport,
 				URL:         params.URL,
 				Headers:     params.Headers,
+				Image:       params.Image,
+				Ports:       params.Ports,
+			}
+
+			// For HTTP MCP extensions when auto-start is available, require image
+			// so the service can be auto-registered. Without this, the bot repeatedly
+			// registers extensions that can't connect because the server isn't running.
+			if params.Type == TypeMCP && ext.Transport == "http" && params.Image == "" && autoStarter != nil {
+				return "", fmt.Errorf("HTTP MCP extensions require the 'image' field (Docker image name) so the service can be auto-registered and started; read the repo README or Dockerfile to find the image name (e.g. 'xpzouying/xiaohongshu-mcp'), also include 'ports' with the port mapping (e.g. {\"18060\": \"18060\"})")
 			}
 
 			switch params.Type {
 			case TypeMCP:
-				return addMCPExtension(ctx, reg, mcpMgr, reloadFunc, hotReloader, ext)
+				// For HTTP extensions with autoStarter in CLI mode, defer reloadFunc
+				// so auto-start can try hot-reload first (avoids redundant subprocess restart).
+				effectiveReload := reloadFunc
+				if ext.Transport == "http" && autoStarter != nil && mcpMgr == nil {
+					effectiveReload = nil
+				}
+				result, err := addMCPExtension(ctx, reg, mcpMgr, effectiveReload, hotReloader, ext)
+				if err != nil && ext.Transport == "http" && isMCPConnectionError(err) {
+					// HTTP extension failed to connect (server not running).
+					// Try auto-start and retry. autoStarter is nil in main.go today.
+					// Build registration info from Docker fields for auto-register.
+					var regInfo *ServiceRegInfo
+					if ext.Image != "" {
+						regInfo = &ServiceRegInfo{Image: ext.Image, Ports: ext.Ports, Env: ext.Env}
+					}
+					if autoStarter != nil {
+						if statusMsg, startErr := autoStarter(ctx, ext.Name, regInfo); startErr == nil {
+							if retryResult, retryErr := addMCPExtension(ctx, reg, mcpMgr, reloadFunc, hotReloader, ext); retryErr == nil {
+								return retryResult + fmt.Sprintf("\n\nCompanion service auto-started: %s", statusMsg), nil
+							}
+						}
+					}
+					// Auto-start failed or not available. Persist extension for reconnection on restart.
+					_ = reg.Add(ext)
+					return manageServiceGuidance(ext.Name, ext.URL, err), nil
+				}
+				if err != nil {
+					return result, err
+				}
+				// CLI mode: for HTTP extensions, always fire reloadFunc so the next
+				// message gets a fresh CLI subprocess with the extension loaded at
+				// startup. Hot-reload adds tools to the current MCP subprocess, but
+				// the Claude CLI's tool list may be stale (no re-fetch after
+				// tools/list_changed notification during a turn).
+				if mcpMgr == nil && ext.Transport == "http" {
+					if !strings.Contains(result, "immediately") {
+						var regInfo *ServiceRegInfo
+						if ext.Image != "" {
+							regInfo = &ServiceRegInfo{Image: ext.Image, Ports: ext.Ports, Env: ext.Env}
+						}
+						result = enhanceHTTPResult(ctx, ext, autoStarter, hotReloader, regInfo, result)
+					}
+					// Always reload for HTTP extensions so the next turn has tools at startup.
+					if reloadFunc != nil {
+						reloadFunc()
+					}
+				}
+				return result, nil
 			case TypeExec:
 				return addExecExtension(reg, skillReg, ext)
 			case TypePrompt:
@@ -156,6 +233,20 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 	}
 }
 
+// errMCPServerStart wraps connection errors from AddServer so the caller
+// can distinguish connection failures from validation/persistence errors.
+var errMCPServerStart = errors.New("failed to start MCP server")
+
+// isMCPConnectionError returns true if the error from addMCPExtension indicates
+// a connection failure (server not reachable) vs. a validation or persistence error.
+func isMCPConnectionError(err error) bool {
+	return errors.Is(err, errMCPServerStart)
+}
+
+// addMCPExtension handles MCP extension registration. It connects to the server
+// (API mode) or persists + hot-reloads (CLI mode). This function is pure — it does
+// not handle auto-start or manage_service guidance. The caller (Execute wrapper in
+// addExtensionSkill) handles retry orchestration for HTTP extensions.
 func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reloadFunc func(), hotReloader MCPHotReloader, ext Extension) (string, error) {
 	if mcpMgr != nil {
 		cfg := config.MCPServerConfig{
@@ -168,7 +259,7 @@ func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reload
 			Headers:   ext.Headers,
 		}
 		if err := mcpMgr.AddServer(ctx, cfg, nil); err != nil {
-			return "", fmt.Errorf("failed to start MCP server: %w", err)
+			return "", fmt.Errorf("%w: %w", errMCPServerStart, err)
 		}
 	}
 
@@ -214,6 +305,57 @@ func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reload
 	}
 	slog.Info("extension: MCP server added (CLI mode, pending reload)", "name", ext.Name, "transport", ext.Transport, "command", ext.Command, "url", ext.URL)
 	return fmt.Sprintf("Extension %q added (MCP server). Tools will be available on the next message.", ext.Name), nil
+}
+
+// manageServiceGuidance returns a user-facing message with step-by-step
+// instructions for registering and starting an HTTP MCP server via manage_service.
+func manageServiceGuidance(name, url string, origErr error) string {
+	errInfo := ""
+	if origErr != nil {
+		errInfo = fmt.Sprintf(" (%v)", origErr)
+	}
+	return fmt.Sprintf("Extension %q registered but the server at %s is not reachable%s. "+
+		"Use manage_service to register and start the Docker service:\n"+
+		"1. manage_service(action:\"register\", name:%q, image:\"<docker-image>\", ports:{\"<port>\":\"<port>\"})\n"+
+		"2. manage_service(action:\"start\", name:%q)\n"+
+		"Then retry add_extension.",
+		name, url, errInfo, name, name)
+}
+
+// enhanceHTTPResult attempts auto-start for CLI mode HTTP extensions.
+// If autoStarter succeeds and hot-reload reconnects, returns an "immediately"
+// message. Otherwise appends guidance to the base result.
+func enhanceHTTPResult(ctx context.Context, ext Extension, autoStarter ServiceAutoStarter, hotReloader MCPHotReloader, regInfo *ServiceRegInfo, baseResult string) string {
+	if autoStarter == nil {
+		return baseResult + fmt.Sprintf("\n\nThe HTTP server at %s is not reachable. "+
+			"Start the server manually or use manage_service if available.", ext.URL)
+	}
+
+	statusMsg, startErr := autoStarter(ctx, ext.Name, regInfo)
+	if startErr != nil {
+		slog.Info("extension: auto-start not available for service", "name", ext.Name, "err", startErr)
+		return baseResult + "\n\n" + manageServiceGuidance(ext.Name, ext.URL, nil)
+	}
+
+	slog.Info("extension: auto-started companion service", "name", ext.Name, "status", statusMsg)
+
+	// Retry hot-reload now that the server should be running.
+	if hotReloader != nil {
+		toolDescs, oldCloser, retryErr := hotReloader.ConnectAndRegister(ctx, &ext)
+		if retryErr == nil {
+			if oldCloser != nil {
+				oldCloser()
+			}
+			msg := fmt.Sprintf("Extension %q added (MCP server). Service auto-started and tools are available immediately", ext.Name)
+			if len(toolDescs) > 0 {
+				msg += ": " + strings.Join(toolDescs, ", ")
+			}
+			return msg + "."
+		}
+		slog.Warn("extension: hot-reload retry after auto-start failed", "name", ext.Name, "err", retryErr)
+	}
+
+	return baseResult + fmt.Sprintf("\n\nCompanion service %q auto-started: %s", ext.Name, statusMsg)
 }
 
 func addExecExtension(reg *Registry, skillReg *skills.Registry, ext Extension) (string, error) {

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -365,5 +366,72 @@ func TestIsRegistered_False(t *testing.T) {
 
 	if m.IsRegistered("nonexistent") {
 		t.Error("IsRegistered(nonexistent) = true, want false")
+	}
+}
+
+// TestRemoveServer_UnknownName verifies the error path when the name is
+// not tracked at all.
+func TestRemoveServer_UnknownName(t *testing.T) {
+	m := NewManager("test")
+	err := m.RemoveServer("does-not-exist")
+	if err == nil {
+		t.Fatal("expected error for unknown server, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown server") {
+		t.Errorf("error = %q, want it to mention 'unknown server'", err.Error())
+	}
+}
+
+// TestRemoveServer_DuringAddReservation is a regression test for a nil-deref
+// bug where RemoveServer would panic if called while AddServer had inserted
+// a reservation (m.servers[name] = nil) but startServer hadn't completed.
+// The map entry exists with a nil *serverConn, and RemoveServer must refuse
+// to dereference it instead of crashing.
+func TestRemoveServer_DuringAddReservation(t *testing.T) {
+	m := NewManager("test")
+	// Simulate the state AddServer leaves when it has reserved the name but
+	// startServer hasn't finished yet (map has the key, value is nil).
+	m.servers["reserved"] = nil
+
+	err := m.RemoveServer("reserved")
+	if err == nil {
+		t.Fatal("expected error when removing a name with in-flight AddServer, got nil")
+	}
+	if !strings.Contains(err.Error(), "concurrently") {
+		t.Errorf("error = %q, want it to mention 'concurrently'", err.Error())
+	}
+	// The reservation itself should still be present so AddServer can finish.
+	if _, ok := m.servers["reserved"]; !ok {
+		t.Error("reservation was cleared — AddServer would fail mid-flight")
+	}
+}
+
+// TestTools_SkipsReservations is a regression test for a nil-deref where
+// Tools() iterated m.servers and accessed sc.tools even when sc was nil
+// (AddServer mid-reservation). The expected behavior is to skip such entries
+// and return only tools from fully-initialized servers.
+func TestTools_SkipsReservations(t *testing.T) {
+	m := NewManager("test")
+	m.servers["pending"] = nil // reservation in progress
+	// Sanity check: Tools() must not panic. The empty result is fine since
+	// the only entry is a reservation.
+	defs := m.Tools()
+	if len(defs) != 0 {
+		t.Errorf("Tools() = %d defs, want 0 (reservation should be skipped)", len(defs))
+	}
+}
+
+// TestCallTool_DuringAddReservation regression: hitting a reservation mid-flight
+// used to nil-deref sc.session. It should now return a clear, retriable error.
+func TestCallTool_DuringAddReservation(t *testing.T) {
+	m := NewManager("test")
+	m.servers["pending"] = nil
+
+	_, err := m.CallTool(context.Background(), "pending__some_tool", nil, 0, 0)
+	if err == nil {
+		t.Fatal("expected error when calling a tool on a reserved server, got nil")
+	}
+	if !strings.Contains(err.Error(), "being added") {
+		t.Errorf("error = %q, want it to mention 'being added'", err.Error())
 	}
 }

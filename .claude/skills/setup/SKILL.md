@@ -226,8 +226,8 @@ If `GPU_TYPE` is `nvidia_no_driver` or `amd_no_driver`:
   - Auto-select: FNV
   - Use AskUserQuestion: "Detected [GPU_NAME] but no GPU driver found. Ollama would run on CPU (slower). Recommending FNV for now. Install GPU drivers later for better embeddings."
   - Options:
-    - A) Use Ollama anyway (runs on CPU)
-    - B) Use FNV hash (recommended)
+    - A) Use FNV hash (recommended)
+    - B) Use Ollama anyway (runs on CPU)
     - C) Use Voyage AI instead (512d, cloud API, requires API key, costs money)
 
 If `GPU_TYPE` is `intel_igpu` or `none`:
@@ -269,20 +269,46 @@ If B: skip to Step 7.
 ### 6b. Profile Selection
 
 Use AskUserQuestion: "How would you like to configure curlycatclaw?"
-- A) **Quick start** — Just the essentials. Fastest path to your first Telegram reply.
-- B) **With memory** (recommended) — Adds semantic search and conversation memory. Most users want this.
+- A) **With memory** (recommended) — Adds semantic search and conversation memory. Most users want this.
+- B) **Quick start** — Just the essentials. Fastest path to your first Telegram reply.
 - C) **Full customization** — Walk through every feature: MCP integrations, voice, knowledge ingestion, self-update, and more.
 
-**If B (With memory):** Follow up with AskUserQuestion:
-- A) **Use defaults** — Write memory config with sensible defaults, no extra questions
-- B) **Customize** — Walk through memory and vector search settings
+**If A (With memory):** Skip extra questions — vector + memory + observations are written with sensible defaults in §6d. The user can tune them later by editing config.toml.
 
-After any profile selection, ask in plain text: "Would you also like to enable any of
-these advanced features? (You can skip this entirely by saying 'no')"
-List: MCP servers (GitHub, Google Workspace, Brave Search), voice transcription, knowledge
-ingestion (Gmail, Obsidian, Notion), self-update system, self-evaluation pipeline.
+**If C (Full customization):** Walk through every section in §6d and §6e individually.
 
-If the user mentions any, include those sections in Step 6e below.
+**If B (Quick start):** Skip §6d entirely; only write required sections from §6c.
+
+After profile selection (for A and C), proactively ask about two high-value integrations before the generic "advanced features" list:
+
+**GitHub integration (ask for A and C, default enabled):**
+
+Use AskUserQuestion: "Enable GitHub integration? The bot can browse repos and — critically — file bug reports about curlycatclaw itself directly to `jialuohu/curlycatclaw` when something goes wrong."
+- A) **Enable** (recommended) — file bug reports and browse repos from Telegram
+- B) Skip
+
+If A: drive the GitHub deep-link PAT flow now (see §6e "MCP Servers → GitHub" but use the pre-scoped deep link `https://github.com/settings/tokens/new?scopes=repo&description=curlycatclaw` and default `[github] owner = "jialuohu"`, `repo = "curlycatclaw"`). Write the `[[mcp.servers]]` GitHub block and the `[github]` block.
+
+**Self-update (ask for A and C, default enabled, Docker only):**
+
+Use AskUserQuestion (only if `INSTALL_METHOD=docker`): "Enable self-update? curlycatclaw can update itself from Telegram when new releases land. Requires the updater sidecar container."
+- A) **Enable** (recommended) — self-update runs out of the box
+- B) Skip
+
+If A:
+1. Generate `UPDATER_SECRET=$(openssl rand -hex 32)`.
+2. Append `UPDATER_SECRET=<value>` to `.env` next to `docker-compose.yml` (create `.env` if missing).
+3. Append `updater` to `COMPOSE_PROFILES` in `.env` — preserve any existing profiles. Examples:
+   - `.env` has no `COMPOSE_PROFILES` → write `COMPOSE_PROFILES=updater`.
+   - `.env` has `COMPOSE_PROFILES=ollama` → replace with `COMPOSE_PROFILES=ollama,updater`.
+   - `.env` already contains `updater` in the list → leave unchanged.
+4. Write the `[update]` section per §6e "Self-update system".
+5. Tell the user: "Self-update is enabled. Run `docker compose up -d` after setup finishes to start the sidecar."
+
+After these two questions, ask in plain text: "Would you also like to enable any of these other features? (You can skip this entirely by saying 'no')"
+List: Google Workspace, Google Maps, voice transcription, knowledge ingestion (Gmail, Obsidian, Notion), self-evaluation pipeline.
+
+If the user mentions any, include those sections in §6e below.
 
 ### 6c. Required Sections (all profiles)
 
@@ -381,7 +407,7 @@ in the container). Use the container path in config.toml."
 - If `docker`: `qdrant_addr = "qdrant:6334"`, `ollama_url = "http://ollama:11434"`
 - If `github_releases`: `qdrant_addr = "localhost:6334"`, `ollama_url = "http://localhost:11434"`
 
-**If "With memory — Use defaults":** Write these sections with no further questions:
+**For "With memory" (profile A):** Write these sections with no further questions. Observations are enabled by default — the user can disable them later in config.toml if they don't want automatic fact extraction.
 
 ```toml
 [vector]
@@ -400,18 +426,12 @@ voyage_dim     = 512
 
 [memory]
 enabled = true
-```
 
-**If "With memory — Customize" or Full customization:** Present memory settings with
-defaults and let the user adjust. Ask about observations: "Enable automatic observation
-extraction? This extracts facts from your conversations for long-term memory."
-Use AskUserQuestion: A) Enable (recommended) B) Skip
-
-If enabled, add:
-```toml
 [memory.observations]
 enabled = true
 ```
+
+**For "Full customization":** Present memory settings with defaults and let the user adjust each. Observations still default to enabled but can be opted out here via AskUserQuestion: A) Enable (recommended) B) Skip.
 
 ### 6e. Advanced Sections (Full customization + "anything else" selections)
 
@@ -451,18 +471,16 @@ For GitHub, first ask about access level using AskUserQuestion:
 A) Read + write (recommended) — browse repos, check CI, AND create issues from Telegram
 B) Read-only — browse repos, check CI, read issues/PRs only"
 
+**Deep-link PAT flow:** In both modes, give the user a pre-scoped deep link so they don't have to pick scopes manually — fewer mistakes and robust to GitHub UI renames.
+
 **If A (read + write):**
-Ask for the PAT in plain text with this guidance:
-"Create a Classic PAT at https://github.com/settings/tokens/new
 
-Required scopes:
-  - `repo` (full access — needed to create issues from Telegram)
-  - `read:org` (read org membership, needed if your repos are in an org)
+Print this link and wait for the user to paste a token:
 
-The `repo` scope with full access lets the bot create GitHub issues when you report
-bugs through Telegram. Without it, issue creation will fail with a permission error.
+> "Open this link, click **Generate token**, copy it, and paste it here:
+> https://github.com/settings/tokens/new?scopes=repo,read:org&description=curlycatclaw"
 
-Paste your token (starts with ghp_):"
+The link pre-selects `repo` (full access, required to create issues) and `read:org` (org-membership read). Paste starts with `ghp_`.
 
 Strip embedded whitespace. Write config WITHOUT `--read-only`:
 ```toml
@@ -474,23 +492,22 @@ args    = ["stdio", "--toolsets", "repos,issues,pull_requests,actions,users"]
 GITHUB_PERSONAL_ACCESS_TOKEN = "<token>"
 ```
 
-Then ask for the repo: "What's your GitHub repo? (format: owner/repo, e.g. jialuohu/curlycatclaw)"
-Parse owner and repo from the response. Write:
-```toml
-[github]
-owner = "<owner>"
-repo  = "<repo>"
-```
+Default the repo to `jialuohu/curlycatclaw` (self-reports land there). Ask only if the user wants to override: "Default: issues about curlycatclaw go to `jialuohu/curlycatclaw`. Change it? A) Keep default B) Change"
+
+- A: write
+  ```toml
+  [github]
+  owner = "jialuohu"
+  repo  = "curlycatclaw"
+  ```
+- B: ask for `owner/repo` and validate format.
 
 **If B (read-only):**
-Ask for the PAT in plain text with this guidance:
-"Create a Classic PAT at https://github.com/settings/tokens/new
 
-Required scopes for read-only mode:
-  - `repo` (read access to private repos, issues, PRs, actions)
-  - `read:org` (read org membership, needed if your repos are in an org)
+Print this link:
 
-Paste your token (starts with ghp_):"
+> "Open this link, click **Generate token**, copy it, and paste it here:
+> https://github.com/settings/tokens/new?scopes=repo,read:org&description=curlycatclaw-readonly"
 
 Strip embedded whitespace. Write config with `--read-only`:
 ```toml
@@ -503,12 +520,40 @@ GITHUB_PERSONAL_ACCESS_TOKEN = "<token>"
 ```
 No `[github]` section needed for read-only mode (issue creation is not available).
 
-For Google Workspace, ask: "How do you want to provide GWS credentials?"
-- Paste the JSON content (for headless servers where you can't browse to a file)
-- Provide the file path (if the credentials file is already on disk)
-If the user pastes JSON content, write it to `~/.curlycatclaw/gws-credentials.json`
-(with `chmod 600`) and use that path in the config. If they provide a path, use it
-directly (deployment-aware: Docker uses `/data/gws-credentials.json`).
+**Google Workspace (headless auth flow):**
+
+GWS auth uses a browser-based OAuth consent. The server is headless, so auth happens on a machine with a browser (your laptop), then credentials are transferred to the server.
+
+Walk the user through this in plain text — do NOT try to run `gws auth login` on the server:
+
+> "Google Workspace needs a one-time OAuth login on a machine with a browser.
+>
+> **On your laptop (or any machine with a browser):**
+>
+> 1. Install the `gws` CLI (requires Node.js):
+>    `npm install -g @googleworkspace/cli`
+>
+> 2. Log in (opens your browser to Google's OAuth consent page — approve the requested scopes):
+>    `gws auth login -s drive,gmail,calendar,sheets,docs,tasks`
+>
+> 3. Export the credentials to a file:
+>    `gws auth export --unmasked > gws-credentials.json`
+>
+> **Now transfer `gws-credentials.json` to this server.** Then paste the file's JSON contents here, or give me the path where you put it.
+>
+> Do NOT run `gws auth login` on this server — there's no browser and it will hang."
+
+Then AskUserQuestion: "How are you providing the credentials?"
+- A) Paste the JSON content (recommended for headless servers)
+- B) Point to a file path on this server
+
+**If A:** read multi-line JSON input. Validate with `json.Unmarshal` / `jq .` — if invalid, tell the user what's wrong and re-prompt. On success, write to `~/.curlycatclaw/gws-credentials.json` with `chmod 600`.
+
+**If B:** take the path, verify it exists and is readable, confirm permissions are `600` (offer to `chmod 600` if looser).
+
+Deployment-aware path in config: Docker uses `/data/gws-credentials.json`, bare-metal uses the actual `$HOME/.curlycatclaw/gws-credentials.json`.
+
+Advanced: if the user needs their own OAuth client (rare — the default `gws` install uses its own), point to `https://console.cloud.google.com/apis/credentials`. One-line mention, not a sub-flow.
 
 For Google Maps, ask for the API key in plain text. Strip embedded whitespace.
 Write:
@@ -534,18 +579,24 @@ Ask in plain text: "Add external skill collection paths? Enter path or 'skip'."
 Write `[[skill_collections]]` blocks. Deployment-aware paths.
 
 **Self-update system:**
-**Gate:** "The self-update system requires the updater sidecar container and a shared
-secret (UPDATER_SECRET in .env). Are these set up?"
-Use AskUserQuestion: A) Yes, enable self-update B) Skip
-If A: write:
-```toml
-[update]
-enabled     = true
-updater_url = "http://curlycatclaw-updater:8081"
-auto_update = false
-schedule    = "0 3 * * 0"
-```
-If Docker and updater profile not yet in COMPOSE_PROFILES, offer to add it.
+If the user already answered "Enable self-update" in §6b, skip this section — it's already wired. Otherwise (e.g. the §6b prompt was not shown because `INSTALL_METHOD` isn't `docker`, or the user is in Full customization), run this flow now.
+
+Use AskUserQuestion: "Enable self-update? curlycatclaw can update itself from Telegram when new releases land."
+- A) Enable (recommended) — works out of the box after Docker restart
+- B) Skip
+
+If A (Docker installs only):
+1. Generate `UPDATER_SECRET=$(openssl rand -hex 32)` and append `UPDATER_SECRET=<value>` to `.env` next to `docker-compose.yml`. Create `.env` if missing.
+2. Add `updater` to `COMPOSE_PROFILES` in `.env`. Preserve any existing value (e.g. `ollama` → `ollama,updater`). Don't duplicate if `updater` is already listed.
+3. Write config:
+   ```toml
+   [update]
+   enabled     = true
+   updater_url = "http://curlycatclaw-updater:8081"
+   auto_update = false
+   schedule    = "0 3 * * 0"
+   ```
+4. Tell the user: "Self-update enabled. Run `docker compose up -d` after setup to start the sidecar."
 
 **Self-evaluation pipeline:**
 Use AskUserQuestion: "Enable self-evaluation? Scores conversations and suggests memory improvements. A) Enable B) Skip"

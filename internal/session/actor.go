@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -113,7 +114,25 @@ type Actor struct {
 
 	// persona holds the loaded agent personality (from config or default).
 	persona *personality.Persona
+
+	// active tracks the currently in-flight handleMessage, if any. The Run
+	// loop serializes dispatch so at most one Claude-bound message per actor
+	// runs at a time. Only read/written by the Run goroutine; no mutex.
+	active *activeWork
+	// pendingMsgs holds messages received while `active != nil`. Drained in
+	// FIFO order as work completes. Bounded — oldest dropped on overflow.
+	pendingMsgs []telegram.IncomingMessage
 }
+
+// activeWork tracks an in-flight handleMessage so /stop can cancel it.
+type activeWork struct {
+	key    userKey
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// maxPendingMsgs caps per-actor queue size while work is in flight. Oldest dropped beyond this.
+const maxPendingMsgs = 10
 
 // New creates a new session actor. Either claudeClient or cliMgr should be
 // non-nil (CLI subprocess mode uses cliMgr, direct API mode uses claudeClient).
@@ -188,6 +207,28 @@ func loadPersona(cfg *config.Config) *personality.Persona {
 	return p
 }
 
+// maybeReloadPersona checks if the personality file has changed and reloads if so.
+// In CLI mode, it also kills the subprocess so it respawns with the new persona.
+func (a *Actor) maybeReloadPersona(userID, chatID int64) {
+	if a.cfg.Personality.File == "" {
+		return
+	}
+	p, err := personality.Load(a.cfg.Personality.File)
+	if err != nil {
+		return // file unreadable, keep current
+	}
+	if a.persona != nil && p.ContentHash == a.persona.ContentHash {
+		return // unchanged
+	}
+	a.persona = p
+	slog.Info("personality hot-reloaded", "hash", p.ContentHash[:12], "chars", len(p.Content))
+	// In CLI mode, kill subprocess so it respawns with the new system prompt.
+	if a.cliMgr != nil {
+		a.cliMgr.Remove(userID, chatID)
+		slog.Info("cli: respawning for personality change", "user_id", userID)
+	}
+}
+
 func (a *Actor) Name() string { return "session" }
 
 // Run starts the session actor's event loop.
@@ -224,33 +265,171 @@ func (a *Actor) Run(ctx context.Context) error {
 	}()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case msg, ok := <-a.tg.Updates():
-			if !ok {
-				slog.Info("telegram updates channel closed, stopping session")
-				return nil
+		if a.active == nil {
+			// Idle: wait for the next message.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case msg, ok := <-a.tg.Updates():
+				if !ok {
+					slog.Info("telegram updates channel closed, stopping session")
+					return nil
+				}
+				a.dispatchMessage(ctx, msg)
+			case reaction := <-a.tg.Reactions():
+				a.handleReaction(reaction)
+			case cb := <-a.tg.Callbacks():
+				a.handleCallback(cb)
 			}
-			if err := a.handleMessage(ctx, msg); err != nil {
-				slog.Error("failed to handle message",
+		} else {
+			// Busy: one handleMessage in flight. Keep listening so /stop lands
+			// immediately; queue everything else until work completes.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-a.active.done:
+				a.active = nil
+				// Drain one queued message (if any) to start the next turn.
+				if len(a.pendingMsgs) > 0 {
+					next := a.pendingMsgs[0]
+					a.pendingMsgs = a.pendingMsgs[1:]
+					a.dispatchMessage(ctx, next)
+				}
+			case msg, ok := <-a.tg.Updates():
+				if !ok {
+					slog.Info("telegram updates channel closed, stopping session")
+					return nil
+				}
+				trimmed := strings.TrimSpace(msg.Text)
+				if trimmed == "/stop" || strings.HasPrefix(trimmed, "/stop ") {
+					a.stopActive(msg)
+					continue
+				}
+				if len(a.pendingMsgs) >= maxPendingMsgs {
+					dropped := a.pendingMsgs[0]
+					a.pendingMsgs = a.pendingMsgs[1:]
+					slog.Warn("session: queue full, dropping oldest pending message", "user_id", dropped.UserID)
+					a.trySend(telegram.OutgoingMessage{
+						ChatID: dropped.ChatID,
+						Text:   "I'm still working on an earlier request — dropped an older queued message to keep up.",
+					})
+				}
+				a.pendingMsgs = append(a.pendingMsgs, msg)
+			case reaction := <-a.tg.Reactions():
+				a.handleReaction(reaction)
+			case cb := <-a.tg.Callbacks():
+				a.handleCallback(cb)
+			}
+		}
+	}
+}
+
+// dispatchMessage routes a single telegram message. Claude-bound work is spawned
+// in a goroutine so /stop can cancel it from the Run loop. Fast commands still
+// run inline within the goroutine — they finish quickly and don't hold up much.
+func (a *Actor) dispatchMessage(ctx context.Context, msg telegram.IncomingMessage) {
+	// /stop in idle state: nothing to stop.
+	trimmed := strings.TrimSpace(msg.Text)
+	if trimmed == "/stop" || strings.HasPrefix(trimmed, "/stop ") {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   "Nothing to stop — I'm idle.",
+		})
+		return
+	}
+
+	workCtx, cancel := context.WithCancel(ctx)
+	work := &activeWork{
+		key:    userKey{UserID: msg.UserID, ChatID: msg.ChatID},
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	a.active = work
+
+	go func() {
+		defer close(work.done)
+		// Recover panics inside handleMessage. The supervisor only wraps the
+		// outer Run loop; without this, a panic in this goroutine would take
+		// down the whole process instead of surfacing as a handled error.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("session: panic in handleMessage",
 					"user_id", msg.UserID,
-					"err", err,
+					"chat_id", msg.ChatID,
+					"panic", r,
+					"stack", string(debug.Stack()),
 				)
 				a.trySend(telegram.OutgoingMessage{
 					ChatID: msg.ChatID,
 					Text:   "Sorry, something went wrong. Please try again.",
 				})
 			}
-		case reaction := <-a.tg.Reactions():
-			a.handleReaction(reaction)
-		case cb := <-a.tg.Callbacks():
-			a.handleCallback(cb)
+		}()
+		err := a.handleMessage(workCtx, msg)
+		// Suppress error reporting when the work was cancelled by /stop —
+		// the Run loop already sent a "Stopped." acknowledgement.
+		if workCtx.Err() != nil {
+			return
 		}
+		if err != nil {
+			slog.Error("failed to handle message",
+				"user_id", msg.UserID,
+				"err", err,
+			)
+			a.trySend(telegram.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text:   "Sorry, something went wrong. Please try again.",
+			})
+		}
+	}()
+}
+
+// stopActive cancels the in-flight work, kills its CLI subprocess (if any),
+// flushes the pending queue, and sends a confirmation to the user.
+func (a *Actor) stopActive(msg telegram.IncomingMessage) {
+	work := a.active
+	if work == nil {
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   "Nothing to stop — I'm idle.",
+		})
+		return
 	}
+	// Race: the handleMessage goroutine may have already completed between
+	// the last select fire and now. If work.done is already closed, the work
+	// finished normally — don't pretend we stopped something.
+	select {
+	case <-work.done:
+		a.trySend(telegram.OutgoingMessage{
+			ChatID: msg.ChatID,
+			Text:   "Already finished — nothing to stop.",
+		})
+		return
+	default:
+	}
+	work.cancel()
+	// Kill the CLI subprocess for this user — context cancel alone can't
+	// unblock a bufio.Scanner parked on stdout. GetOrCreate will respawn
+	// cleanly on the next message.
+	if a.cliMgr != nil {
+		a.cliMgr.Remove(work.key.UserID, work.key.ChatID)
+	}
+	// Drop any messages queued behind the cancelled turn — they belong to
+	// the same conversation context the user just abandoned.
+	if len(a.pendingMsgs) > 0 {
+		slog.Info("session: /stop dropped queued messages", "count", len(a.pendingMsgs))
+		a.pendingMsgs = a.pendingMsgs[:0]
+	}
+	a.trySend(telegram.OutgoingMessage{
+		ChatID: msg.ChatID,
+		Text:   "Stopped.",
+	})
 }
 
 func (a *Actor) handleMessage(ctx context.Context, msg telegram.IncomingMessage) error {
+	// Hot-reload personality if the file changed since last load.
+	a.maybeReloadPersona(msg.UserID, msg.ChatID)
+
 	// Handle /project command before any LLM interaction.
 	if strings.HasPrefix(msg.Text, "/project") {
 		return a.handleProjectCommand(msg)
@@ -1147,14 +1326,22 @@ func (ss *streamState) finalFlush() {
 func splitAtBoundary(text string) (first, remainder string) {
 	runes := []rune(text)
 	target := 3900
-	if target > len(runes) {
+	if target >= len(runes) {
 		return text, ""
 	}
 
-	// Search backward from target for a paragraph boundary (\n\n).
+	// Clamp the starting index so `runes[start]` is always valid. Callers in
+	// this package only invoke us when runeCount > 3900, but this defensive
+	// check keeps the function safe against future refactors.
+	start := target
+	if start >= len(runes) {
+		start = len(runes) - 1
+	}
+
+	// Search backward from start for a paragraph boundary (\n\n).
 	// Don't search too far back (keep at least 2000 runes in first part).
 	best := -1
-	for i := target; i >= 2000; i-- {
+	for i := start; i >= 2000; i-- {
 		if i < len(runes)-1 && runes[i] == '\n' && runes[i+1] == '\n' {
 			best = i
 			break
@@ -1162,7 +1349,7 @@ func splitAtBoundary(text string) (first, remainder string) {
 	}
 	if best < 0 {
 		// No paragraph boundary found. Try single newline.
-		for i := target; i >= 2000; i-- {
+		for i := start; i >= 2000; i-- {
 			if runes[i] == '\n' {
 				best = i
 				break
@@ -2518,21 +2705,17 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 					}
 				}
 				if hasCreateIssue {
-					owner := a.cfg.GitHub.Owner
-					repo := a.cfg.GitHub.Repo
-					if owner == "" {
-						owner = "jialuohu"
-					}
-					if repo == "" {
-						repo = "curlycatclaw"
-					}
+					owner := a.cfg.GitHub.OwnerOrDefault()
+					repo := a.cfg.GitHub.RepoOrDefault()
 					sb.WriteString("### Issue Creation from Telegram\n")
-					fmt.Fprintf(&sb, "When a user reports a bug or problem, call `capture_diagnostics` first, then create a GitHub issue using `create_issue` with owner=%q, repo=%q.\n", owner, repo)
-					sb.WriteString("Format the issue body: Description, Steps to Reproduce, Expected Behavior, Actual Behavior, Environment (from diagnostics output), Severity.\n")
-					fmt.Fprintf(&sb, "When a user requests a feature, create a GitHub issue with owner=%q, repo=%q using the feature request structure: Description, Use Case, Current Workaround, Proposed Solution.\n", owner, repo)
-					sb.WriteString("CRITICAL RULE — Issue creation requires user approval:\n")
+					sb.WriteString("Two cases — route issues to the right repo:\n\n")
+					fmt.Fprintf(&sb, "1. **Bugs or problems about curlycatclaw itself** (the agent misbehaving, wrong replies, crashes, broken tools, MCP issues, etc.): you MUST file to owner=%q, repo=%q. Do NOT ask the user which repo. Run `capture_diagnostics` first, then create the issue. Body format: Description, Steps to Reproduce, Expected Behavior, Actual Behavior, Environment (from diagnostics), Severity.\n", owner, repo)
+					fmt.Fprintf(&sb, "2. **Issues or PRs the user explicitly opens in their own projects** (they name a repo like `foo/bar` or say \"in my project X\"): use the repo the user named. This is legitimate third-party usage.\n\n")
+					sb.WriteString("If the intent is unclear (e.g. \"file this bug\" with no repo context), ask exactly once: \"Is this about curlycatclaw itself, or one of your projects?\" Do not guess.\n\n")
+					fmt.Fprintf(&sb, "For feature requests about curlycatclaw: same routing — owner=%q, repo=%q. Body format: Description, Use Case, Current Workaround, Proposed Solution.\n", owner, repo)
+					sb.WriteString("\nCRITICAL RULE — Issue creation requires user approval:\n")
 					sb.WriteString("1. Draft the full issue content (title + body)\n")
-					sb.WriteString("2. Show the complete draft to the user\n")
+					sb.WriteString("2. Show the complete draft to the user — the preview returned by the tool will always state the target repo; surface that too so the user can catch misdirection\n")
 					sb.WriteString("3. Ask: 'Does this look good? Should I submit it?'\n")
 					sb.WriteString("4. ONLY after the user says yes: call the issue tool with confirmed=true\n")
 					sb.WriteString("NEVER use gh CLI, Bash, curl, or any other method to create issues. ONLY use the MCP issue tool.\n")

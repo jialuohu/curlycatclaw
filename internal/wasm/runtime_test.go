@@ -277,6 +277,19 @@ func TestIsPrivateIP(t *testing.T) {
 		{"fe80::1", true},       // IPv6 link-local
 		{"fc00::1", true},       // IPv6 unique local
 		{"2607:f8b0:4004:800::200e", false}, // Google public IPv6
+		// Ranges added to close SSRF gaps:
+		{"0.0.0.0", true},          // "this network" — routes to localhost on Linux
+		{"0.1.2.3", true},          // still in 0.0.0.0/8
+		{"100.64.0.1", true},       // CGNAT (Tailscale)
+		{"100.127.255.255", true},  // last CGNAT address
+		{"100.128.0.1", false},     // just outside CGNAT
+		{"255.255.255.255", true},  // broadcast
+		{"224.0.0.1", true},        // multicast (via IsMulticast)
+		{"::", true},               // IPv6 unspecified
+		{"ff02::1", true},          // IPv6 multicast
+		{"192.0.2.1", true},        // TEST-NET-1 (documentation)
+		{"198.51.100.1", true},     // TEST-NET-2
+		{"203.0.113.1", true},      // TEST-NET-3
 	}
 
 	for _, tt := range tests {

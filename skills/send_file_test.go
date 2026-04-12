@@ -133,3 +133,80 @@ func TestSendFileSkill_SenderError(t *testing.T) {
 		t.Fatal("expected error when sender fails")
 	}
 }
+
+// TestSendFileSkill_DataURI_Decodes verifies the explicit data-URI path decodes
+// the base64 payload and drops the prefix.
+func TestSendFileSkill_DataURI_Decodes(t *testing.T) {
+	sender := &mockDocumentSender{}
+	skill := NewSendFileSkill(sender)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 42})
+	// "Hello!" encoded as base64 is "SGVsbG8h".
+	content := "data:text/plain;base64,SGVsbG8h"
+	input, _ := json.Marshal(sendFileInput{Filename: "greet.txt", Content: content})
+
+	if _, err := skill.Execute(ctx, input); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(sender.lastData) != "Hello!" {
+		t.Errorf("data = %q, want %q", string(sender.lastData), "Hello!")
+	}
+}
+
+// TestSendFileSkill_DataURI_InvalidBase64 verifies an explicit data-URI prefix
+// with broken base64 is rejected rather than silently shipping the garbage.
+func TestSendFileSkill_DataURI_InvalidBase64(t *testing.T) {
+	sender := &mockDocumentSender{}
+	skill := NewSendFileSkill(sender)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 42})
+	// Clearly broken base64 after the prefix.
+	input, _ := json.Marshal(sendFileInput{Filename: "x.png", Content: "data:image/png;base64,$$$not_base64$$$"})
+
+	_, err := skill.Execute(ctx, input)
+	if err == nil {
+		t.Fatal("expected error when data URI payload is not valid base64")
+	}
+}
+
+// TestSendFileSkill_ShortText_NotDecoded verifies short strings that happen to
+// pass base64 validation (e.g. "YWJj" = "abc") are NOT auto-decoded. Prior bug:
+// any 4-char base64-looking content was silently decoded and replaced.
+func TestSendFileSkill_ShortText_NotDecoded(t *testing.T) {
+	sender := &mockDocumentSender{}
+	skill := NewSendFileSkill(sender)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 42})
+	// "YWJj" is valid base64 for "abc" but is also a legitimate literal.
+	input, _ := json.Marshal(sendFileInput{Filename: "note.txt", Content: "YWJj"})
+
+	if _, err := skill.Execute(ctx, input); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(sender.lastData) != "YWJj" {
+		t.Errorf("data = %q, want %q (raw, not decoded)", string(sender.lastData), "YWJj")
+	}
+}
+
+// TestSendFileSkill_LongBase64_Decoded verifies raw base64 (no data URI prefix)
+// is still decoded when it's long enough and contains non-alphanum base64 chars.
+func TestSendFileSkill_LongBase64_Decoded(t *testing.T) {
+	sender := &mockDocumentSender{}
+	skill := NewSendFileSkill(sender)
+
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 42})
+	// 48+ chars, contains a '/', decodes to a PNG-like byte string.
+	// Payload: base64 of 48 bytes starting with the PNG magic header.
+	content := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+	input, _ := json.Marshal(sendFileInput{Filename: "dot.png", Content: content})
+
+	if _, err := skill.Execute(ctx, input); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sender.lastData) == len(content) {
+		t.Errorf("data was not decoded; len = %d equals raw content", len(sender.lastData))
+	}
+	if len(sender.lastData) == 0 {
+		t.Errorf("decoded data is empty")
+	}
+}

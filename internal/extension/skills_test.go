@@ -48,7 +48,7 @@ func setupTest(t *testing.T) (*Registry, *mockMCPAdder, *skills.Registry, []*ski
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
 	_ = reloadCalled
-	ss := InitExtensionSkills(reg, mcpMgr, skillReg, reloadFunc, nil, nil, nil)
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, reloadFunc, nil, nil, nil, nil)
 	return reg, mcpMgr, skillReg, ss
 }
 
@@ -92,7 +92,7 @@ func TestAddMCPExtensionStartFailure(t *testing.T) {
 	}
 	mcpMgr := &mockMCPAdder{addErr: errors.New("connection refused")}
 	skillReg := skills.NewRegistry()
-	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil)
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"broken","type":"mcp","command":"echo"}`
@@ -112,7 +112,7 @@ func TestAddMCPExtensionNilManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	skillReg := skills.NewRegistry()
-	ss := InitExtensionSkills(reg, nil, skillReg, nil, nil, nil, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, nil, nil, nil, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"remote","type":"mcp","command":"npx","args":["-y","mcp-server"]}`
@@ -350,14 +350,19 @@ func TestAddDuplicateExtension(t *testing.T) {
 
 // mockMCPHotReloader records hot-reload calls for testing.
 type mockMCPHotReloader struct {
-	connected     []string
-	disconnected  []string
+	connected      []string
+	disconnected   []string
 	oldCloserCalls int
-	connectErr    error
-	disconnectErr error
+	connectErr     error
+	disconnectErr  error
+	// connectFunc overrides default ConnectAndRegister behavior when non-nil.
+	connectFunc func() ([]string, func(), error)
 }
 
 func (m *mockMCPHotReloader) ConnectAndRegister(_ context.Context, ext *Extension) ([]string, func(), error) {
+	if m.connectFunc != nil {
+		return m.connectFunc()
+	}
 	if m.connectErr != nil {
 		return nil, nil, m.connectErr
 	}
@@ -382,7 +387,7 @@ func TestAddMCPExtensionHotReload(t *testing.T) {
 	}
 	skillReg := skills.NewRegistry()
 	hr := &mockMCPHotReloader{}
-	ss := InitExtensionSkills(reg, nil, skillReg, nil, hr, nil, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, nil, hr, nil, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"hot","type":"mcp","command":"echo"}`
@@ -408,7 +413,7 @@ func TestAddMCPExtensionHotReloadFallback(t *testing.T) {
 	hr := &mockMCPHotReloader{connectErr: errors.New("connection refused")}
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
-	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"fallback","type":"mcp","command":"echo"}`
@@ -434,7 +439,7 @@ func TestRemoveMCPExtensionHotReload(t *testing.T) {
 	hr := &mockMCPHotReloader{}
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
-	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, nil)
 
 	// Add first.
 	addSkill := findSkill(ss, "add_extension")
@@ -469,7 +474,7 @@ func TestRemoveMCPExtensionHotReloadFallback(t *testing.T) {
 	hr := &mockMCPHotReloader{disconnectErr: errors.New("session gone")}
 	reloadCalled := false
 	reloadFunc := func() { reloadCalled = true }
-	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil)
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, nil)
 
 	addSkill := findSkill(ss, "add_extension")
 	if _, err := addSkill.Execute(context.Background(), json.RawMessage(`{"name":"rm-fail","type":"mcp","command":"echo"}`)); err != nil {
@@ -650,6 +655,375 @@ func TestRemoveHTTPMCPExtension(t *testing.T) {
 	}
 	if reg.Get("rm-http") != nil {
 		t.Fatal("expected HTTP extension to be removed")
+	}
+}
+
+func TestAddHTTPMCPExtensionConnectionFailureGuidesManageService(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpMgr := &mockMCPAdder{addErr: errors.New("connection refused")}
+	skillReg := skills.NewRegistry()
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil, nil)
+	skill := findSkill(ss, "add_extension")
+
+	// HTTP extension that can't connect should NOT error — should return guidance.
+	input := `{"name":"unreachable","type":"mcp","transport":"http","url":"http://localhost:99999/mcp"}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("HTTP extension connection failure should not error, got: %v", err)
+	}
+	if !strings.Contains(result, "manage_service") {
+		t.Fatalf("expected manage_service guidance in response, got: %s", result)
+	}
+	if !strings.Contains(result, "not reachable") {
+		t.Fatalf("expected 'not reachable' message, got: %s", result)
+	}
+	// Extension should still be persisted (so it reconnects when server starts).
+	if reg.Get("unreachable") == nil {
+		t.Fatal("HTTP extension should be persisted even when connection fails")
+	}
+}
+
+func TestAddHTTPMCPExtensionAutoStartSuccess(t *testing.T) {
+	// API mode: mcpMgr first fails, autoStarter starts the service,
+	// retry succeeds. Tests the caller-layer auto-start recovery.
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpMgr := &mockMCPAdder{} // will override addErr dynamically
+	mcpMgr.addErr = errors.New("connection refused")
+	skillReg := skills.NewRegistry()
+
+	autoStartCalled := false
+	autoStarter := ServiceAutoStarter(func(_ context.Context, name string, _ *ServiceRegInfo) (string, error) {
+		autoStartCalled = true
+		// Simulate: service started successfully, now mcpMgr.AddServer succeeds.
+		mcpMgr.addErr = nil
+		return "started and healthy", nil
+	})
+
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil, autoStarter)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"auto-api","type":"mcp","transport":"http","url":"http://localhost:18060/mcp","image":"test/image","ports":{"18060":"18060"}}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("auto-start should recover from connection failure, got: %v", err)
+	}
+	if !autoStartCalled {
+		t.Fatal("expected autoStarter to be called")
+	}
+	if !strings.Contains(result, "auto-started") {
+		t.Fatalf("expected auto-started in message, got: %s", result)
+	}
+	if !strings.Contains(result, "immediately") {
+		t.Fatalf("expected tools to be immediately available after retry, got: %s", result)
+	}
+}
+
+func TestAddHTTPMCPExtensionCLIModeAutoStartSuccess(t *testing.T) {
+	// CLI mode: hot-reload initially fails (server down), autoStarter starts service,
+	// hot-reload retry succeeds. Tests the enhanceHTTPResult path.
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillReg := skills.NewRegistry()
+
+	connectAttempt := 0
+	hr := &mockMCPHotReloader{
+		connectFunc: func() ([]string, func(), error) {
+			connectAttempt++
+			if connectAttempt == 1 {
+				return nil, nil, errors.New("connection refused")
+			}
+			// Second attempt after auto-start: success.
+			return []string{"tool1", "tool2"}, nil, nil
+		},
+	}
+
+	autoStartCalled := false
+	autoStarter := ServiceAutoStarter(func(_ context.Context, name string, _ *ServiceRegInfo) (string, error) {
+		autoStartCalled = true
+		return "started", nil
+	})
+
+	reloadCalled := false
+	reloadFunc := func() { reloadCalled = true }
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, autoStarter)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"auto-cli","type":"mcp","transport":"http","url":"http://localhost:18060/mcp","image":"test/image","ports":{"18060":"18060"}}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("CLI mode auto-start should succeed, got: %v", err)
+	}
+	if !autoStartCalled {
+		t.Fatal("expected autoStarter to be called")
+	}
+	if !strings.Contains(result, "immediately") {
+		t.Fatalf("expected immediate tool availability after auto-start + hot-reload, got: %s", result)
+	}
+	// reloadFunc should be called for HTTP extensions (ensures next turn gets fresh tools).
+	if !reloadCalled {
+		t.Fatal("reloadFunc should always be called for HTTP extensions")
+	}
+}
+
+func TestAddHTTPMCPExtensionCLIModeAutoStartFailure(t *testing.T) {
+	// CLI mode: autoStarter fails. Should return guidance with manage_service steps.
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillReg := skills.NewRegistry()
+	hr := &mockMCPHotReloader{connectErr: errors.New("connection refused")}
+
+	autoStarter := ServiceAutoStarter(func(_ context.Context, name string, _ *ServiceRegInfo) (string, error) {
+		return "", fmt.Errorf("service %q not registered", name)
+	})
+
+	reloadCalled := false
+	reloadFunc := func() { reloadCalled = true }
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, autoStarter)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"fail-auto","type":"mcp","transport":"http","url":"http://localhost:18060/mcp","image":"test/image","ports":{"18060":"18060"}}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("CLI mode auto-start failure should not error, got: %v", err)
+	}
+	if !strings.Contains(result, "manage_service") {
+		t.Fatalf("expected manage_service guidance on auto-start failure, got: %s", result)
+	}
+	// reloadFunc should be called as fallback.
+	if !reloadCalled {
+		t.Fatal("reloadFunc should be called when auto-start fails")
+	}
+}
+
+func TestAddHTTPMCPExtensionCLIModeNoAutoStarter(t *testing.T) {
+	// CLI mode with no autoStarter (nil). HTTP extension should get generic guidance.
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillReg := skills.NewRegistry()
+	hr := &mockMCPHotReloader{connectErr: errors.New("connection refused")}
+
+	reloadCalled := false
+	reloadFunc := func() { reloadCalled = true }
+	// Pass nil autoStarter.
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, nil)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"no-auto","type":"mcp","transport":"http","url":"http://localhost:18060/mcp"}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("CLI mode without autoStarter should not error, got: %v", err)
+	}
+	if !strings.Contains(result, "not reachable") {
+		t.Fatalf("expected 'not reachable' generic guidance, got: %s", result)
+	}
+	if !strings.Contains(result, "Start the server manually") {
+		t.Fatalf("expected manual start guidance, got: %s", result)
+	}
+	if !reloadCalled {
+		t.Fatal("reloadFunc should be called (no auto-start to defer for)")
+	}
+}
+
+func TestAddHTTPMCPExtensionAutoRegisterAndStart(t *testing.T) {
+	// API mode: service not in catalog, image provided → auto-register → auto-start → retry → tools available.
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpMgr := &mockMCPAdder{}
+	mcpMgr.addErr = errors.New("connection refused")
+	skillReg := skills.NewRegistry()
+
+	registered := false
+	autoStarter := ServiceAutoStarter(func(_ context.Context, name string, regInfo *ServiceRegInfo) (string, error) {
+		if regInfo == nil || regInfo.Image == "" {
+			return "", fmt.Errorf("service %q not registered", name)
+		}
+		registered = true
+		// Simulate: registered + started, now connection succeeds.
+		mcpMgr.addErr = nil
+		return "registered and started", nil
+	})
+
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil, autoStarter)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"xhs","type":"mcp","transport":"http","url":"http://localhost:18060/mcp","image":"xpzouying/xiaohongshu-mcp","ports":{"18060":"18060"}}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("auto-register should succeed, got: %v", err)
+	}
+	if !registered {
+		t.Fatal("expected auto-register to be called with regInfo")
+	}
+	if !strings.Contains(result, "immediately") {
+		t.Fatalf("expected tools available immediately after auto-register + start, got: %s", result)
+	}
+	if !strings.Contains(result, "auto-started") {
+		t.Fatalf("expected auto-started message, got: %s", result)
+	}
+}
+
+func TestAddHTTPMCPExtensionAutoRegisterCLIMode(t *testing.T) {
+	// CLI mode: service not in catalog, image provided → auto-register → start → hot-reload retry → immediate tools.
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillReg := skills.NewRegistry()
+
+	connectAttempt := 0
+	hr := &mockMCPHotReloader{
+		connectFunc: func() ([]string, func(), error) {
+			connectAttempt++
+			if connectAttempt == 1 {
+				return nil, nil, errors.New("connection refused")
+			}
+			return []string{"xhs_search", "xhs_explore"}, nil, nil
+		},
+	}
+
+	registered := false
+	autoStarter := ServiceAutoStarter(func(_ context.Context, name string, regInfo *ServiceRegInfo) (string, error) {
+		if regInfo != nil && regInfo.Image != "" {
+			registered = true
+			return "registered and started", nil
+		}
+		return "", fmt.Errorf("service %q not registered", name)
+	})
+
+	reloadCalled := false
+	reloadFunc := func() { reloadCalled = true }
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, autoStarter)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"xhs-cli","type":"mcp","transport":"http","url":"http://localhost:18060/mcp","image":"xpzouying/xiaohongshu-mcp","ports":{"18060":"18060"}}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("CLI auto-register should succeed, got: %v", err)
+	}
+	if !registered {
+		t.Fatal("expected auto-register with image")
+	}
+	if !strings.Contains(result, "immediately") {
+		t.Fatalf("expected immediate tools after auto-register + hot-reload, got: %s", result)
+	}
+	if !reloadCalled {
+		t.Fatal("reloadFunc should always be called for HTTP extensions")
+	}
+}
+
+func TestAddHTTPMCPExtensionAutoRegisterFails(t *testing.T) {
+	// API mode: image provided but auto-register fails (e.g. ALLOWED_IMAGES rejection).
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpMgr := &mockMCPAdder{addErr: errors.New("connection refused")}
+	skillReg := skills.NewRegistry()
+
+	autoStarter := ServiceAutoStarter(func(_ context.Context, name string, regInfo *ServiceRegInfo) (string, error) {
+		return "", fmt.Errorf("auto-register service %q failed: image not allowed", name)
+	})
+
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil, autoStarter)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"blocked","type":"mcp","transport":"http","url":"http://localhost:18060/mcp","image":"evil/image"}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("register failure should return guidance not error, got: %v", err)
+	}
+	if !strings.Contains(result, "manage_service") {
+		t.Fatalf("expected manage_service guidance after register failure, got: %s", result)
+	}
+}
+
+func TestAddHTTPMCPExtensionAutoRegisterStartButUnreachable(t *testing.T) {
+	// CLI mode: register + start OK but MCP still unreachable after hot-reload retry.
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillReg := skills.NewRegistry()
+	hr := &mockMCPHotReloader{connectErr: errors.New("connection refused")}
+
+	autoStarter := ServiceAutoStarter(func(_ context.Context, name string, regInfo *ServiceRegInfo) (string, error) {
+		return "registered and started", nil
+	})
+
+	reloadCalled := false
+	reloadFunc := func() { reloadCalled = true }
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, autoStarter)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"unreachable-after-start","type":"mcp","transport":"http","url":"http://localhost:18060/mcp","image":"xpzouying/xiaohongshu-mcp"}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("should not error, got: %v", err)
+	}
+	// Service started but MCP still not reachable — should have companion service info.
+	if !strings.Contains(result, "auto-started") {
+		t.Fatalf("expected auto-started info in result, got: %s", result)
+	}
+	// Should NOT contain "immediately" since hot-reload retry failed.
+	if strings.Contains(result, "immediately") {
+		t.Fatal("should not claim immediate availability when MCP is still unreachable")
+	}
+	// Deferred reloadFunc should fire since auto-start didn't achieve immediate tools.
+	if !reloadCalled {
+		t.Fatal("reloadFunc should be called when hot-reload retry fails")
+	}
+}
+
+func TestAddHTTPMCPExtensionNoImageFallsBack(t *testing.T) {
+	// API mode: no image provided → existing guidance behavior (no auto-register).
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpMgr := &mockMCPAdder{addErr: errors.New("connection refused")}
+	skillReg := skills.NewRegistry()
+
+	autoStarter := ServiceAutoStarter(func(_ context.Context, name string, _ *ServiceRegInfo) (string, error) {
+		// No image → service not registered error.
+		return "", fmt.Errorf("service %q not registered", name)
+	})
+
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil, autoStarter)
+	skill := findSkill(ss, "add_extension")
+
+	// No image field with autoStarter present — should return validation error
+	// telling the bot to include the image field.
+	input := `{"name":"no-image","type":"mcp","transport":"http","url":"http://localhost:18060/mcp"}`
+	_, err = skill.Execute(context.Background(), json.RawMessage(input))
+	if err == nil {
+		t.Fatal("expected validation error for HTTP extension without image when autoStarter is present")
+	}
+	if !strings.Contains(err.Error(), "image") {
+		t.Fatalf("expected error about missing image field, got: %v", err)
 	}
 }
 

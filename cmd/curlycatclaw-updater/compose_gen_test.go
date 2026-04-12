@@ -277,6 +277,32 @@ func TestGenerateOverlayNoVolumesSection(t *testing.T) {
 	}
 }
 
+// TestYamlQuote_EscapesBackslashes is a regression test for a bug where
+// env values containing backslashes that ALSO triggered quoting (e.g. a
+// value with a space AND a backslash) were emitted with the backslash
+// unescaped. YAML-in-double-quotes interprets `\n` as a newline, so
+// `"foo \nbar"` would parse as "foo <newline>bar", corrupting the value.
+func TestYamlQuote_EscapesBackslashes(t *testing.T) {
+	// The space triggers quoting. The backslash must be doubled so YAML
+	// emits the literal `\n` (2 chars), not a newline.
+	got := yamlQuote(`foo \nbar`)
+	want := `"foo \\nbar"`
+	if got != want {
+		t.Errorf("yamlQuote(`foo \\nbar`) = %q, want %q", got, want)
+	}
+}
+
+// TestYamlQuote_EscapesQuotesAfterBackslashes verifies escape ordering:
+// backslash → \\ MUST happen before " → \", otherwise our own quote-escape
+// collides with the value's backslash.
+func TestYamlQuote_EscapesQuotesAfterBackslashes(t *testing.T) {
+	got := yamlQuote(`a\"b`)
+	want := `"a\\\"b"`
+	if got != want {
+		t.Errorf(`yamlQuote(a\"b) = %q, want %q`, got, want)
+	}
+}
+
 func TestGenerateOverlayAtomicWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "deep", "overlay.yml")

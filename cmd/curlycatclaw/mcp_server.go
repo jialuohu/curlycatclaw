@@ -247,19 +247,77 @@ func runMCPServer() error {
 				URL:       srv.URL,
 			})
 		}
-		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore, cfgServers) {
+		// Create update client early so we can wire auto-starter into extension skills.
+		var updateClient *update.Client
+		if cfg.Update.Enabled {
+			if secret := os.Getenv("UPDATER_SECRET"); secret != "" {
+				updateClient = update.NewClient(cfg.Update.UpdaterURL, secret)
+				slog.Info("mcp-server: update client initialized", "url", cfg.Update.UpdaterURL)
+			}
+		}
+
+		// Build auto-starter callback for HTTP MCP extensions.
+		var autoStarter extension.ServiceAutoStarter
+		if updateClient != nil {
+			autoStarter = func(ctx context.Context, name string, reg *extension.ServiceRegInfo) (string, error) {
+				// Check if service exists in the catalog.
+				st, err := updateClient.ServiceStatusCheck(ctx, name)
+				if err != nil {
+					// Service not in catalog. Auto-register if Docker image is provided.
+					if reg != nil && reg.Image != "" {
+						spec := update.ServiceSpec{
+							Name:  name,
+							Image: reg.Image,
+							Ports: reg.Ports,
+							Env:   reg.Env,
+						}
+						if regErr := updateClient.ServiceRegister(ctx, spec); regErr != nil {
+							return "", fmt.Errorf("auto-register service %q failed: %w", name, regErr)
+						}
+						slog.Info("extension: auto-registered companion service", "name", name, "image", reg.Image)
+					} else {
+						return "", fmt.Errorf("service %q not registered — use manage_service(action:\"register\") first", name)
+					}
+				} else if st.Status == "running" {
+					return "already running", nil
+				}
+				// Start the service.
+				if err := updateClient.ServiceStart(ctx, name); err != nil {
+					return "", fmt.Errorf("failed to start service %q: %w", name, err)
+				}
+				// Brief poll for readiness (5 attempts, 2s each).
+				for range 5 {
+					select {
+					case <-ctx.Done():
+						return "started (cancelled)", ctx.Err()
+					case <-time.After(2 * time.Second):
+					}
+					st, err = updateClient.ServiceStatusCheck(ctx, name)
+					if err == nil && st.Status == "running" && (st.Health == "healthy" || st.Health == "") {
+						if st.Health == "" {
+							return "started", nil
+						}
+						return fmt.Sprintf("started and %s", st.Health), nil
+					}
+				}
+				return "started (health check pending)", nil
+			}
+		}
+
+		for _, s := range extension.InitExtensionSkills(extReg, nil, reg, extReloadFunc, hotReloader, credStore, cfgServers, autoStarter) {
 			reg.Register(s)
+		}
+
+		// Register manage_service skill.
+		if updateClient != nil {
+			reg.Register(skills.NewManageServiceSkill(updateClient))
+			slog.Info("mcp-server: manage_service skill registered")
 		}
 	}
 
-	// Register manage_service skill (requires updater sidecar, same as main.go).
-	if cfg.Update.Enabled {
-		secret := os.Getenv("UPDATER_SECRET")
-		if secret != "" {
-			uc := update.NewClient(cfg.Update.UpdaterURL, secret)
-			reg.Register(skills.NewManageServiceSkill(uc))
-			slog.Info("mcp-server: manage_service skill registered", "url", cfg.Update.UpdaterURL)
-		}
+	// Register personality skills (no dependency on extension registry).
+	for _, s := range skills.InitPersonalitySkills(cfg.Personality.File) {
+		reg.Register(s)
 	}
 
 	// Semantic search (optional, requires Qdrant).
@@ -295,18 +353,87 @@ func runMCPServer() error {
 	// Load existing MCP extensions via the hot-reloader (same path used
 	// at runtime when add_extension is called). This unifies startup and
 	// runtime extension loading.
+	// Debug log file for MCP subprocess (stderr goes to Claude CLI, invisible in Docker logs).
+	dbgFile, _ := os.OpenFile("/data/mcp-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	dbgLog := func(msg string, args ...any) {
+		if dbgFile != nil {
+			fmt.Fprintf(dbgFile, "%s %s\n", time.Now().UTC().Format("15:04:05"), fmt.Sprintf(msg, args...))
+		}
+	}
+	defer func() {
+		if dbgFile != nil {
+			dbgFile.Close()
+		}
+	}()
+
 	var proxyToolCount int
 	if hotReloader != nil && extReg != nil {
 		defer hotReloader.CloseAll()
+		dbgLog("startup: %d MCP extensions found", len(extReg.ByType(extension.TypeMCP)))
+		// Connect MCP extensions at startup. HTTP extensions that fail
+		// are retried in the background (Docker service may still be starting).
+		var httpRetries []*extension.Extension
 		for _, ext := range extReg.ByType(extension.TypeMCP) {
+			dbgLog("connecting: %s transport=%s url=%s", ext.Name, ext.Transport, ext.URL)
 			if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
-				slog.Warn("mcp-server: failed to connect MCP extension",
-					"name", ext.Name, "err", err)
+				if ext.Transport == "http" {
+					dbgLog("FAILED http ext %s: %v", ext.Name, err)
+					slog.Info("mcp-server: HTTP extension not ready, will retry in background",
+						"name", ext.Name, "err", err)
+					httpRetries = append(httpRetries, ext)
+				} else {
+					slog.Warn("mcp-server: failed to connect MCP extension",
+						"name", ext.Name, "err", err)
+				}
 				continue
 			}
 			proxyToolCount += len(hotReloader.toolsFor(ext.Name))
+			dbgLog("OK proxying %s tools=%d", ext.Name, len(hotReloader.toolsFor(ext.Name)))
 			slog.Info("mcp-server: proxying MCP extension",
 				"name", ext.Name, "tools", len(hotReloader.toolsFor(ext.Name)))
+		}
+		// Retry failed HTTP extensions: one fast synchronous attempt (Docker service
+		// is usually already running from a previous turn), then background retries
+		// for services that are still starting up.
+		if len(httpRetries) > 0 {
+			dbgLog("fast retry: sleeping 2s for %d HTTP extensions", len(httpRetries))
+			time.Sleep(2 * time.Second)
+			var stillFailed []*extension.Extension
+			for _, ext := range httpRetries {
+				if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
+					slog.Info("mcp-server: HTTP extension fast retry failed, will retry in background",
+						"name", ext.Name, "err", err)
+					stillFailed = append(stillFailed, ext)
+					continue
+				}
+				proxyToolCount += len(hotReloader.toolsFor(ext.Name))
+				slog.Info("mcp-server: HTTP extension connected (fast retry)",
+					"name", ext.Name, "tools", len(hotReloader.toolsFor(ext.Name)))
+			}
+			// Background retries for services that are still starting.
+			if len(stillFailed) > 0 {
+				go func(retries []*extension.Extension) {
+					for attempt := range 3 {
+						time.Sleep(5 * time.Second)
+						var remaining []*extension.Extension
+						for _, ext := range retries {
+							if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
+								slog.Info("mcp-server: HTTP extension background retry failed",
+									"name", ext.Name, "attempt", attempt+1, "err", err)
+								remaining = append(remaining, ext)
+								continue
+							}
+							slog.Info("mcp-server: HTTP extension connected (background retry)",
+								"name", ext.Name, "attempt", attempt+1,
+								"tools", len(hotReloader.toolsFor(ext.Name)))
+						}
+						retries = remaining
+						if len(retries) == 0 {
+							break
+						}
+					}
+				}(stillFailed)
+			}
 		}
 	}
 
@@ -517,7 +644,7 @@ func (r *mcpHotReloader) ConnectHTTPAndRegister(ctx context.Context, srv config.
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: 60 * time.Second,
+		Timeout: 5 * time.Minute, // Generous timeout for heavy operations (browser automation, etc.)
 	}
 
 	transport := &mcp.StreamableClientTransport{
@@ -764,20 +891,32 @@ func registerProxyTool(server *mcp.Server, namespacedName string, tool *mcp.Tool
 		// When Claude calls create_issue without confirmed=true, return the draft
 		// content and ask Claude to show it to the user first.
 		if rawName == "create_issue" || rawName == "issue_write" {
+			owner, _ := input["owner"].(string)
+			repo, _ := input["repo"].(string)
+			target := fmt.Sprintf("%s/%s", owner, repo)
+			if owner == "" || repo == "" {
+				target = "<owner/repo MISSING — tool call is malformed>"
+			}
 			if confirmed, _ := input["confirmed"].(bool); !confirmed {
 				title, _ := input["title"].(string)
 				body, _ := input["body"].(string)
 				preview := fmt.Sprintf("[CONFIRMATION REQUIRED] This issue has NOT been created yet.\n\n"+
-					"Title: %s\n\nBody:\n%s\n\n"+
-					"ACTION: Display this draft to the user and ask 'Does this look good? Should I submit it?'\n"+
+					"Target: %s\nTitle: %s\n\nBody:\n%s\n\n"+
+					"ACTION: Display this draft to the user INCLUDING the Target repo line and ask 'Does this look good? Should I submit it?'\n"+
 					"When the user approves, call this SAME tool (%s) again with ALL the same parameters "+
-					"plus add \"confirmed\": true to the arguments. Do NOT use gh CLI or any other method.", title, body, rawName)
+					"plus add \"confirmed\": true to the arguments. Do NOT use gh CLI or any other method.", target, title, body, rawName)
 				return nil, skillOutput{Text: preview}, nil
 			}
+			slog.Info("mcp-server: create_issue submitting", "tool", rawName, "target", target)
 			delete(input, "confirmed") // strip before forwarding to GitHub
 		}
 
-		result, err := sess.CallTool(ctx, &mcp.CallToolParams{
+		// Use a generous timeout for proxied calls. The upstream MCP server
+		// may need time for heavy operations (e.g., launching a headless browser).
+		// The Claude CLI's default context timeout is too short for these.
+		callCtx, callCancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer callCancel()
+		result, err := sess.CallTool(callCtx, &mcp.CallToolParams{
 			Name:      rawName,
 			Arguments: input,
 		})

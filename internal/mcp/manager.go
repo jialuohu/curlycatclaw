@@ -233,6 +233,10 @@ func (m *Manager) Tools() []ToolDef {
 
 	var defs []ToolDef
 	for serverName, sc := range m.servers {
+		if sc == nil {
+			// AddServer reservation in progress — skip until startServer finishes.
+			continue
+		}
 		for _, t := range sc.tools {
 			schema, err := json.Marshal(t.InputSchema)
 			if err != nil {
@@ -286,6 +290,11 @@ func (m *Manager) CallTool(ctx context.Context, serverTool string, arguments map
 	if !exists {
 		return "", fmt.Errorf("mcp: unknown server %q", serverName)
 	}
+	if sc == nil {
+		// AddServer is mid-reservation — the session isn't live yet. Surface
+		// a retriable error rather than nil-dereferencing sc.session.
+		return "", fmt.Errorf("mcp: server %q is being added; retry after add completes", serverName)
+	}
 
 	result, err := sc.session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      rawTool,
@@ -337,6 +346,13 @@ func (m *Manager) RemoveServer(name string) error {
 	sc, exists := m.servers[name]
 	if !exists {
 		return fmt.Errorf("mcp: unknown server %q", name)
+	}
+	if sc == nil {
+		// AddServer is mid-reservation (allocated the slot but startServer
+		// hasn't completed yet). Refuse to remove rather than nil-dereferencing
+		// sc.session.Close(). The caller can retry after the AddServer call
+		// resolves.
+		return fmt.Errorf("mcp: server %q is being added concurrently; retry after add completes", name)
 	}
 	if err := sc.session.Close(); err != nil {
 		slog.Warn("mcp: error closing server during removal", "server", name, "error", err)

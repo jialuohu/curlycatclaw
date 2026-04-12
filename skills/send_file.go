@@ -2,9 +2,11 @@ package skills
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 // FileQueuer abstracts queuing a file for later delivery (MCP server mode).
@@ -32,7 +34,7 @@ type DocumentSender interface {
 func NewSendFileSkill(sender DocumentSender) *Skill {
 	return &Skill{
 		Name:        "send_file",
-		Description: "Queue a file for delivery to the user in Telegram. Pass the content directly as a string — do NOT write to disk first. The file is delivered after your response completes. Call this exactly once per file.",
+		Description: "Queue a file for delivery to the user in Telegram. Pass the content directly as a string — do NOT write to disk first. For binary files (images, PDFs), pass the base64-encoded content and it will be auto-decoded. The file is delivered after your response completes. Call this exactly once per file.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"filename":{"type":"string","description":"Name for the file (e.g. report.csv, code.go)"},"content":{"type":"string","description":"The full file content as a string. Pass it directly, do not use a file path."}},"required":["filename","content"]}`),
 		Execute:     makeSendFileExecute(sender),
 	}
@@ -68,6 +70,33 @@ func makeSendFileExecute(sender DocumentSender) func(ctx context.Context, input 
 		}
 
 		data := []byte(params.Content)
+
+		// Detect and decode base64-encoded binary content (e.g., PNG images from MCP tools).
+		// Data URI prefix ("data:image/png;base64,...") is an explicit signal — if it's
+		// present, the content MUST decode as base64 or we return an error rather than
+		// shipping a file that contains the garbage prefix.
+		content := params.Content
+		hasDataURI := false
+		if idx := strings.Index(content, ";base64,"); idx >= 0 {
+			content = content[idx+8:]
+			hasDataURI = true
+		}
+		decoded, decodeErr := base64.StdEncoding.DecodeString(strings.TrimSpace(content))
+		switch {
+		case hasDataURI && decodeErr != nil:
+			return "", fmt.Errorf("data URI content is not valid base64: %w", decodeErr)
+		case hasDataURI:
+			data = decoded
+		case decodeErr == nil && len(decoded) > 0:
+			// No data URI prefix — best-effort decode. Heuristic: only treat as
+			// base64 if it's long enough that accidental collision with plain
+			// text (e.g., a 4-char word like "YWJj" that happens to decode)
+			// is unlikely. 40 chars ≈ 30 bytes, enough to fit typical headers.
+			if len(strings.TrimSpace(content)) >= 40 {
+				data = decoded
+			}
+		}
+
 		if err := sender.SendDocument(user.ChatID, safeName, data, ""); err != nil {
 			return "", fmt.Errorf("send document: %w", err)
 		}

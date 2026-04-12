@@ -290,6 +290,11 @@ func run(configPath string) error {
 		skillReg.Register(skills.NewManageServiceSkill(updateClient))
 	}
 
+	// Register personality skills.
+	for _, s := range skills.InitPersonalitySkills(cfg.Personality.File) {
+		skillReg.Register(s)
+	}
+
 	// Warn if GitHub MCP is registered but in read-only mode (no create_issue).
 	if hasGitHubMCP(mcpMgr) && !hasGitHubWriteTools(mcpMgr) {
 		slog.Warn("GitHub MCP in read-only mode, issue creation disabled. Remove --read-only from GitHub MCP args to enable.")
@@ -357,7 +362,7 @@ func run(configPath string) error {
 			os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
 		}
 	}
-	for _, s := range extension.InitExtensionSkills(extReg, mcpMgr, skillReg, extReloadFunc, nil, credStore, nil) {
+	for _, s := range extension.InitExtensionSkills(extReg, mcpMgr, skillReg, extReloadFunc, nil, credStore, nil, nil) {
 		skillReg.Register(s)
 	}
 	slog.Info("extension registry loaded", "path", extRegistryPath, "count", len(extReg.All()))

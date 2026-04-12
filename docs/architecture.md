@@ -15,7 +15,7 @@
 │       │             ├──► Claude   │       Gmail│    gocron│    │
 │       │             │    Direct API (stream+tools) Obsidian    │
 │       │             │    OR CLI subprocess  Notion via MCP     │
-│       │             │    + /effort /retry /debug /update       │
+│       │             │    + /effort /retry /stop /debug /update │
 │       │             │             │                   ▼        │
 │       │             ├──► MCP Manager          Observations     │
 │       │             │    ├─ Config servers (gws, github)       │
@@ -63,7 +63,7 @@ Telegram ──► Channel Actor ──► Session Actor ──► Claude API (s
 
 Each tool round produces a distinct Telegram message. Text edits respect Telegram's 4096-char limit. Long responses split at paragraph boundaries, and code blocks are closed/reopened across splits so both messages render correctly. The `flushing` state flag prevents lock contention during Telegram I/O. Rate-limited HTML edits retry once to prevent raw markdown display.
 
-Thinking effort (`/effort low|medium|high|max`) controls extended thinking budget per request. In direct API mode, `high` and `max` enable `ThinkingConfigParamOfEnabled` with 10K/32K token budgets. Thinking block signatures are preserved in conversation history for multi-turn tool calls. `/retry` replays the last message at a different effort level (one-shot). `/debug on|off` toggles tool call visibility.
+Thinking effort (`/effort low|medium|high|max`) controls extended thinking budget per request. In direct API mode, `high` and `max` enable `ThinkingConfigParamOfEnabled` with 10K/32K token budgets. Thinking block signatures are preserved in conversation history for multi-turn tool calls. `/retry` replays the last message at a different effort level (one-shot). `/stop` cancels the in-flight turn (cancels the Claude context, kills the CLI subprocess, flushes the queued messages) and responds with "Stopped." Pending messages received while a turn is in flight are queued (cap 10, drop-oldest) and drained in order once the turn completes. `/debug on|off` toggles tool call visibility.
 
 ## Memory System
 

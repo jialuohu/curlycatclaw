@@ -404,10 +404,8 @@ func (w *WasmRuntime) hostHTTPGet(ctx context.Context, mod api.Module, manifest 
 					return nil, err
 				}
 				for _, ip := range ips {
-					for _, n := range privateIPNets {
-						if n.Contains(ip.IP) {
-							return nil, fmt.Errorf("connection to private IP blocked: %s", ip.IP)
-						}
+					if ipIsBlocked(ip.IP) {
+						return nil, fmt.Errorf("connection to private IP blocked: %s", ip.IP)
 					}
 				}
 				// Connect to the first resolved IP directly to prevent re-resolution.
@@ -943,16 +941,28 @@ func userScopedTableAccessed(query string) bool {
 
 // privateIPNets contains CIDR ranges for private/internal networks.
 // Requests to these ranges are blocked to prevent SSRF attacks from Wasm plugins.
+// This complements Go's built-in IP classifier methods (IsLoopback, IsPrivate,
+// IsLinkLocalUnicast, IsUnspecified, IsMulticast) used in ipIsBlocked below —
+// we keep explicit CIDRs for ranges those methods don't cover (CGNAT, broadcast,
+// test-net).
 var privateIPNets = func() []*net.IPNet {
 	cidrs := []string{
-		"127.0.0.0/8",    // loopback
-		"10.0.0.0/8",     // RFC 1918
-		"172.16.0.0/12",  // RFC 1918
-		"192.168.0.0/16", // RFC 1918
-		"169.254.0.0/16", // link-local
-		"::1/128",        // IPv6 loopback
-		"fc00::/7",       // IPv6 unique local
-		"fe80::/10",      // IPv6 link-local
+		"0.0.0.0/8",         // "this network" — routes to localhost on Linux
+		"127.0.0.0/8",       // loopback (also covered by IsLoopback)
+		"10.0.0.0/8",        // RFC 1918 (also covered by IsPrivate)
+		"172.16.0.0/12",     // RFC 1918
+		"192.168.0.0/16",    // RFC 1918
+		"100.64.0.0/10",     // CGNAT (Tailscale default subnet)
+		"169.254.0.0/16",    // link-local (also covered by IsLinkLocalUnicast)
+		"192.0.0.0/24",      // IETF Protocol Assignments
+		"192.0.2.0/24",      // TEST-NET-1
+		"198.18.0.0/15",     // benchmarking
+		"198.51.100.0/24",   // TEST-NET-2
+		"203.0.113.0/24",    // TEST-NET-3
+		"255.255.255.255/32", // broadcast
+		"::1/128",           // IPv6 loopback
+		"fc00::/7",          // IPv6 unique local
+		"fe80::/10",         // IPv6 link-local
 	}
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, cidr := range cidrs {
@@ -962,16 +972,30 @@ var privateIPNets = func() []*net.IPNet {
 	return nets
 }()
 
+// ipIsBlocked returns true if ip is in a private/internal range, is unspecified
+// (0.0.0.0 / ::), or is multicast. Uses Go's built-in classifiers where possible
+// and falls back to the explicit privateIPNets for ranges the stdlib doesn't cover.
+func ipIsBlocked(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsUnspecified() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
+		return true
+	}
+	for _, n := range privateIPNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // isPrivateIP returns true if the given hostname resolves to a private/internal IP.
 func isPrivateIP(hostname string) bool {
 	// Direct IP check (no DNS lookup needed).
 	if ip := net.ParseIP(hostname); ip != nil {
-		for _, n := range privateIPNets {
-			if n.Contains(ip) {
-				return true
-			}
-		}
-		return false
+		return ipIsBlocked(ip)
 	}
 	// Hostname: resolve and check all IPs.
 	addrs, err := net.LookupHost(hostname)
@@ -979,14 +1003,8 @@ func isPrivateIP(hostname string) bool {
 		return false // can't resolve, let the HTTP call fail naturally
 	}
 	for _, addr := range addrs {
-		ip := net.ParseIP(addr)
-		if ip == nil {
-			continue
-		}
-		for _, n := range privateIPNets {
-			if n.Contains(ip) {
-				return true
-			}
+		if ip := net.ParseIP(addr); ip != nil && ipIsBlocked(ip) {
+			return true
 		}
 	}
 	return false

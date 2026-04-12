@@ -690,13 +690,17 @@ func TestListReminders_CronTag(t *testing.T) {
 
 // mockCronRunner is a test double for CronRunner.
 type mockCronRunner struct {
-	result string
-	err    error
-	called bool
+	result      string
+	err         error
+	called      bool
+	gotPrompt   string
+	gotSchedule time.Time
 }
 
-func (m *mockCronRunner) Execute(_ context.Context, _, _ int64, _, _ string) (string, error) {
+func (m *mockCronRunner) Execute(_ context.Context, _, _ int64, prompt, _ string, scheduledAt time.Time) (string, error) {
 	m.called = true
+	m.gotPrompt = prompt
+	m.gotSchedule = scheduledAt
 	return m.result, m.err
 }
 
@@ -739,6 +743,14 @@ func TestFireCronTask_Success(t *testing.T) {
 
 	if !mock.called {
 		t.Error("CronRunner.Execute was not called")
+	}
+	// Regression: the scheduled fire time must be plumbed through so the cron
+	// system prompt can reference the intended time, not the lagged wall time.
+	if mock.gotSchedule.IsZero() {
+		t.Error("CronRunner.Execute called with zero scheduledAt — fire_at must be propagated")
+	}
+	if diff := mock.gotSchedule.Sub(fireAt); diff < -time.Second || diff > time.Second {
+		t.Errorf("scheduledAt = %v, want close to fire_at %v (diff %v)", mock.gotSchedule, fireAt, diff)
 	}
 
 	cancel()

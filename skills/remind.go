@@ -19,8 +19,10 @@ import (
 // CronRunner executes a prompt through Claude with clean context.
 // Implemented by session.CronExecutor; defined here to avoid circular imports.
 // model is optional: if non-empty, it overrides the default model for this execution.
+// scheduledAt is the time the task was scheduled to fire (may differ from wall time if
+// execution lagged) so Claude can reference the intended time, not the lagged one.
 type CronRunner interface {
-	Execute(ctx context.Context, userID, chatID int64, prompt, model string) (string, error)
+	Execute(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error)
 }
 
 // InitRemindSkills creates the reminders table (if not exists) and returns
@@ -486,7 +488,7 @@ func (ra *ReminderActor) fireCronTask(r reminderRow) {
 	if r.Model != nil {
 		cronModel = *r.Model
 	}
-	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt, cronModel)
+	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt, cronModel, r.FireAt)
 	if err != nil {
 		slog.Error("reminder: cron task failed", "id", r.ID, "err", err)
 		errMsg := telegram.OutgoingMessage{

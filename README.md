@@ -28,7 +28,7 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - 🔌 **Extensible** -- Google Workspace (multi-account with per-account service filtering), GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, file delivery, all manageable from chat
 
-- 🧪 **Thinking effort control** -- configure Claude's reasoning depth (`/effort low|medium|high|max`), replay messages at higher effort (`/retry`), extended thinking with budget presets, per-session override via Telegram
+- 🧪 **Thinking effort control** -- configure Claude's reasoning depth (`/effort low|medium|high|max`), replay messages at higher effort (`/retry`), stop in-flight work with `/stop`, extended thinking with budget presets, per-session override via Telegram
 
 - ⏰ **Cron tasks** -- scheduled prompts through Claude with full tool access, per-reminder model selection
 
@@ -76,7 +76,7 @@ Message your bot. Done. See [Docker Deployment](docs/docker.md) for dev builds, 
 │       │             ├──► Claude   │       Gmail│    gocron│    │
 │       │             │    Direct API (stream+tools) Obsidian    │
 │       │             │    OR CLI subprocess  Notion via MCP     │
-│       │             │    + /effort /retry /debug /update       │
+│       │             │    + /effort /retry /stop /debug /update │
 │       │             │             │                   ▼        │
 │       │             ├──► MCP Manager          Observations     │
 │       │             │    ├─ Config servers (gws, github)       │
