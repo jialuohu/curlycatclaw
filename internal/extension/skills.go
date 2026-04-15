@@ -149,6 +149,26 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				args = parts[1:]
 			}
 
+			// Strip shell-style surrounding quotes. LLMs often copy args
+			// from shell examples like `uvx --from 'git+https://...' foo`
+			// and pass `'git+https://...'` with literal quote characters,
+			// which then break argv parsers (uvx, npm, etc.). Only strip
+			// matched pairs so legitimate embedded quotes aren't mangled.
+			// Applied to every user-supplied string field for consistency:
+			// the same shell-copy mistake can hit env values, URLs, and
+			// header values just as easily as args.
+			cmd = stripSurroundingQuotes(cmd)
+			for i, a := range args {
+				args[i] = stripSurroundingQuotes(a)
+			}
+			params.URL = stripSurroundingQuotes(params.URL)
+			for k, v := range params.Env {
+				params.Env[k] = stripSurroundingQuotes(v)
+			}
+			for k, v := range params.Headers {
+				params.Headers[k] = stripSurroundingQuotes(v)
+			}
+
 			ext := Extension{
 				Name:        params.Name,
 				Type:        params.Type,
@@ -174,13 +194,15 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 
 			switch params.Type {
 			case TypeMCP:
-				// For HTTP extensions with autoStarter in CLI mode, defer reloadFunc
-				// so auto-start can try hot-reload first (avoids redundant subprocess restart).
-				effectiveReload := reloadFunc
-				if ext.Transport == "http" && autoStarter != nil && mcpMgr == nil {
-					effectiveReload = nil
-				}
-				result, err := addMCPExtension(ctx, reg, mcpMgr, effectiveReload, hotReloader, ext)
+				// Always pass reloadFunc through to addMCPExtension. The
+				// previous "defer for HTTP+autoStarter" optimization was
+				// based on a wrong assumption — that Claude CLI would pick
+				// up tools via tools/list_changed mid-session and save us a
+				// subprocess restart. It doesn't. A respawn is required on
+				// every successful add_extension, period. Letting
+				// addMCPExtension fire reloadFunc means one code path owns
+				// the "mark respawn needed" decision.
+				result, err := addMCPExtension(ctx, reg, mcpMgr, reloadFunc, hotReloader, ext)
 				if err != nil && ext.Transport == "http" && isMCPConnectionError(err) {
 					// HTTP extension failed to connect (server not running).
 					// Try auto-start and retry. autoStarter is nil in main.go today.
@@ -203,23 +225,16 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 				if err != nil {
 					return result, err
 				}
-				// CLI mode: for HTTP extensions, always fire reloadFunc so the next
-				// message gets a fresh CLI subprocess with the extension loaded at
-				// startup. Hot-reload adds tools to the current MCP subprocess, but
-				// the Claude CLI's tool list may be stale (no re-fetch after
-				// tools/list_changed notification during a turn).
-				if mcpMgr == nil && ext.Transport == "http" {
-					if !strings.Contains(result, "immediately") {
-						var regInfo *ServiceRegInfo
-						if ext.Image != "" {
-							regInfo = &ServiceRegInfo{Image: ext.Image, Ports: ext.Ports, Env: ext.Env}
-						}
-						result = enhanceHTTPResult(ctx, ext, autoStarter, hotReloader, regInfo, result)
+				// CLI mode HTTP: if hot-reload failed (server unreachable),
+				// try auto-start + retry via enhanceHTTPResult. reloadFunc
+				// already fired inside addMCPExtension for both success and
+				// failure paths, so no additional reload is needed here.
+				if mcpMgr == nil && ext.Transport == "http" && strings.Contains(result, "hot-reload failed") {
+					var regInfo *ServiceRegInfo
+					if ext.Image != "" {
+						regInfo = &ServiceRegInfo{Image: ext.Image, Ports: ext.Ports, Env: ext.Env}
 					}
-					// Always reload for HTTP extensions so the next turn has tools at startup.
-					if reloadFunc != nil {
-						reloadFunc()
-					}
+					result = enhanceHTTPResult(ctx, ext, autoStarter, hotReloader, regInfo, result)
 				}
 				return result, nil
 			case TypeExec:
@@ -231,6 +246,19 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 			}
 		},
 	}
+}
+
+// stripSurroundingQuotes removes a matched pair of single or double quotes
+// wrapping s. Returns s unchanged if not wrapped in a matched pair.
+func stripSurroundingQuotes(s string) string {
+	if len(s) < 2 {
+		return s
+	}
+	first, last := s[0], s[len(s)-1]
+	if (first == '\'' && last == '\'') || (first == '"' && last == '"') {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 // errMCPServerStart wraps connection errors from AddServer so the caller
@@ -282,7 +310,20 @@ func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reload
 		return fmt.Sprintf("Extension %q added (MCP server). Tools are available immediately.", ext.Name), nil
 	}
 
-	// CLI subprocess mode: try hot-reload first, fall back to subprocess restart.
+	// CLI subprocess mode: hot-reload registers the tools on the MCP proxy
+	// server immediately, but Claude CLI caches its tool list at MCP
+	// initialize time and does NOT refresh it when the server emits
+	// notifications/tools/list_changed mid-session. Without respawning the
+	// CLI subprocess, the agent literally cannot see the new tools — it
+	// will do ToolSearch, fail to find them, and fall back to Bash.
+	// Therefore we ALWAYS fire reloadFunc after attempting hot-reload, so
+	// the next user message spawns a fresh CLI that picks up the extension
+	// at initialize. Hot-reload itself is still useful: it exercises the
+	// extension's connection and returns the real tool list for the agent's
+	// success message, and it arms the proxy server so the fresh CLI gets
+	// its tools during the async load-proxy-upstreams phase.
+	var hotReloadErr error
+	var hotReloadTools []string
 	if hotReloader != nil {
 		toolDescs, oldCloser, err := hotReloader.ConnectAndRegister(ctx, &ext)
 		if err == nil {
@@ -290,20 +331,41 @@ func addMCPExtension(ctx context.Context, reg *Registry, mcpMgr MCPAdder, reload
 				oldCloser()
 			}
 			slog.Info("extension: MCP server hot-reloaded", "name", ext.Name, "tools", len(toolDescs))
-			msg := fmt.Sprintf("Extension %q added (MCP server). Tools are available immediately", ext.Name)
-			if len(toolDescs) > 0 {
-				msg += ": " + strings.Join(toolDescs, ", ")
-			}
-			return msg + ".", nil
+			hotReloadTools = toolDescs
+		} else {
+			hotReloadErr = err
+			slog.Warn("extension: hot-reload failed, will retry on subprocess restart",
+				"name", ext.Name, "err", err)
 		}
-		slog.Warn("extension: hot-reload failed, falling back to subprocess restart",
-			"name", ext.Name, "err", err)
 	}
 
 	if reloadFunc != nil {
 		reloadFunc()
 	}
+
+	// Success: hot-reload connected, tools are known, CLI respawn is queued.
+	if hotReloadTools != nil {
+		slog.Info("extension: MCP server added (CLI mode, reload queued)",
+			"name", ext.Name, "tools", len(hotReloadTools))
+		msg := fmt.Sprintf("Extension %q registered. %d tool(s) will be available on your next message",
+			ext.Name, len(hotReloadTools))
+		if len(hotReloadTools) > 0 {
+			msg += ": " + strings.Join(hotReloadTools, ", ")
+		}
+		return msg + ".", nil
+	}
+
 	slog.Info("extension: MCP server added (CLI mode, pending reload)", "name", ext.Name, "transport", ext.Transport, "command", ext.Command, "url", ext.URL)
+	// Surface hot-reload errors so the caller knows the install is likely
+	// broken (e.g. bad args/URL) vs merely delayed by a transient issue.
+	// Persisted-to-disk means the extension will be retried on next spawn,
+	// but if the underlying command is bad, every retry will fail the same
+	// way — the agent needs the error to decide whether to remove + re-add.
+	if hotReloadErr != nil {
+		return fmt.Sprintf(
+			"Extension %q persisted, but hot-reload failed: %v. Subprocess will respawn on next message and retry with the same configuration. If this looks like a bad command/URL/args, call remove_extension and re-add with corrections.",
+			ext.Name, hotReloadErr), nil
+	}
 	return fmt.Sprintf("Extension %q added (MCP server). Tools will be available on the next message.", ext.Name), nil
 }
 

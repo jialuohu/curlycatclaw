@@ -128,6 +128,147 @@ func TestAddMCPExtensionNilManager(t *testing.T) {
 	}
 }
 
+func TestStripSurroundingQuotes(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"a", "a"},
+		{"''", ""},
+		{"\"\"", ""},
+		{"'foo'", "foo"},
+		{"\"foo\"", "foo"},
+		{"'git+https://example.com/repo'", "git+https://example.com/repo"},
+		{"'mismatched\"", "'mismatched\""},   // different quotes — don't strip
+		{"no quotes here", "no quotes here"}, // unchanged
+		{"'inner 'quote' inside'", "inner 'quote' inside"},
+	}
+	for _, c := range cases {
+		if got := stripSurroundingQuotes(c.in); got != c.want {
+			t.Errorf("stripSurroundingQuotes(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestAddMCPExtension_StripsShellStyleQuotedArgs covers a real mistake an
+// agent made: passing args with literal single-quote characters copied from
+// a shell example (`uvx --from 'git+https://...' pkg`). Without the strip,
+// uvx receives `'git+https:/...'` with quotes as part of the URL and fails
+// with "Distribution not found at: file:///'git+https:/...'" — silently,
+// because the persisted extension then fails to hot-reload on every spawn.
+func TestAddMCPExtension_StripsShellStyleQuotedArgs(t *testing.T) {
+	reg, _, _, ss := setupTest(t)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"paper-search-mcp","type":"mcp","command":"uvx","args":["--from","'git+https://github.com/openags/paper-search-mcp'","paper-search-mcp"]}`
+	if _, err := skill.Execute(context.Background(), json.RawMessage(input)); err != nil {
+		t.Fatal(err)
+	}
+	ext := reg.Get("paper-search-mcp")
+	if ext == nil {
+		t.Fatal("extension not persisted")
+	}
+	// The quoted git URL should have its surrounding quotes stripped so uvx
+	// can parse it as a real distribution reference.
+	wantArgs := []string{"--from", "git+https://github.com/openags/paper-search-mcp", "paper-search-mcp"}
+	if len(ext.Args) != len(wantArgs) {
+		t.Fatalf("args length = %d, want %d: %v", len(ext.Args), len(wantArgs), ext.Args)
+	}
+	for i := range wantArgs {
+		if ext.Args[i] != wantArgs[i] {
+			t.Errorf("ext.Args[%d] = %q, want %q", i, ext.Args[i], wantArgs[i])
+		}
+	}
+}
+
+// TestAddMCPExtension_StripsQuotesOnAllFields covers the broader form of
+// the same class of LLM mistake: shell-quoted values in env, url, or
+// headers. URLs get URL-parsed, env values are passed to subprocesses as
+// opaque strings, headers go over HTTP — every one of them breaks or
+// silently misbehaves with literal wrapping quotes.
+func TestAddMCPExtension_StripsQuotesOnAllFields(t *testing.T) {
+	reg, _, _, ss := setupTest(t)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{
+		"name": "http-ext",
+		"type": "mcp",
+		"transport": "http",
+		"url": "'http://localhost:8080/mcp'",
+		"headers": {"Authorization": "\"Bearer sk-abc\""},
+		"env": {"API_KEY": "'secret-value'"}
+	}`
+	if _, err := skill.Execute(context.Background(), json.RawMessage(input)); err != nil {
+		// HTTP extensions without auto-starter fail on connect, but the
+		// persisted record is what we're checking. reg.Add fires before
+		// the connect attempt.
+		t.Logf("execute returned (expected for unreachable http): %v", err)
+	}
+	ext := reg.Get("http-ext")
+	if ext == nil {
+		t.Fatal("extension not persisted")
+	}
+	if ext.URL != "http://localhost:8080/mcp" {
+		t.Errorf("URL = %q, want stripped", ext.URL)
+	}
+	if ext.Headers["Authorization"] != "Bearer sk-abc" {
+		t.Errorf("Authorization header = %q, want stripped", ext.Headers["Authorization"])
+	}
+	if ext.Env["API_KEY"] != "secret-value" {
+		t.Errorf("API_KEY env = %q, want stripped", ext.Env["API_KEY"])
+	}
+}
+
+// fakeHotReloader fails ConnectAndRegister with a fixed error. Used to
+// simulate the real-world scenario where a persisted extension's command
+// can't actually launch (bad args, missing binary, unreachable URL, etc.).
+type fakeHotReloader struct{ err error }
+
+func (f *fakeHotReloader) ConnectAndRegister(context.Context, *Extension) ([]string, func(), error) {
+	return nil, nil, f.err
+}
+func (f *fakeHotReloader) DisconnectAndUnregister(string) error { return nil }
+
+// TestAddMCPExtension_CLIMode_SurfacesHotReloadError ensures an agent who
+// mis-formed an extension's args sees the underlying error (not a cheerful
+// "tools will be available on the next message" lie). Regression: we used
+// to swallow the ConnectAndRegister error into slog and return success.
+// That made silent install failures look identical to slow-but-fine ones.
+func TestAddMCPExtension_CLIMode_SurfacesHotReloadError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillReg := skills.NewRegistry()
+	reloadCalled := false
+	reloadFunc := func() { reloadCalled = true }
+	hr := &fakeHotReloader{err: errors.New("uvx: Distribution not found")}
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, nil)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"bad","type":"mcp","command":"uvx","args":["--bogus"]}`
+	result, err := skill.Execute(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("unexpected tool-level error: %v", err)
+	}
+	// Extension must still be persisted (so a restart can retry if it was
+	// transient) and reloadFunc must fire.
+	if reg.Get("bad") == nil {
+		t.Fatal("extension should be persisted even when hot-reload fails")
+	}
+	if !reloadCalled {
+		t.Fatal("reloadFunc should be called so the subprocess respawns")
+	}
+	// The real error must appear in the message the agent sees.
+	if !strings.Contains(result, "uvx: Distribution not found") {
+		t.Errorf("result should surface hot-reload error, got: %s", result)
+	}
+	if strings.Contains(result, "immediately") {
+		t.Errorf("result must not claim immediate availability on failure, got: %s", result)
+	}
+}
+
 func TestAddExecExtension(t *testing.T) {
 	reg, _, skillReg, ss := setupTest(t)
 	skill := findSkill(ss, "add_extension")
@@ -387,7 +528,9 @@ func TestAddMCPExtensionHotReload(t *testing.T) {
 	}
 	skillReg := skills.NewRegistry()
 	hr := &mockMCPHotReloader{}
-	ss := InitExtensionSkills(reg, nil, skillReg, nil, hr, nil, nil, nil)
+	reloadCalled := false
+	reloadFunc := func() { reloadCalled = true }
+	ss := InitExtensionSkills(reg, nil, skillReg, reloadFunc, hr, nil, nil, nil)
 	skill := findSkill(ss, "add_extension")
 
 	input := `{"name":"hot","type":"mcp","command":"echo"}`
@@ -395,11 +538,21 @@ func TestAddMCPExtensionHotReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "immediately") {
-		t.Fatalf("expected immediate availability, got: %s", result)
+	// Hot-reload success + reload queued for next turn. The message must
+	// tell the truth: Claude CLI won't see these tools until the subprocess
+	// respawns, so "immediately" is a lie and we stopped saying it.
+	if !strings.Contains(result, "next message") {
+		t.Fatalf("expected next-message availability, got: %s", result)
 	}
 	if len(hr.connected) != 1 || hr.connected[0] != "hot" {
 		t.Fatalf("expected ConnectAndRegister called with 'hot', got: %v", hr.connected)
+	}
+	// Regression: reloadFunc MUST fire on success so the CLI respawns.
+	// Without this, tools stay invisible to the agent across every turn
+	// until a container restart — which is exactly what broke the
+	// paper-search-mcp end-to-end test on 2026-04-13.
+	if !reloadCalled {
+		t.Fatal("reloadFunc must fire on hot-reload success so next turn has fresh tool list")
 	}
 }
 
@@ -446,6 +599,10 @@ func TestRemoveMCPExtensionHotReload(t *testing.T) {
 	if _, err := addSkill.Execute(context.Background(), json.RawMessage(`{"name":"rm-hot","type":"mcp","command":"echo"}`)); err != nil {
 		t.Fatal(err)
 	}
+	// add_extension intentionally queues a reload so the agent's tool list
+	// picks up new tools on its next turn. Reset here so we can observe
+	// reload behavior from the remove step in isolation.
+	reloadCalled = false
 
 	// Remove.
 	removeSkill := findSkill(ss, "remove_extension")
@@ -460,7 +617,7 @@ func TestRemoveMCPExtensionHotReload(t *testing.T) {
 		t.Fatalf("expected DisconnectAndUnregister called, got: %v", hr.disconnected)
 	}
 	if reloadCalled {
-		t.Fatal("reloadFunc should not be called when hot-reload succeeds")
+		t.Fatal("reloadFunc should not be called when remove's hot-unload succeeds")
 	}
 }
 

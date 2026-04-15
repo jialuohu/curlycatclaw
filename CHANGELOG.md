@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.36.5] - 2026-04-15
+
+### Fixed
+- **`add_extension` tools never visible to the agent**: After installing a new stdio MCP extension via `add_extension`, tools would register successfully on the proxy server but stay invisible in the agent's tool list, forcing it to fall back to Bash/Python shims. Two bugs in combination: (1) the `loadProxyUpstreams` startup ran asynchronously, racing Claude CLI's initial `tools/list` request — Claude CLI caches that first response and ignores `notifications/tools/list_changed` mid-session; (2) successful hot-reloads didn't fire `reloadFunc`, so even across turns the CLI subprocess kept its stale tool list. Now `loadProxyUpstreams` runs synchronously with parallel fanout (per-upstream 15s timeout, total wall time bounded by the slowest upstream instead of the sum), and every successful `add_extension` queues a respawn so the next message gets a fresh tool list.
+- **`add_extension` succeeded silently when the args were actually broken**: Hot-reload failures (e.g., a bad `--from` URL) were swallowed into a log warning and the tool returned the cheerful "tools available next message" fallback. The agent thought the install worked; it never did. The failure path now surfaces the underlying error in the tool result so the agent can call `remove_extension` and retry with corrections.
+- **Shell-style quoted args broke `uvx`/`npx` installs**: Agents frequently copy args from shell examples like `uvx --from 'git+https://...' foo` and pass the literal single-quoted string, which breaks argv parsers at install time. `add_extension` now strips matched wrapping quote pairs from `command`, every element of `args`, `url`, every `env` value, and every `headers` value before persisting.
+- **MCP startup timed out on cold uvx caches**: Sequential proxy-upstream load could take 25s+ on a fresh container, exceeding Claude CLI's MCP initialize budget and causing the server to exit silently on EOF. The new parallel fanout bounds startup time at the slowest upstream (~15s cap).
+
+### Changed
+- **`/data/mcp-debug.log` now captures runtime hot-reload events**, not just startup. When the agent calls `add_extension`, `remove_extension`, or any other path that triggers the hot-reloader, connect/OK/FAILED lines land in the file log. Previously runtime events only went to stderr, which Claude CLI captures and hides.
+
 ## [0.36.4] - 2026-04-09
 
 ### Fixed

@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/jialuohu/curlycatclaw/internal/extension"
+)
 
 func TestIsDangerousEnvKey(t *testing.T) {
 	dangerous := []string{
@@ -79,5 +86,65 @@ func TestBuildMCPExtEnv(t *testing.T) {
 func TestFormatMCPResult_Nil(t *testing.T) {
 	if got := formatMCPResult(nil); got != "" {
 		t.Errorf("formatMCPResult(nil) = %q, want empty", got)
+	}
+}
+
+// TestLoadProxyUpstreams_EmptyInputsFastReturn verifies the trivial empty
+// case: no extensions, no config servers, must not block or panic.
+func TestLoadProxyUpstreams_EmptyInputsFastReturn(t *testing.T) {
+	hr := newMCPHotReloader(nil, 0, 0, nil)
+	done := make(chan struct{})
+	go func() {
+		loadProxyUpstreams(nil, nil, hr, func(string, ...any) {})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("loadProxyUpstreams did not return promptly with empty inputs")
+	}
+}
+
+// TestLoadProxyUpstreams_PerUpstreamTimeoutIsBounded locks in the Apr-15
+// fix: loadProxyUpstreams is synchronous-with-parallel-fanout, so a single
+// slow upstream must not stall total wall time past perUpstreamTimeout.
+// Without the parallelism, five slow upstreams would take 5×15s=75s,
+// blasting Claude CLI's MCP initialize budget and resurrecting the exact
+// silent-exit bug we already fixed once.
+//
+// This test uses fake stdio extensions that will fail to spawn (command
+// doesn't exist), which exercises the connectExt path including the ctx
+// timeout machinery. Even with failed connects, total wall time must stay
+// well under N × perUpstreamTimeout.
+func TestLoadProxyUpstreams_PerUpstreamTimeoutIsBounded(t *testing.T) {
+	// Five bogus stdio extensions. Each ConnectAndRegister will hit
+	// exec.CommandContext("does-not-exist") which fails fast, but even if
+	// they hung, perUpstreamTimeout caps each at 15s. With parallel fanout
+	// total time stays near the slowest single one, not the sum.
+	regPath := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := extension.Load(regPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 5 {
+		if err := reg.Add(extension.Extension{
+			Name:    fmt.Sprintf("bogus-%d", i),
+			Type:    extension.TypeMCP,
+			Command: "/no/such/binary/anywhere",
+			AddedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hr := newMCPHotReloader(nil, 0, 0, nil)
+
+	start := time.Now()
+	loadProxyUpstreams(reg, nil, hr, func(string, ...any) {})
+	elapsed := time.Since(start)
+
+	// Parallel fanout: all five should error roughly simultaneously.
+	// Give ourselves well under 2×perUpstreamTimeout as the safety margin.
+	if elapsed > 2*perUpstreamTimeout {
+		t.Fatalf("loadProxyUpstreams took %v for 5 fast-failing upstreams; parallel fanout broken (expected < %v)", elapsed, 2*perUpstreamTimeout)
 	}
 }

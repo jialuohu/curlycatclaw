@@ -235,6 +235,7 @@ func runMCPServer() error {
 		)
 
 		// Create hot-reloader for dynamic MCP extension tool management.
+		// dbgLog is wired in below once the debug file is opened.
 		hotReloader = newMCPHotReloader(server, userID, chatID, credStore)
 
 		// mcpMgr is nil in MCP server subprocess mode.
@@ -366,98 +367,137 @@ func runMCPServer() error {
 		}
 	}()
 
-	var proxyToolCount int
-	if hotReloader != nil && extReg != nil {
+	// Wire dbgLog into the hot-reloader so runtime add_extension events
+	// (invoked via MCP tool calls after startup) also land in the file log.
+	if hotReloader != nil {
+		hotReloader.setDbgLog(dbgLog)
+	}
+
+	// Proxy upstreams (MCP extensions + config MCP servers) load SYNCHRONOUSLY
+	// but in PARALLEL before server.Run starts. Two bugs shaped this design:
+	//   1. Apr 12: fully sequential sync load took 25s+ on cold uvx caches,
+	//      exceeding Claude CLI's MCP initialize timeout → CLI closed stdin
+	//      → this server exited on EOF.
+	//   2. Apr 15: making the load async fixed (1) but introduced a race where
+	//      Claude CLI's tools/list fires within ~1s of spawn, before async
+	//      proxy registration finishes. Claude CLI caches that first tool
+	//      list and ignores notifications/tools/list_changed, so proxied
+	//      tools stay invisible to the agent forever.
+	// Parallel sync fan-out fixes both: worst case = slowest single upstream
+	// (capped at 15s), not sum of all, so init stays under Claude CLI's
+	// budget AND tools/list returns the full set.
+	if hotReloader != nil {
 		defer hotReloader.CloseAll()
-		dbgLog("startup: %d MCP extensions found", len(extReg.ByType(extension.TypeMCP)))
-		// Connect MCP extensions at startup. HTTP extensions that fail
-		// are retried in the background (Docker service may still be starting).
-		var httpRetries []*extension.Extension
-		for _, ext := range extReg.ByType(extension.TypeMCP) {
-			dbgLog("connecting: %s transport=%s url=%s", ext.Name, ext.Transport, ext.URL)
-			if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
-				if ext.Transport == "http" {
-					dbgLog("FAILED http ext %s: %v", ext.Name, err)
-					slog.Info("mcp-server: HTTP extension not ready, will retry in background",
-						"name", ext.Name, "err", err)
-					httpRetries = append(httpRetries, ext)
-				} else {
-					slog.Warn("mcp-server: failed to connect MCP extension",
-						"name", ext.Name, "err", err)
-				}
-				continue
-			}
-			proxyToolCount += len(hotReloader.toolsFor(ext.Name))
-			dbgLog("OK proxying %s tools=%d", ext.Name, len(hotReloader.toolsFor(ext.Name)))
-			slog.Info("mcp-server: proxying MCP extension",
-				"name", ext.Name, "tools", len(hotReloader.toolsFor(ext.Name)))
+		loadProxyUpstreams(extReg, cfg.MCP.Servers, hotReloader, dbgLog)
+	}
+
+	slog.Info("mcp-server: starting",
+		"user_id", userID,
+		"chat_id", chatID,
+		"skills", len(reg.All()))
+
+	// Run over stdio until the parent CLI process disconnects.
+	return server.Run(context.Background(), &mcp.StdioTransport{})
+}
+
+// perUpstreamTimeout bounds each proxy connect. Chosen to stay under Claude
+// CLI's ~30s MCP initialize budget even if every upstream hits its cap.
+const perUpstreamTimeout = 15 * time.Second
+
+// loadProxyUpstreams connects to every configured MCP extension and config
+// MCP server in parallel and returns only after every upstream has either
+// connected or hit its per-upstream timeout. Must be called synchronously
+// before server.Run — see the call-site comment for the full rationale.
+// The parallelism keeps total wall time bounded at max(upstream_times)
+// instead of sum(upstream_times).
+func loadProxyUpstreams(extReg *extension.Registry, cfgServers []config.MCPServerConfig, hotReloader *mcpHotReloader, dbgLog func(string, ...any)) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("mcp-server: proxy upstream load panic", "panic", r)
 		}
-		// Retry failed HTTP extensions: one fast synchronous attempt (Docker service
-		// is usually already running from a previous turn), then background retries
-		// for services that are still starting up.
-		if len(httpRetries) > 0 {
-			dbgLog("fast retry: sleeping 2s for %d HTTP extensions", len(httpRetries))
-			time.Sleep(2 * time.Second)
-			var stillFailed []*extension.Extension
-			for _, ext := range httpRetries {
-				if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
-					slog.Info("mcp-server: HTTP extension fast retry failed, will retry in background",
-						"name", ext.Name, "err", err)
-					stillFailed = append(stillFailed, ext)
-					continue
-				}
-				proxyToolCount += len(hotReloader.toolsFor(ext.Name))
-				slog.Info("mcp-server: HTTP extension connected (fast retry)",
-					"name", ext.Name, "tools", len(hotReloader.toolsFor(ext.Name)))
+	}()
+
+	var (
+		wg               sync.WaitGroup
+		mu               sync.Mutex
+		proxyToolCount   int
+		configProxyCount int
+		httpRetries      []*extension.Extension
+	)
+
+	// connectExt runs one stdio or http extension connect with a bounded
+	// timeout. Used for both extReg entries and the stdio wrappers around
+	// cfgServers. isConfigServer only affects log wording and which counter
+	// accumulates the tool count.
+	connectExt := func(ext *extension.Extension, isConfigServer bool) {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), perUpstreamTimeout)
+		defer cancel()
+		dbgLog("connecting: %s transport=%s url=%s", ext.Name, ext.Transport, ext.URL)
+		descs, _, err := hotReloader.ConnectAndRegister(ctx, ext)
+		if err != nil {
+			if ext.Transport == "http" {
+				dbgLog("FAILED http ext %s: %v", ext.Name, err)
+				slog.Info("mcp-server: HTTP extension not ready, will retry in background",
+					"name", ext.Name, "err", err)
+				mu.Lock()
+				httpRetries = append(httpRetries, ext)
+				mu.Unlock()
+			} else {
+				slog.Warn("mcp-server: failed to connect MCP extension",
+					"name", ext.Name, "err", err)
 			}
-			// Background retries for services that are still starting.
-			if len(stillFailed) > 0 {
-				go func(retries []*extension.Extension) {
-					for attempt := range 3 {
-						time.Sleep(5 * time.Second)
-						var remaining []*extension.Extension
-						for _, ext := range retries {
-							if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
-								slog.Info("mcp-server: HTTP extension background retry failed",
-									"name", ext.Name, "attempt", attempt+1, "err", err)
-								remaining = append(remaining, ext)
-								continue
-							}
-							slog.Info("mcp-server: HTTP extension connected (background retry)",
-								"name", ext.Name, "attempt", attempt+1,
-								"tools", len(hotReloader.toolsFor(ext.Name)))
-						}
-						retries = remaining
-						if len(retries) == 0 {
-							break
-						}
-					}
-				}(stillFailed)
-			}
+			return
+		}
+		n := len(descs)
+		mu.Lock()
+		if isConfigServer {
+			configProxyCount += n
+		} else {
+			proxyToolCount += n
+		}
+		mu.Unlock()
+		dbgLog("OK proxying %s tools=%d", ext.Name, n)
+		if isConfigServer {
+			slog.Info("mcp-server: proxying config MCP server", "name", ext.Name, "tools", n)
+		} else {
+			slog.Info("mcp-server: proxying MCP extension", "name", ext.Name, "tools", n)
 		}
 	}
 
-	// Proxy config-based MCP servers ([[mcp.servers]] in config.toml).
-	// Stdio servers go through the extension hot-reloader (subprocess).
-	// HTTP servers connect directly via Streamable HTTP transport.
-	var configProxyCount int
-	for _, srv := range cfg.MCP.Servers {
+	// connectHTTP handles cfgServers with transport="http" via the direct
+	// Streamable HTTP path.
+	connectHTTP := func(srv config.MCPServerConfig) {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), perUpstreamTimeout)
+		defer cancel()
+		count, err := hotReloader.ConnectHTTPAndRegister(ctx, srv)
+		if err != nil {
+			slog.Warn("mcp-server: failed to proxy HTTP MCP server",
+				"name", srv.Name, "url", srv.URL, "err", err)
+			return
+		}
+		mu.Lock()
+		configProxyCount += count
+		mu.Unlock()
+		slog.Info("mcp-server: proxying HTTP MCP server",
+			"name", srv.Name, "url", srv.URL, "tools", count)
+	}
+
+	if extReg != nil {
+		exts := extReg.ByType(extension.TypeMCP)
+		dbgLog("startup: %d MCP extensions found", len(exts))
+		for _, ext := range exts {
+			wg.Add(1)
+			go connectExt(ext, false)
+		}
+	}
+	for _, srv := range cfgServers {
 		if srv.Transport == "http" {
-			// HTTP transport: connect directly, bypassing the stdio extension path.
-			if hotReloader != nil {
-				count, err := hotReloader.ConnectHTTPAndRegister(context.Background(), srv)
-				if err != nil {
-					slog.Warn("mcp-server: failed to proxy HTTP MCP server",
-						"name", srv.Name, "url", srv.URL, "err", err)
-					continue
-				}
-				configProxyCount += count
-				slog.Info("mcp-server: proxying HTTP MCP server",
-					"name", srv.Name, "url", srv.URL, "tools", count)
-			}
+			wg.Add(1)
+			go connectHTTP(srv)
 			continue
 		}
-		// Stdio transport: wrap as extension and connect via subprocess.
 		ext := &extension.Extension{
 			Name:    srv.Name,
 			Type:    extension.TypeMCP,
@@ -465,27 +505,74 @@ func runMCPServer() error {
 			Args:    srv.Args,
 			Env:     srv.Env,
 		}
-		if hotReloader != nil {
-			if _, _, err := hotReloader.ConnectAndRegister(context.Background(), ext); err != nil {
-				slog.Warn("mcp-server: failed to proxy config MCP server",
-					"name", srv.Name, "err", err)
-				continue
-			}
-			configProxyCount += len(hotReloader.toolsFor(srv.Name))
-			slog.Info("mcp-server: proxying config MCP server",
-				"name", srv.Name, "tools", len(hotReloader.toolsFor(srv.Name)))
-		}
+		wg.Add(1)
+		go connectExt(ext, true)
 	}
 
-	slog.Info("mcp-server: starting",
-		"user_id", userID,
-		"chat_id", chatID,
-		"skills", len(reg.All()),
+	wg.Wait()
+
+	// HTTP extensions whose Docker services are still starting get retried
+	// in the background. Doesn't block server.Run — the next add_extension
+	// flow queues a respawn anyway.
+	if len(httpRetries) > 0 {
+		go retryHTTPExtensions(httpRetries, hotReloader, dbgLog)
+	}
+
+	slog.Info("mcp-server: proxy upstreams loaded",
 		"proxied_mcp_tools", proxyToolCount,
 		"proxied_config_tools", configProxyCount)
+}
 
-	// Run over stdio until the parent CLI process disconnects.
-	return server.Run(context.Background(), &mcp.StdioTransport{})
+// retryHTTPExtensions retries HTTP extensions that failed initial connect.
+// Runs in a background goroutine — does not block server.Run. First retry
+// at 2s catches Docker services that finished starting. Three more tries
+// at 5s intervals handle slow-booting services.
+func retryHTTPExtensions(retries []*extension.Extension, hotReloader *mcpHotReloader, dbgLog func(string, ...any)) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("mcp-server: http retry panic", "panic", r)
+		}
+	}()
+
+	dbgLog("background retry: %d HTTP extensions pending", len(retries))
+
+	time.Sleep(2 * time.Second)
+	var stillFailed []*extension.Extension
+	for _, ext := range retries {
+		ctx, cancel := context.WithTimeout(context.Background(), perUpstreamTimeout)
+		descs, _, err := hotReloader.ConnectAndRegister(ctx, ext)
+		cancel()
+		if err != nil {
+			slog.Info("mcp-server: HTTP extension fast retry failed",
+				"name", ext.Name, "err", err)
+			stillFailed = append(stillFailed, ext)
+			continue
+		}
+		slog.Info("mcp-server: HTTP extension connected (fast retry)",
+			"name", ext.Name, "tools", len(descs))
+	}
+
+	for attempt := range 3 {
+		if len(stillFailed) == 0 {
+			return
+		}
+		time.Sleep(5 * time.Second)
+		var remaining []*extension.Extension
+		for _, ext := range stillFailed {
+			ctx, cancel := context.WithTimeout(context.Background(), perUpstreamTimeout)
+			descs, _, err := hotReloader.ConnectAndRegister(ctx, ext)
+			cancel()
+			if err != nil {
+				slog.Info("mcp-server: HTTP extension background retry failed",
+					"name", ext.Name, "attempt", attempt+1, "err", err)
+				remaining = append(remaining, ext)
+				continue
+			}
+			slog.Info("mcp-server: HTTP extension connected (background retry)",
+				"name", ext.Name, "attempt", attempt+1, "tools", len(descs))
+		}
+		stillFailed = remaining
+	}
 }
 
 // errResult creates an MCP tool error result.
@@ -512,6 +599,26 @@ type mcpHotReloader struct {
 	mu       sync.Mutex
 	sessions map[string]*mcp.ClientSession
 	tools    map[string][]string // ext name → namespaced tool names
+
+	// dbgLog writes to /data/mcp-debug.log. Set via setDbgLog after the
+	// debug file is opened. Nil by default; callers must nil-check.
+	dbgLog func(string, ...any)
+}
+
+// setDbgLog attaches a debug logger that writes to /data/mcp-debug.log.
+// Useful because slog stderr is captured by Claude CLI and invisible in
+// container logs — this file is how we debug runtime events like
+// add_extension hot-reload from outside the subprocess.
+func (r *mcpHotReloader) setDbgLog(fn func(string, ...any)) {
+	r.dbgLog = fn
+}
+
+// log invokes dbgLog if set. Single choke point so ConnectAndRegister
+// and friends don't sprinkle nil checks everywhere.
+func (r *mcpHotReloader) log(msg string, args ...any) {
+	if r.dbgLog != nil {
+		r.dbgLog(msg, args...)
+	}
 }
 
 func newMCPHotReloader(server *mcp.Server, userID, chatID int64, credStore *security.CredentialStore) *mcpHotReloader {
@@ -558,14 +665,18 @@ func (r *mcpHotReloader) ConnectAndRegister(ctx context.Context, ext *extension.
 		}
 	}
 
+	r.log("hot-reload connect: %s cmd=%s args=%v", ext.Name, ext.Command, ext.Args)
 	session, tools, err := connectMCPExtension(ctx, ext, resolvedEnv)
 	if err != nil {
+		r.log("hot-reload FAILED: %s err=%v", ext.Name, err)
 		return nil, nil, err
 	}
 	if len(tools) == 0 {
 		session.Close()
+		r.log("hot-reload FAILED: %s (no tools)", ext.Name)
 		return nil, nil, fmt.Errorf("MCP extension %q has no tools", ext.Name)
 	}
+	r.log("hot-reload OK: %s tools=%d", ext.Name, len(tools))
 
 	var toolNames []string
 	var toolDescs []string
@@ -657,8 +768,10 @@ func (r *mcpHotReloader) ConnectHTTPAndRegister(ctx context.Context, srv config.
 	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	r.log("hot-reload connect http: %s url=%s", srv.Name, srv.URL)
 	session, err := client.Connect(connectCtx, transport, nil)
 	if err != nil {
+		r.log("hot-reload FAILED http: %s err=%v", srv.Name, err)
 		return 0, fmt.Errorf("connect http %q: %w", srv.URL, err)
 	}
 
@@ -672,8 +785,10 @@ func (r *mcpHotReloader) ConnectHTTPAndRegister(ctx context.Context, srv config.
 	}
 	if len(tools) == 0 {
 		session.Close()
+		r.log("hot-reload FAILED http: %s (no tools)", srv.Name)
 		return 0, fmt.Errorf("HTTP MCP server %q has no tools", srv.Name)
 	}
+	r.log("hot-reload OK http: %s tools=%d", srv.Name, len(tools))
 
 	var toolNames []string
 	for _, tool := range tools {
@@ -762,13 +877,6 @@ func (r *mcpHotReloader) CloseAll() {
 		delete(r.sessions, name)
 		delete(r.tools, name)
 	}
-}
-
-// toolsFor returns a copy of the tracked tool names for an extension (for logging).
-func (r *mcpHotReloader) toolsFor(name string) []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.tools[name]...)
 }
 
 // connectMCPExtension starts an MCP client connection to a runtime MCP
