@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -793,6 +794,214 @@ func TestFireCronTask_Error(t *testing.T) {
 		t.Fatal("timed out waiting for error notification")
 	}
 
+	cancel()
+	<-done
+}
+
+// mockPersister records GetActiveConversation and AppendMessage calls so tests
+// can assert the cron-turn persistence path without a real memory.Store.
+type mockPersister struct {
+	mu       sync.Mutex
+	convID   string    // returned from GetActiveConversation
+	convErr  error     // returned from GetActiveConversation
+	appendOK []persistCall
+	appendNErr int      // fail the Nth AppendMessage (0 = never); counts from 1
+	appendErr  error
+}
+
+type persistCall struct {
+	convID  string
+	role    string
+	content string
+}
+
+func (m *mockPersister) GetActiveConversation(_, _ int64, _ string) (string, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.convID, "", m.convErr
+}
+
+func (m *mockPersister) AppendMessage(convID, role string, content json.RawMessage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appendOK = append(m.appendOK, persistCall{convID: convID, role: role, content: string(content)})
+	if m.appendNErr > 0 && len(m.appendOK) == m.appendNErr {
+		return m.appendErr
+	}
+	return nil
+}
+
+func (m *mockPersister) calls() []persistCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]persistCall, len(m.appendOK))
+	copy(out, m.appendOK)
+	return out
+}
+
+// TestFireCronTask_PersistsToConversation is the regression guard for the
+// Apr 15 incident where the cron-fired daily digest bypassed the messages
+// table, so the agent could not see its own cron output on the next user
+// turn and fabricated timestamps to cover the gap.
+func TestFireCronTask_PersistsToConversation(t *testing.T) {
+	db := newTestDBSingleConn(t)
+	signalCh := make(chan int64, 16)
+	if _, err := InitRemindSkills(db, signalCh, time.UTC); err != nil {
+		t.Fatalf("InitRemindSkills: %v", err)
+	}
+
+	tgInbox := make(chan telegram.OutgoingMessage, 16)
+	mock := &mockCronRunner{result: "Digest body: ModServe, HydraInfer, ..."}
+	persister := &mockPersister{convID: "conv-abc"}
+	ra := NewReminderActor(db, tgInbox, time.UTC, signalCh, mock)
+	ra.SetConversationPersister(persister)
+
+	prompt := "search papers on multimodal model serving"
+	fireAt := time.Now().Add(-1 * time.Second).UTC()
+	if _, err := db.Exec(`INSERT INTO reminders (user_id, chat_id, message, fire_at, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+		7, 99, "📄 Daily paper digest", fireAt, prompt, time.Now().UTC()); err != nil {
+		t.Fatalf("insert reminder: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- ra.Run(ctx) }()
+
+	select {
+	case <-tgInbox: // just drain; assertions are on persisted content
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for cron fire")
+	}
+
+	// Give the post-send persistence a brief moment to land (the telegram
+	// send and the persist are sequential, but both happen in the gocron
+	// goroutine — we yield to it).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(persister.calls()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	calls := persister.calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 AppendMessage calls (user + assistant), got %d: %+v", len(calls), calls)
+	}
+	if calls[0].role != "user" {
+		t.Errorf("first persisted message role = %q, want %q", calls[0].role, "user")
+	}
+	if calls[1].role != "assistant" {
+		t.Errorf("second persisted message role = %q, want %q", calls[1].role, "assistant")
+	}
+	if !strings.Contains(calls[0].content, "Daily paper digest") {
+		t.Errorf("user marker should include reminder title, got: %s", calls[0].content)
+	}
+	if !strings.Contains(calls[0].content, prompt) {
+		t.Errorf("user marker should include prompt so the agent can reason about what triggered the output, got: %s", calls[0].content)
+	}
+	if !strings.Contains(calls[1].content, "Digest body") {
+		t.Errorf("assistant content should include cron result, got: %s", calls[1].content)
+	}
+	if !strings.Contains(calls[1].content, "Daily paper digest") {
+		t.Errorf("assistant content should match what was sent to Telegram (title prefix), got: %s", calls[1].content)
+	}
+	if calls[0].convID != "conv-abc" || calls[1].convID != "conv-abc" {
+		t.Errorf("both messages should target the active conversation ID %q, got user=%q assistant=%q", "conv-abc", calls[0].convID, calls[1].convID)
+	}
+
+	cancel()
+	<-done
+}
+
+// TestFireCronTask_PersistsOnError asserts the error path also records the
+// Telegram-sent error message into the conversation history, so the agent
+// can see that a cron task failed when the user asks about it later.
+func TestFireCronTask_PersistsOnError(t *testing.T) {
+	db := newTestDBSingleConn(t)
+	signalCh := make(chan int64, 16)
+	if _, err := InitRemindSkills(db, signalCh, time.UTC); err != nil {
+		t.Fatalf("InitRemindSkills: %v", err)
+	}
+
+	tgInbox := make(chan telegram.OutgoingMessage, 16)
+	mock := &mockCronRunner{err: fmt.Errorf("rate limit exceeded")}
+	persister := &mockPersister{convID: "conv-err"}
+	ra := NewReminderActor(db, tgInbox, time.UTC, signalCh, mock)
+	ra.SetConversationPersister(persister)
+
+	fireAt := time.Now().Add(-1 * time.Second).UTC()
+	prompt := "do the thing"
+	if _, err := db.Exec(`INSERT INTO reminders (user_id, chat_id, message, fire_at, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+		7, 99, "Broken task", fireAt, prompt, time.Now().UTC()); err != nil {
+		t.Fatalf("insert reminder: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- ra.Run(ctx) }()
+
+	select {
+	case <-tgInbox:
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for error notification")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(persister.calls()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	calls := persister.calls()
+	if len(calls) != 2 {
+		t.Fatalf("error path should persist user+assistant turn, got %d calls: %+v", len(calls), calls)
+	}
+	if !strings.Contains(calls[1].content, "Cron task failed") || !strings.Contains(calls[1].content, "rate limit") {
+		t.Errorf("assistant content should include the error text delivered to the user, got: %s", calls[1].content)
+	}
+
+	cancel()
+	<-done
+}
+
+// TestFireCronTask_NilPersisterIsSafe asserts that the cron-persist path is
+// a no-op when no ConversationPersister is configured. This keeps the
+// existing (pre-v0.36.8) behavior for any deployment that doesn't wire
+// in memory.Store, and guards against a nil-panic regression.
+func TestFireCronTask_NilPersisterIsSafe(t *testing.T) {
+	db := newTestDBSingleConn(t)
+	signalCh := make(chan int64, 16)
+	if _, err := InitRemindSkills(db, signalCh, time.UTC); err != nil {
+		t.Fatalf("InitRemindSkills: %v", err)
+	}
+
+	tgInbox := make(chan telegram.OutgoingMessage, 16)
+	mock := &mockCronRunner{result: "ok"}
+	ra := NewReminderActor(db, tgInbox, time.UTC, signalCh, mock)
+	// Note: SetConversationPersister NOT called.
+
+	fireAt := time.Now().Add(-1 * time.Second).UTC()
+	prompt := "nothing special"
+	if _, err := db.Exec(`INSERT INTO reminders (user_id, chat_id, message, fire_at, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+		7, 99, "No-persister task", fireAt, prompt, time.Now().UTC()); err != nil {
+		t.Fatalf("insert reminder: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- ra.Run(ctx) }()
+
+	select {
+	case <-tgInbox:
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for cron fire (persister=nil path must still deliver)")
+	}
 	cancel()
 	<-done
 }

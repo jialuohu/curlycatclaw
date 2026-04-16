@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.36.8] - 2026-04-16
+
+### Fixed
+- **Agent couldn't see its own cron output**: Cron-triggered daily digests and reminder tasks were sent straight to Telegram via `ReminderActor.fireCronTask`, bypassing the `messages` table. The interactive agent's conversation history had no record of the cron message, so when a user asked "why did you send me this?" or "when was that sent?" the agent fabricated answers (including made-up timestamps in the v0.36.7 incident). Cron fires now append both the trigger (as a `[Cron reminder fired: <title>] Scheduled: <time> Prompt: <prompt>` user-role marker) and the delivered text (as an assistant-role message) to the active conversation, matching what the user saw on Telegram. Best-effort: every persistence failure logs a warning but never blocks the Telegram send. Error paths are persisted too, so the agent also knows when a cron task failed. Opt-in via `ReminderActor.SetConversationPersister(store)`; if unset (e.g., in tests), the original pre-v0.36.8 behavior is preserved.
+
 ## [0.36.7] - 2026-04-16
 
 ### Fixed

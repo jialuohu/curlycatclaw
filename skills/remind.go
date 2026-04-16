@@ -25,6 +25,18 @@ type CronRunner interface {
 	Execute(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error)
 }
 
+// ConversationPersister records cron-fired turns in the same conversation
+// history as interactive chats. Without this, cron output is sent only to
+// Telegram — the agent's next turn has no record that the cron message
+// existed, which caused the "why did you send me this?" incident where the
+// agent fabricated timestamps for a message it never saw in its context.
+// Implemented by memory.Store; defined here to avoid coupling skills to
+// concrete storage.
+type ConversationPersister interface {
+	GetActiveConversation(userID, chatID int64, chatType string) (convID string, expiredConvID string, err error)
+	AppendMessage(convID string, role string, content json.RawMessage) error
+}
+
 // InitRemindSkills creates the reminders table (if not exists) and returns
 // the set_reminder, list_reminders, and cancel_reminder skills.
 func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]*Skill, error) {
@@ -286,11 +298,12 @@ func makeCancelReminderExecute(db *sql.DB, signalCh chan<- int64) func(ctx conte
 
 // ReminderActor is an actor that schedules and fires reminders using gocron.
 type ReminderActor struct {
-	db       *sql.DB
-	tgInbox  chan<- telegram.OutgoingMessage
-	loc      *time.Location
-	signalCh <-chan int64
-	cronExec CronRunner // nil = no cron task support (static text only)
+	db        *sql.DB
+	tgInbox   chan<- telegram.OutgoingMessage
+	loc       *time.Location
+	signalCh  <-chan int64
+	cronExec  CronRunner            // nil = no cron task support (static text only)
+	persister ConversationPersister // nil = cron output goes to Telegram only, not chat history
 
 	mu   sync.Mutex
 	jobs map[int64]gocron.Job
@@ -307,6 +320,15 @@ func NewReminderActor(db *sql.DB, tgInbox chan<- telegram.OutgoingMessage, loc *
 		cronExec: cronExec,
 		jobs:     make(map[int64]gocron.Job),
 	}
+}
+
+// SetConversationPersister enables writing cron-task turns to the conversation
+// history so the interactive agent sees its own cron output on the next user
+// turn. Optional — if unset, cron messages are sent to Telegram only (the
+// original pre-v0.36.8 behavior). Must be called before Run() to avoid racing
+// with fireCronTask goroutines.
+func (ra *ReminderActor) SetConversationPersister(p ConversationPersister) {
+	ra.persister = p
 }
 
 // Name implements actor.Actor.
@@ -500,11 +522,10 @@ func (ra *ReminderActor) fireCronTask(r reminderRow) {
 	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt, cronModel, r.FireAt)
 	if err != nil {
 		slog.Error("reminder: cron task failed", "id", r.ID, "err", err)
-		errMsg := telegram.OutgoingMessage{
-			ChatID: r.ChatID,
-			Text:   fmt.Sprintf("[Cron task failed] %s: %v", r.Message, err),
-		}
+		errText := fmt.Sprintf("[Cron task failed] %s: %v", r.Message, err)
+		errMsg := telegram.OutgoingMessage{ChatID: r.ChatID, Text: errText}
 		ra.trySendTelegram(r.ID, errMsg)
+		ra.persistCronTurn(r, errText)
 		// For one-time: still mark fired (error was delivered).
 		// For recurring: keep pending (will retry next schedule).
 		if r.CronExpr == nil {
@@ -513,15 +534,47 @@ func (ra *ReminderActor) fireCronTask(r reminderRow) {
 		return
 	}
 
-	msg := telegram.OutgoingMessage{
-		ChatID: r.ChatID,
-		Text:   fmt.Sprintf("**%s**\n\n%s", r.Message, result),
-	}
+	assistantText := fmt.Sprintf("**%s**\n\n%s", r.Message, result)
+	msg := telegram.OutgoingMessage{ChatID: r.ChatID, Text: assistantText}
 	if !ra.trySendTelegram(r.ID, msg) {
 		return
 	}
+	ra.persistCronTurn(r, assistantText)
 
 	ra.markFiredIfOneTime(r)
+}
+
+// persistCronTurn records the cron-fired turn in the conversation history so
+// the interactive agent can see its own cron output on the next user turn.
+// Best-effort: every failure is logged as a warning but never aborts the flow
+// — the Telegram message was already delivered, and persistence is a
+// supporting concern. No-op when no ConversationPersister is configured.
+func (ra *ReminderActor) persistCronTurn(r reminderRow, assistantText string) {
+	if ra.persister == nil {
+		return
+	}
+	convID, _, err := ra.persister.GetActiveConversation(r.UserID, r.ChatID, "")
+	if err != nil {
+		slog.Warn("reminder: persist cron turn — get conversation", "id", r.ID, "err", err)
+		return
+	}
+	prompt := ""
+	if r.Prompt != nil {
+		prompt = *r.Prompt
+	}
+	userText := fmt.Sprintf("[Cron reminder fired: %s]\nScheduled: %s\nPrompt: %s",
+		r.Message,
+		r.FireAt.In(ra.loc).Format("2006-01-02 15:04 MST"),
+		prompt)
+	userContent, _ := json.Marshal(userText) // Marshal cannot fail for a Go string.
+	if err := ra.persister.AppendMessage(convID, "user", userContent); err != nil {
+		slog.Warn("reminder: persist cron turn — user message", "id", r.ID, "err", err)
+		return
+	}
+	assistantContent, _ := json.Marshal(assistantText)
+	if err := ra.persister.AppendMessage(convID, "assistant", assistantContent); err != nil {
+		slog.Warn("reminder: persist cron turn — assistant message", "id", r.ID, "err", err)
+	}
 }
 
 // trySendTelegram attempts to send a message to Telegram with a 5s timeout.

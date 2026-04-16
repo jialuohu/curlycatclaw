@@ -563,6 +563,10 @@ func run(configPath string) error {
 
 	// Create reminder actor.
 	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh, cronRunner)
+	// Persist cron-fired turns to the conversation history so the interactive
+	// agent can see its own cron output on the next user turn (fixes the
+	// "why did you send me this?" confusion from the v0.36.7 incident).
+	reminderActor.SetConversationPersister(store)
 
 	// Create generic ingest actor (background knowledge source processing).
 	// Uses direct API client if available, falls back to CLI one-shot mode.
