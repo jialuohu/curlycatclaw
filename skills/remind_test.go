@@ -53,8 +53,8 @@ func TestInitRemindSkills_CreatesTable(t *testing.T) {
 		t.Fatalf("InitRemindSkills: %v", err)
 	}
 
-	if len(skills) != 3 {
-		t.Fatalf("expected 3 skills, got %d", len(skills))
+	if len(skills) != 4 {
+		t.Fatalf("expected 4 skills (set/list/cancel/delete), got %d", len(skills))
 	}
 
 	// Verify the reminders table exists.
@@ -223,8 +223,229 @@ func TestListReminders_FilterByStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list_reminders: %v", err)
 	}
-	if result != "No pending reminders found" {
-		t.Errorf("result = %q, want %q", result, "No pending reminders found")
+	if !strings.Contains(result, "No pending reminders found") {
+		t.Errorf("result should contain \"No pending reminders found\", got %q", result)
+	}
+}
+
+// TestListReminders_DefaultsToPending is the regression guard for the
+// behavior change introduced when the default `list_reminders` filter
+// flipped from "all statuses" to "pending only". Without this default,
+// cancelled/fired tombstones accumulate in the output forever and
+// make the agent's answer to "what's scheduled?" harder to read.
+func TestListReminders_DefaultsToPending(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	// Seed: one pending + one cancelled + one fired.
+	now := time.Now().UTC()
+	future := now.Add(24 * time.Hour)
+	if _, err := db.Exec(
+		`INSERT INTO reminders (user_id, chat_id, message, fire_at, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?), (?, ?, ?, ?, 'cancelled', ?), (?, ?, ?, ?, 'fired', ?)`,
+		1, 10, "active-one", future, now,
+		1, 10, "cancelled-one", future, now,
+		1, 10, "fired-one", future, now,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Default: no status → only pending.
+	listInput, _ := json.Marshal(listRemindersInput{})
+	result, err := skills["list_reminders"].Execute(ctx, listInput)
+	if err != nil {
+		t.Fatalf("list_reminders: %v", err)
+	}
+	if !strings.Contains(result, "active-one") {
+		t.Errorf("default list should include pending reminder, got %q", result)
+	}
+	if strings.Contains(result, "cancelled-one") {
+		t.Errorf("default list should NOT include cancelled tombstone, got %q", result)
+	}
+	if strings.Contains(result, "fired-one") {
+		t.Errorf("default list should NOT include fired tombstone, got %q", result)
+	}
+}
+
+// TestListReminders_StatusAll asserts the explicit "all" opt-in returns
+// every status — the escape hatch for users/agents that DO want to see
+// history.
+func TestListReminders_StatusAll(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	now := time.Now().UTC()
+	future := now.Add(24 * time.Hour)
+	if _, err := db.Exec(
+		`INSERT INTO reminders (user_id, chat_id, message, fire_at, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?), (?, ?, ?, ?, 'cancelled', ?), (?, ?, ?, ?, 'fired', ?)`,
+		1, 10, "active-one", future, now,
+		1, 10, "cancelled-one", future, now,
+		1, 10, "fired-one", future, now,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	listInput, _ := json.Marshal(listRemindersInput{Status: "all"})
+	result, err := skills["list_reminders"].Execute(ctx, listInput)
+	if err != nil {
+		t.Fatalf("list_reminders: %v", err)
+	}
+	for _, want := range []string{"active-one", "cancelled-one", "fired-one"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("status=all list should include %q, got %q", want, result)
+		}
+	}
+}
+
+func TestDeleteReminder_RemovesCancelled(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	now := time.Now().UTC()
+	if _, err := db.Exec(
+		`INSERT INTO reminders (user_id, chat_id, message, fire_at, status, created_at) VALUES (?, ?, ?, ?, 'cancelled', ?)`,
+		1, 10, "dead", now.Add(1*time.Hour), now,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	input, _ := json.Marshal(deleteReminderInput{ID: 1})
+	result, err := skills["delete_reminder"].Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("delete_reminder: %v", err)
+	}
+	if !strings.Contains(result, "Deleted reminder #1") {
+		t.Errorf("expected deletion confirmation, got %q", result)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM reminders WHERE id = 1`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("row should be gone from DB, got count=%d", count)
+	}
+}
+
+func TestDeleteReminder_RemovesFired(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	now := time.Now().UTC()
+	if _, err := db.Exec(
+		`INSERT INTO reminders (user_id, chat_id, message, fire_at, status, created_at) VALUES (?, ?, ?, ?, 'fired', ?)`,
+		1, 10, "done", now.Add(-1*time.Hour), now,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	input, _ := json.Marshal(deleteReminderInput{ID: 1})
+	if _, err := skills["delete_reminder"].Execute(ctx, input); err != nil {
+		t.Fatalf("delete_reminder on fired row: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM reminders WHERE id = 1`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("row should be gone from DB, got count=%d", count)
+	}
+}
+
+func TestDeleteReminder_RefusesPending(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	now := time.Now().UTC()
+	if _, err := db.Exec(
+		`INSERT INTO reminders (user_id, chat_id, message, fire_at, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)`,
+		1, 10, "still-alive", now.Add(1*time.Hour), now,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	input, _ := json.Marshal(deleteReminderInput{ID: 1})
+	_, err := skills["delete_reminder"].Execute(ctx, input)
+	if err == nil {
+		t.Fatal("delete_reminder on pending row should error")
+	}
+	// The agent's autorepair loop keys off the phrase "cancel_reminder" in the
+	// error — if the wording changes, the agent will loop instead of fixing.
+	if !strings.Contains(err.Error(), "cancel_reminder") {
+		t.Errorf("error should mention cancel_reminder as the next step, got: %v", err)
+	}
+
+	// Row must remain.
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM reminders WHERE id = 1`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("pending row should still exist, got count=%d", count)
+	}
+}
+
+func TestDeleteReminder_NotFound(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+	ctx := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+
+	input, _ := json.Marshal(deleteReminderInput{ID: 999})
+	_, err := skills["delete_reminder"].Execute(ctx, input)
+	if err == nil {
+		t.Fatal("delete_reminder on missing id should error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should say \"not found\", got: %v", err)
+	}
+}
+
+// TestDeleteReminder_UserScoped is the IDOR guard: user A cannot delete
+// user B's reminder, even if A guesses the id.
+func TestDeleteReminder_UserScoped(t *testing.T) {
+	db := newTestDB(t)
+	signalCh := make(chan int64, 16)
+	skills := initRemindSkillsForTest(t, db, signalCh)
+
+	now := time.Now().UTC()
+	// user B (id=2) owns a cancelled reminder.
+	if _, err := db.Exec(
+		`INSERT INTO reminders (user_id, chat_id, message, fire_at, status, created_at) VALUES (?, ?, ?, ?, 'cancelled', ?)`,
+		2, 20, "user-B-tombstone", now, now,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// user A (id=1) tries to delete it.
+	ctxA := WithUser(context.Background(), UserInfo{UserID: 1, ChatID: 10})
+	input, _ := json.Marshal(deleteReminderInput{ID: 1})
+	_, err := skills["delete_reminder"].Execute(ctxA, input)
+	if err == nil {
+		t.Fatal("user A should not be able to delete user B's reminder")
+	}
+	// From A's perspective it's indistinguishable from "not found" — deliberate
+	// to avoid leaking existence of other users' rows.
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("cross-user delete should return not-found (no existence leak), got: %v", err)
+	}
+
+	// Row must still exist.
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM reminders WHERE id = 1 AND user_id = 2`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("user B's row must not be deleted by user A, got count=%d", count)
 	}
 }
 

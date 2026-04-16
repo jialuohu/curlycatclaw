@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.10] - 2026-04-16
+
+### Added
+- **`delete_reminder` skill**: permanently removes a cancelled or fired reminder by ID. Refuses to delete active (pending) reminders with a clear error ("call cancel_reminder first, then delete_reminder") so the agent's autorepair loop picks up the right next step. User-scoped via `WHERE id = ? AND user_id = ?` — user A cannot delete user B's rows even by guessing the ID, and failed cross-user lookups return "not found" so the response doesn't leak existence.
+
+### Changed
+- **`list_reminders` defaults to active reminders only**. Previously it returned every row including cancelled/fired tombstones, which made the agent's "what's scheduled?" output accumulate history indefinitely. Pass `status="all"` to see history, or a specific status (`pending`/`cancelled`/`fired`) to filter. The empty-result message now points at the new opt-in: `"No pending reminders found (pass status=\"all\" to see cancelled/fired history)"`.
+
 ## [0.36.9] - 2026-04-16
 
 ### Fixed

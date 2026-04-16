@@ -76,19 +76,26 @@ func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]
 
 	listSkill := &Skill{
 		Name:        "list_reminders",
-		Description: "List reminders for the current user, optionally filtered by status.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"status":{"type":"string","description":"Filter by status: pending, fired, cancelled. Omit for all."}}}`),
+		Description: "List reminders for the current user. Returns only active (pending) reminders by default; pass status=\"all\" to include cancelled and fired history, or a specific status (pending/cancelled/fired) to filter.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"status":{"type":"string","description":"Filter: pending (default), cancelled, fired, or \"all\" to include history."}}}`),
 		Execute:     makeListRemindersExecute(db, loc),
 	}
 
 	cancelSkill := &Skill{
 		Name:        "cancel_reminder",
-		Description: "Cancel an active reminder by its ID.",
+		Description: "Cancel an active reminder by its ID. Leaves the row in the DB as a tombstone; use delete_reminder afterwards to purge it.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Reminder ID to cancel"}},"required":["id"]}`),
 		Execute:     makeCancelReminderExecute(db, signalCh),
 	}
 
-	return []*Skill{setSkill, listSkill, cancelSkill}, nil
+	deleteSkill := &Skill{
+		Name:        "delete_reminder",
+		Description: "Permanently delete a cancelled or fired reminder by its ID. Refuses to delete active (pending) reminders — cancel_reminder first, then delete_reminder.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Reminder ID to delete (must be cancelled or fired)"}},"required":["id"]}`),
+		Execute:     makeDeleteReminderExecute(db),
+	}
+
+	return []*Skill{setSkill, listSkill, cancelSkill, deleteSkill}, nil
 }
 
 type setReminderInput struct {
@@ -195,12 +202,21 @@ func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.C
 
 		user := GetUser(ctx)
 
+		// Default: active reminders only. Pass status="all" to include
+		// cancelled + fired history. Empty status is coerced to "pending"
+		// so `list_reminders` doesn't dump tombstones by default — this
+		// matches the common "what's scheduled right now?" query shape.
+		statusFilter := params.Status
+		if statusFilter == "" {
+			statusFilter = "pending"
+		}
+
 		var rows *sql.Rows
 		var err error
-		if params.Status != "" {
+		if statusFilter != "all" {
 			rows, err = db.QueryContext(ctx,
 				`SELECT id, message, fire_at, cron_expr, prompt, status, created_at FROM reminders WHERE user_id = ? AND status = ? ORDER BY fire_at`,
-				user.UserID, params.Status,
+				user.UserID, statusFilter,
 			)
 		} else {
 			rows, err = db.QueryContext(ctx,
@@ -240,10 +256,10 @@ func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.C
 		}
 
 		if count == 0 {
-			if params.Status != "" {
-				return fmt.Sprintf("No %s reminders found", params.Status), nil
+			if statusFilter == "all" {
+				return "No reminders found", nil
 			}
-			return "No reminders found", nil
+			return fmt.Sprintf("No %s reminders found (pass status=\"all\" to see cancelled/fired history)", statusFilter), nil
 		}
 
 		return result, nil
@@ -252,6 +268,61 @@ func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.C
 
 type cancelReminderInput struct {
 	ID int64 `json:"id"`
+}
+
+type deleteReminderInput struct {
+	ID int64 `json:"id"`
+}
+
+func makeDeleteReminderExecute(db *sql.DB) func(ctx context.Context, input json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		var params deleteReminderInput
+		if err := json.Unmarshal(input, &params); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
+		}
+		if params.ID == 0 {
+			return "", fmt.Errorf("id is required")
+		}
+
+		user := GetUser(ctx)
+
+		// Look up the row first so we can give the right error — "not found"
+		// vs "is active, cancel first". Without this, both cases collapse to
+		// a single opaque "0 rows affected" that the agent can't autorepair.
+		var status string
+		err := db.QueryRowContext(ctx,
+			`SELECT status FROM reminders WHERE id = ? AND user_id = ?`,
+			params.ID, user.UserID,
+		).Scan(&status)
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("reminder #%d not found", params.ID)
+		}
+		if err != nil {
+			return "", fmt.Errorf("lookup reminder: %w", err)
+		}
+		if status == "pending" {
+			return "", fmt.Errorf("reminder #%d is active (status=pending); call cancel_reminder first, then delete_reminder", params.ID)
+		}
+
+		// Safe to delete: status is 'cancelled' or 'fired'. User scope re-checked
+		// in WHERE as defense in depth even though the lookup already enforced it.
+		res, err := db.ExecContext(ctx,
+			`DELETE FROM reminders WHERE id = ? AND user_id = ? AND status != 'pending'`,
+			params.ID, user.UserID,
+		)
+		if err != nil {
+			return "", fmt.Errorf("delete reminder: %w", err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			// Only reachable if status raced from cancelled → pending between
+			// the lookup and the delete, which shouldn't happen in practice but
+			// is cheap to guard against.
+			return "", fmt.Errorf("reminder #%d not deleted (status may have changed); retry", params.ID)
+		}
+
+		return fmt.Sprintf("Deleted reminder #%d (was %s)", params.ID, status), nil
+	}
 }
 
 func makeCancelReminderExecute(db *sql.DB, signalCh chan<- int64) func(ctx context.Context, input json.RawMessage) (string, error) {
