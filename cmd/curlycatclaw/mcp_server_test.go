@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/extension"
 )
 
@@ -150,6 +152,79 @@ func TestLoadProxyUpstreams_PerUpstreamTimeoutIsBounded(t *testing.T) {
 	// Give ourselves well under 2×perUpstreamTimeout as the safety margin.
 	if elapsed > 2*perUpstreamTimeout {
 		t.Fatalf("loadProxyUpstreams took %v for 5 fast-failing upstreams; parallel fanout broken (expected < %v)", elapsed, 2*perUpstreamTimeout)
+	}
+}
+
+// TestLoadProxyUpstreams_RuntimeShadowsConfigServer is the regression guard
+// for the Apr 16 duplicate-extension bug. When a user adds a runtime MCP
+// extension (via add_extension) with the same name as a config
+// [[mcp.servers]] entry, the old code blindly iterated both sources and
+// spawned TWO MCP child processes under the same proxy prefix. Tool
+// registrations collided, sessions map was last-writer-wins, and the
+// displaced session's uvx process was never closed — a zombie per startup.
+//
+// The fix: collect runtime extension names first, skip any config server
+// sharing a name with a runtime extension. Runtime wins (it has encrypted
+// env vars set via set_extension_env; config can't hold secrets).
+//
+// This test wires a bogus runtime extension and a config server with the
+// same name, both with bad commands so they fail fast. The assertion is:
+// the config server must be SKIPPED (never reaches the connect path). We
+// capture that via the debug log — "SKIPPED config dup" must appear with
+// the matching name.
+func TestLoadProxyUpstreams_RuntimeShadowsConfigServer(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "extensions.json")
+	reg, err := extension.Load(regPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "paper-search-mcp"
+	if err := reg.Add(extension.Extension{
+		Name:    name,
+		Type:    extension.TypeMCP,
+		Command: "/no/such/binary/anywhere",
+		AddedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same-name config server that would otherwise fire in parallel.
+	cfgServers := []config.MCPServerConfig{{
+		Name:    name,
+		Command: "/another/nonexistent/binary",
+		Args:    []string{"whatever"},
+	}}
+
+	hr := newMCPHotReloader(nil, 0, 0, nil)
+	var mu sync.Mutex
+	var logLines []string
+	dbgLog := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logLines = append(logLines, fmt.Sprintf(format, args...))
+	}
+
+	loadProxyUpstreams(reg, cfgServers, hr, dbgLog)
+
+	// Expectation: runtime was attempted (`connecting: <name>`) and the
+	// config version was explicitly skipped.
+	mu.Lock()
+	defer mu.Unlock()
+	sawConnecting := false
+	sawSkipped := false
+	for _, line := range logLines {
+		if strings.Contains(line, "connecting: "+name) {
+			sawConnecting = true
+		}
+		if strings.Contains(line, "SKIPPED config dup: "+name) {
+			sawSkipped = true
+		}
+	}
+	if !sawConnecting {
+		t.Errorf("runtime extension %q should have been attempted; log lines:\n%s", name, strings.Join(logLines, "\n"))
+	}
+	if !sawSkipped {
+		t.Errorf("config server %q should have been SKIPPED as shadowed by runtime ext; log lines:\n%s", name, strings.Join(logLines, "\n"))
 	}
 }
 

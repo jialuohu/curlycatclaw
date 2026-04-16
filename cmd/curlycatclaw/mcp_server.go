@@ -498,15 +498,32 @@ func loadProxyUpstreams(extReg *extension.Registry, cfgServers []config.MCPServe
 			"name", srv.Name, "url", srv.URL, "tools", count)
 	}
 
+	// Collect runtime extension names first so the config-server loop below
+	// can skip entries that a runtime extension is already shadowing.
+	// Runtime wins for three reasons: (1) runtime entries carry encrypted
+	// env vars set via set_extension_env (config can't hold secrets), (2)
+	// they represent the user's newer intent (added after they saw the
+	// config entry), (3) without dedup we spawn two MCP children for the
+	// same logical extension — double memory, non-deterministic tool
+	// dispatch under name collision.
+	runtimeNames := make(map[string]struct{})
 	if extReg != nil {
 		exts := extReg.ByType(extension.TypeMCP)
 		dbgLog("startup: %d MCP extensions found", len(exts))
 		for _, ext := range exts {
+			runtimeNames[ext.Name] = struct{}{}
 			wg.Add(1)
 			go connectExt(ext, false)
 		}
 	}
 	for _, srv := range cfgServers {
+		if _, shadowed := runtimeNames[srv.Name]; shadowed {
+			dbgLog("SKIPPED config dup: %s (shadowed by runtime extension)", srv.Name)
+			slog.Warn("mcp-server: config MCP server shadowed by runtime extension with same name, skipping config version",
+				"name", srv.Name,
+				"hint", "remove the [[mcp.servers]] entry from config.toml, or remove_extension to keep the config version")
+			continue
+		}
 		if srv.Transport == "http" {
 			wg.Add(1)
 			go connectHTTP(srv)

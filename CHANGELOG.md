@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.11] - 2026-04-16
+
+### Fixed
+- **Duplicate MCP extension registration between config.toml and runtime**: when a user added a runtime extension via `add_extension` with the same name as a `[[mcp.servers]]` entry in `config.toml`, `loadProxyUpstreams` blindly iterated both sources and spawned **two MCP child processes** under the same proxy prefix. Tool registrations collided (same namespaced name, last-writer-wins), the sessions map was silently overwritten, and the displaced uvx process leaked — a zombie per startup, double memory, non-deterministic tool dispatch. The startup path now dedups by name: runtime wins (it holds the encrypted env vars set via `set_extension_env`; config can't store secrets), and the shadowed config server is logged with a WARN explaining how to clean up.
+
+### Added
+- **`add_extension` pre-flights config-name collisions**: before persisting a new runtime extension, `add_extension` checks the configured `[[mcp.servers]]` list and refuses on name match with a clear message (`"name X is already a config MCP server in config.toml; pick a different runtime name, or remove the [[mcp.servers]] entry from config.toml and retry"`). Stops the duplicate being created in the first place, instead of letting it silently degrade at the next restart.
+
 ## [0.36.10] - 2026-04-16
 
 ### Added

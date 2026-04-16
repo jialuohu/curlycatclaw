@@ -1225,3 +1225,61 @@ func TestAddMCPExtensionHTTPAutoDetect(t *testing.T) {
 		t.Errorf("persisted url = %q", got.URL)
 	}
 }
+
+// TestAddExtension_RejectsConfigNameCollision is the prevention side of the
+// dedup fix. If add_extension lets a user create a runtime entry with the
+// same name as an existing config server, loadProxyUpstreams ends up seeing
+// both sources and silently shadows the config version. Better UX: fail
+// fast with a message naming the config source so the agent can pick a
+// different name OR the user can clean up config.toml first.
+func TestAddExtension_RejectsConfigNameCollision(t *testing.T) {
+	reg, err := Load(filepath.Join(t.TempDir(), "ext.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configServers := []ConfigMCPServer{
+		{Name: "paper-search-mcp", Command: "uvx", Transport: "stdio"},
+	}
+	mcpMgr := &mockMCPAdder{}
+	skillReg := skills.NewRegistry()
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, configServers, nil)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"paper-search-mcp","type":"mcp","command":"uvx","args":["paper-search-mcp"]}`
+	_, err = skill.Execute(context.Background(), json.RawMessage(input))
+	if err == nil {
+		t.Fatal("add_extension should reject a name that collides with a config MCP server")
+	}
+	// The agent's autorepair loop keys off "config.toml" in the error — if
+	// the wording changes, the agent won't know how to resolve the
+	// collision (pick new name vs remove the config entry).
+	if !strings.Contains(err.Error(), "config.toml") {
+		t.Errorf("error should mention config.toml so the agent proposes the right fix; got: %v", err)
+	}
+	// Runtime extension must NOT have been persisted.
+	if got := reg.Get("paper-search-mcp"); got != nil {
+		t.Errorf("rejected extension should not be in registry, got %+v", got)
+	}
+}
+
+// TestAddExtension_ConfigServersEmptyIsSafe ensures the collision check
+// is a no-op when configServers is nil (tests pass nil, deployments without
+// [[mcp.servers]] in config.toml).
+func TestAddExtension_ConfigServersEmptyIsSafe(t *testing.T) {
+	reg, err := Load(filepath.Join(t.TempDir(), "ext.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpMgr := &mockMCPAdder{}
+	skillReg := skills.NewRegistry()
+	ss := InitExtensionSkills(reg, mcpMgr, skillReg, nil, nil, nil, nil, nil)
+	skill := findSkill(ss, "add_extension")
+
+	input := `{"name":"novel-ext","type":"mcp","command":"npx","args":["-y","mcp-server"]}`
+	if _, err := skill.Execute(context.Background(), json.RawMessage(input)); err != nil {
+		t.Fatalf("add_extension with nil configServers should not error on a novel name: %v", err)
+	}
+	if got := reg.Get("novel-ext"); got == nil {
+		t.Error("extension should be persisted when no config collision")
+	}
+}

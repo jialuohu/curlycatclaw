@@ -366,7 +366,19 @@ func run(configPath string) error {
 			os.WriteFile(path, []byte("1"), 0644) //nolint:errcheck
 		}
 	}
-	for _, s := range extension.InitExtensionSkills(extReg, mcpMgr, skillReg, extReloadFunc, nil, credStore, nil, nil) {
+	// Build the configServers slice so add_extension can pre-reject runtime
+	// names that collide with config-declared MCP servers (same list used by
+	// list_extensions). Keeps the API-mode registry parity with CLI mode.
+	var cfgServersForSkills []extension.ConfigMCPServer
+	for _, srv := range cfg.MCP.Servers {
+		cfgServersForSkills = append(cfgServersForSkills, extension.ConfigMCPServer{
+			Name:      srv.Name,
+			Command:   srv.Command,
+			Transport: srv.Transport,
+			URL:       srv.URL,
+		})
+	}
+	for _, s := range extension.InitExtensionSkills(extReg, mcpMgr, skillReg, extReloadFunc, nil, credStore, cfgServersForSkills, nil) {
 		skillReg.Register(s)
 	}
 	slog.Info("extension registry loaded", "path", extRegistryPath, "count", len(extReg.All()))

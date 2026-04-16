@@ -71,7 +71,7 @@ type MCPHotReloader interface {
 // subprocess restart (MCP server subprocess mode only).
 func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, credStore *security.CredentialStore, configServers []ConfigMCPServer, autoStarter ServiceAutoStarter) []*skills.Skill {
 	ss := []*skills.Skill{
-		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader, autoStarter),
+		addExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader, configServers, autoStarter),
 		removeExtensionSkill(reg, mcpMgr, skillReg, reloadFunc, hotReloader),
 		listExtensionsSkill(reg, configServers),
 		loadPromptSkill(reg),
@@ -83,7 +83,7 @@ func InitExtensionSkills(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Regist
 	return ss
 }
 
-func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, autoStarter ServiceAutoStarter) *skills.Skill {
+func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry, reloadFunc func(), hotReloader MCPHotReloader, configServers []ConfigMCPServer, autoStarter ServiceAutoStarter) *skills.Skill {
 	return &skills.Skill{
 		Name:        "add_extension",
 		Description: "Add a runtime extension (MCP server, exec skill, or prompt skill). MCP servers provide tools via the MCP protocol. Exec skills run a command as a subprocess with JSON input/output. Prompt skills are markdown instruction files (SKILL.md) that modify behavior. FOR HTTP MCP SERVERS: always include 'image' (Docker image name from the repo README) and 'ports' (host:container port mapping) so the service is automatically registered and started. Without these, the server won't auto-start. For prompt skills, use /data/extension-wrappers/<name>/ as the directory path (never use ~ or /root).",
@@ -126,6 +126,18 @@ func addExtensionSkill(reg *Registry, mcpMgr MCPAdder, skillReg *skills.Registry
 
 			if len(params.InputSchema) > 0 && !json.Valid(params.InputSchema) {
 				return "", fmt.Errorf("input_schema is not valid JSON")
+			}
+
+			// Reject names that collide with config-declared MCP servers.
+			// Without this, loadProxyUpstreams would double-register: runtime
+			// wins (see mcp_server.go dedup) and the config server is silently
+			// shadowed. Better UX to fail fast here with a clear explanation
+			// so the agent picks a different name OR the user removes the
+			// config entry first.
+			for _, srv := range configServers {
+				if srv.Name == params.Name {
+					return "", fmt.Errorf("name %q is already a config MCP server in config.toml (transport=%s); pick a different runtime name, or remove the [[mcp.servers]] entry from config.toml and retry", params.Name, srv.Transport)
+				}
 			}
 
 			// Auto-detect HTTP URLs passed as command (common LLM mistake).
