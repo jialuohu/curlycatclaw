@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.6] - 2026-04-15
+
+### Fixed
+- **`set_extension_env` silently disappeared after the Apr 7 compose migration**: The `.env`-based secrets migration in commit `0b146f6` moved `UPDATER_SECRET` out of `~/.curlycatclaw/env` but didn't carry `CURLYCATCLAW_MASTER_KEY` with it. The container ran without the master key, the credential store initialized to `nil`, and `set_extension_env`/`unset_extension_env` were never registered in the MCP subprocess — encrypted credential resolution also failed quietly. `docker-compose.yml` now plumbs `CURLYCATCLAW_MASTER_KEY=${CURLYCATCLAW_MASTER_KEY:-}` from `.env` alongside `UPDATER_SECRET`. **Action required for existing users:** if your master key lives in `~/.curlycatclaw/env`, move it to `<repo>/.env` next to `docker-compose.yml` (gitignored), then `docker compose up -d`.
+
+### Changed
+- **Silent-failure guard for missing master key**: Both `main.go` (direct API mode) and `mcp_server.go` (CLI subprocess mode) now emit a startup `WARN` when `credentials.enc` exists on disk but no master key is configured, pointing the user at `.env` and `docs/docker.md`. Catches config drift immediately instead of hiding it behind a missing tool. Credential store bootstrap in `mcp_server.go` also factored into a testable `initCredStore(dbPath)` helper with regression coverage for all five init branches.
+
 ## [0.36.5] - 2026-04-15
 
 ### Fixed

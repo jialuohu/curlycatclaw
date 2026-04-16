@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,5 +150,94 @@ func TestLoadProxyUpstreams_PerUpstreamTimeoutIsBounded(t *testing.T) {
 	// Give ourselves well under 2×perUpstreamTimeout as the safety margin.
 	if elapsed > 2*perUpstreamTimeout {
 		t.Fatalf("loadProxyUpstreams took %v for 5 fast-failing upstreams; parallel fanout broken (expected < %v)", elapsed, 2*perUpstreamTimeout)
+	}
+}
+
+// TestInitCredStore covers the credential store bootstrap branches. The
+// "no-key-but-enc-file-exists" case is the regression guard for the Apr 7
+// incident where CURLYCATCLAW_MASTER_KEY was dropped from docker-compose.yml
+// and set_extension_env silently disappeared with no log signal.
+func TestInitCredStore(t *testing.T) {
+	validKey := strings.Repeat("a1", 32) // 64 hex chars = 32 bytes
+
+	tests := []struct {
+		name        string
+		envKey      string
+		fileKey     string // if non-empty, written to file pointed to by CURLYCATCLAW_MASTER_KEY_FILE
+		createEnc   bool
+		wantStore   bool
+		wantWarnSub string // substring expected in WARN output; empty means no WARN
+	}{
+		{
+			name:      "no key and no credentials.enc returns nil silently",
+			wantStore: false,
+		},
+		{
+			name:        "no key but credentials.enc present warns",
+			createEnc:   true,
+			wantStore:   false,
+			wantWarnSub: "credentials.enc found but master key not set",
+		},
+		{
+			name:        "bad hex warns",
+			envKey:      "zzznothex",
+			wantStore:   false,
+			wantWarnSub: "invalid master key",
+		},
+		{
+			name:      "valid key via env returns store",
+			envKey:    validKey,
+			wantStore: true,
+		},
+		{
+			name:      "valid key via file returns store",
+			fileKey:   validKey,
+			wantStore: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CURLYCATCLAW_MASTER_KEY", "")
+			t.Setenv("CURLYCATCLAW_MASTER_KEY_FILE", "")
+
+			dbDir := t.TempDir()
+			dbPath := filepath.Join(dbDir, "data.db") // only Dir() is used
+
+			if tt.envKey != "" {
+				t.Setenv("CURLYCATCLAW_MASTER_KEY", tt.envKey)
+			}
+			if tt.fileKey != "" {
+				kf := filepath.Join(dbDir, "mk")
+				if err := os.WriteFile(kf, []byte(tt.fileKey), 0600); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("CURLYCATCLAW_MASTER_KEY_FILE", kf)
+			}
+			if tt.createEnc {
+				if err := os.WriteFile(filepath.Join(dbDir, "credentials.enc"), []byte{0x01}, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			got := initCredStore(dbPath)
+			if (got != nil) != tt.wantStore {
+				t.Fatalf("wantStore=%v got store=%v; log: %s", tt.wantStore, got != nil, buf.String())
+			}
+
+			out := buf.String()
+			if tt.wantWarnSub == "" {
+				if strings.Contains(out, "level=WARN") {
+					t.Errorf("unexpected WARN in log: %s", out)
+				}
+			} else if !strings.Contains(out, "level=WARN") || !strings.Contains(out, tt.wantWarnSub) {
+				t.Errorf("expected WARN containing %q, got: %s", tt.wantWarnSub, out)
+			}
+		})
 	}
 }

@@ -9,9 +9,11 @@ services:
       - ~/.curlycatclaw:/data
     environment:
       - HOME=/data
-      # UPDATER_SECRET is read from .env via ${} substitution (not env_file)
-      # so it works both on the host and when the sidecar recreates this container.
+      # UPDATER_SECRET and CURLYCATCLAW_MASTER_KEY are read from .env via ${}
+      # substitution (not env_file) so they work both on the host and when the
+      # sidecar recreates this container.
       - UPDATER_SECRET=${UPDATER_SECRET:-}
+      - CURLYCATCLAW_MASTER_KEY=${CURLYCATCLAW_MASTER_KEY:-}
     depends_on:
       qdrant:
         condition: service_healthy

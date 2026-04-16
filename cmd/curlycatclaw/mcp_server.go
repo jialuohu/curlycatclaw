@@ -167,34 +167,7 @@ func runMCPServer() error {
 	}
 
 	// Credential store for encrypted extension env vars (optional).
-	// Read master key from file (avoids /proc/PID/cmdline exposure),
-	// falling back to env var for direct API mode.
-	var credStore *security.CredentialStore
-	mkHex := os.Getenv("CURLYCATCLAW_MASTER_KEY")
-	if mkHex == "" {
-		if mkFile := os.Getenv("CURLYCATCLAW_MASTER_KEY_FILE"); mkFile != "" {
-			data, err := os.ReadFile(mkFile)
-			if err != nil {
-				slog.Warn("mcp-server: failed to read master key file", "err", err)
-			} else {
-				mkHex = strings.TrimSpace(string(data))
-			}
-		}
-	}
-	if mkHex != "" {
-		masterKey, err := hex.DecodeString(mkHex)
-		if err != nil {
-			slog.Warn("mcp-server: invalid master key (not hex)", "err", err)
-		} else {
-			credPath := filepath.Join(filepath.Dir(dbPath), "credentials.enc")
-			cs, err := security.NewCredentialStore(credPath, masterKey)
-			if err != nil {
-				slog.Warn("mcp-server: credential store init failed", "err", err)
-			} else {
-				credStore = cs
-			}
-		}
-	}
+	credStore := initCredStore(dbPath)
 
 	// Runtime extension registry (exec extensions + management skills).
 	var server *mcp.Server
@@ -398,6 +371,47 @@ func runMCPServer() error {
 
 	// Run over stdio until the parent CLI process disconnects.
 	return server.Run(context.Background(), &mcp.StdioTransport{})
+}
+
+// initCredStore loads the master key (from CURLYCATCLAW_MASTER_KEY env var, or
+// from the file pointed to by CURLYCATCLAW_MASTER_KEY_FILE to avoid /proc
+// exposure) and opens the credential store at <dbDir>/credentials.enc. Returns
+// nil on any failure, logging each failure mode. When the key is missing and
+// an existing credentials.enc is on disk, logs a WARN so a misconfigured
+// deployment surfaces in `docker compose logs` instead of silently losing
+// set_extension_env and encrypted credential resolution.
+func initCredStore(dbPath string) *security.CredentialStore {
+	credPath := filepath.Join(filepath.Dir(dbPath), "credentials.enc")
+	mkHex := os.Getenv("CURLYCATCLAW_MASTER_KEY")
+	if mkHex == "" {
+		if mkFile := os.Getenv("CURLYCATCLAW_MASTER_KEY_FILE"); mkFile != "" {
+			data, err := os.ReadFile(mkFile)
+			if err != nil {
+				slog.Warn("mcp-server: failed to read master key file", "err", err)
+			} else {
+				mkHex = strings.TrimSpace(string(data))
+			}
+		}
+	}
+	if mkHex == "" {
+		if _, err := os.Stat(credPath); err == nil {
+			slog.Warn("mcp-server: credentials.enc found but master key not set; set_extension_env will be unavailable and encrypted env vars will not resolve",
+				"path", credPath,
+				"hint", "set CURLYCATCLAW_MASTER_KEY in .env next to docker-compose.yml (see docs/docker.md)")
+		}
+		return nil
+	}
+	masterKey, err := hex.DecodeString(mkHex)
+	if err != nil {
+		slog.Warn("mcp-server: invalid master key (not hex)", "err", err)
+		return nil
+	}
+	cs, err := security.NewCredentialStore(credPath, masterKey)
+	if err != nil {
+		slog.Warn("mcp-server: credential store init failed", "err", err)
+		return nil
+	}
+	return cs
 }
 
 // perUpstreamTimeout bounds each proxy connect. Chosen to stay under Claude

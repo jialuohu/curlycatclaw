@@ -169,12 +169,12 @@ func run(configPath string) error {
 
 	// Initialize credential store (Phase 1: optional, skip if no master key).
 	var credStore *security.CredentialStore
+	credPath := filepath.Join(dataDir, "credentials.enc")
 	if masterKeyHex := os.Getenv("CURLYCATCLAW_MASTER_KEY"); masterKeyHex != "" {
 		masterKey, err := hex.DecodeString(masterKeyHex)
 		if err != nil || len(masterKey) != 32 {
 			slog.Warn("invalid CURLYCATCLAW_MASTER_KEY (need 64 hex chars for 32 bytes), credentials disabled")
 		} else {
-			credPath := filepath.Join(dataDir, "credentials.enc")
 			credStore, err = security.NewCredentialStore(credPath, masterKey)
 			if err != nil {
 				slog.Warn("credential store init failed", "err", err)
@@ -182,6 +182,10 @@ func run(configPath string) error {
 				slog.Info("credential store initialized")
 			}
 		}
+	} else if _, err := os.Stat(credPath); err == nil {
+		slog.Warn("credentials.enc found but CURLYCATCLAW_MASTER_KEY not set; encrypted env vars will not resolve",
+			"path", credPath,
+			"hint", "set CURLYCATCLAW_MASTER_KEY in .env next to docker-compose.yml (see docs/docker.md)")
 	}
 
 	// Initialize Claude client (direct API) or CLI manager (subprocess mode).
