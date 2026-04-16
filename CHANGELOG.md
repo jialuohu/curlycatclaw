@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.36.9] - 2026-04-16
+
+### Fixed
+- **Cron tasks lost access to runtime MCP extensions**: `CronExecutor.executeWithCLI` spawned the one-shot CLI subprocess with an empty `SpawnParams.MCPConfig`, so the subprocess booted with zero MCP servers — no `curlycatclaw-skills` proxy, no `paper-search-mcp`, no `scrapling`, no anything the interactive session had installed. That's why the v0.36.7 paper digest reported `search_papers`/`search_arxiv`/`search_semantic` as "not registered" and fell back to WebSearch/WebFetch. The `buildMCPConfig` helper is now a package-level `buildMCPConfigForUser(cfg, configPath, userID, chatID)` shared between `Actor` and `CronExecutor`; both spawn paths produce identical MCP server lists, so a scheduled task can use every runtime extension the interactive session can. Cron startup cost goes up by one MCP-initialize budget (~2-3s, capped at 15s per upstream in parallel), which is well inside the cron 5-minute wall clock.
+
 ## [0.36.8] - 2026-04-16
 
 ### Fixed

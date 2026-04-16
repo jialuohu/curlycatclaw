@@ -558,7 +558,7 @@ func run(configPath string) error {
 		if factStore != nil {
 			sessionFacts = factStore
 		}
-		cronRunner = session.NewCronExecutor(cfg, claudeClient, cliManager, mcpMgr, skillReg, sessionFacts)
+		cronRunner = session.NewCronExecutor(cfg, configPath, claudeClient, cliManager, mcpMgr, skillReg, sessionFacts)
 	}
 
 	// Create reminder actor.

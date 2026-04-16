@@ -49,12 +49,13 @@ func newTestCronExecutor(llm LLMClient, facts FactProvider) *CronExecutor {
 		Memory:   config.MemoryConfig{Enabled: true},
 	}
 	return &CronExecutor{
-		cfg:    cfg,
-		claude: llm,
-		mcp:    &mockCronToolRouter{},
-		skills: skills.NewRegistry(),
-		facts:  facts,
-		sem:    make(chan struct{}, 3),
+		cfg:        cfg,
+		configPath: "/tmp/test-config.toml",
+		claude:     llm,
+		mcp:        &mockCronToolRouter{},
+		skills:     skills.NewRegistry(),
+		facts:      facts,
+		sem:        make(chan struct{}, 3),
 	}
 }
 
@@ -306,5 +307,53 @@ func TestBuildSystemPrompt_IncludesScheduledAt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "SCHEDULED") {
 		t.Errorf("prompt must instruct Claude to use the SCHEDULED time, got:\n%s", prompt)
+	}
+}
+
+// TestCronExecutor_SpawnParamsIncludeMCPConfig is the regression guard for
+// the Apr 15 incident where the cron-fired paper digest reported that
+// `search_papers`/`search_arxiv`/`search_semantic` were "not registered"
+// and fell back to WebSearch/WebFetch. Root cause: CronExecutor.executeWithCLI
+// built SpawnParams without an MCPConfig, so the one-shot CLI subprocess
+// spawned with zero MCP servers — losing access to every runtime MCP
+// extension the interactive session can use.
+//
+// This test asserts buildSpawnParams populates MCPConfig with at least the
+// curlycatclaw-skills server, which is what proxies every runtime extension
+// through to the CLI subprocess.
+func TestCronExecutor_SpawnParamsIncludeMCPConfig(t *testing.T) {
+	ce := newTestCronExecutor(&mockLLM{}, &mockCronFactProvider{})
+
+	params := ce.buildSpawnParams(42, 100, "hi", "", time.Now())
+
+	if params.MCPConfig == "" {
+		t.Fatal("cron SpawnParams.MCPConfig is empty; cron CLI subprocess will spawn with zero MCP servers, blocking access to every runtime extension (paper-search-mcp, scrapling, etc.). This is the v0.36.7 regression.")
+	}
+	if !strings.Contains(params.MCPConfig, "curlycatclaw-skills") {
+		t.Errorf("cron SpawnParams.MCPConfig must register the curlycatclaw-skills proxy so runtime extensions reach the CLI subprocess; got:\n%s", params.MCPConfig)
+	}
+
+	// User/chat scoping must reach the MCP subprocess via the JSON env map
+	// so the subprocess queries the right conversation.
+	var parsed struct {
+		MCPServers map[string]struct {
+			Env map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(params.MCPConfig), &parsed); err != nil {
+		t.Fatalf("MCPConfig is not valid JSON: %v\n%s", err, params.MCPConfig)
+	}
+	skills, ok := parsed.MCPServers["curlycatclaw-skills"]
+	if !ok {
+		t.Fatalf("MCPConfig missing curlycatclaw-skills server entry: %s", params.MCPConfig)
+	}
+	if skills.Env["CURLYCATCLAW_USER_ID"] != "42" {
+		t.Errorf("MCPConfig env[CURLYCATCLAW_USER_ID] = %q, want %q", skills.Env["CURLYCATCLAW_USER_ID"], "42")
+	}
+	if skills.Env["CURLYCATCLAW_CHAT_ID"] != "100" {
+		t.Errorf("MCPConfig env[CURLYCATCLAW_CHAT_ID] = %q, want %q", skills.Env["CURLYCATCLAW_CHAT_ID"], "100")
+	}
+	if skills.Env["CURLYCATCLAW_CONFIG"] != "/tmp/test-config.toml" {
+		t.Errorf("MCPConfig env[CURLYCATCLAW_CONFIG] = %q, want %q (cron's configPath must propagate so the MCP subprocess loads the same config as interactive)", skills.Env["CURLYCATCLAW_CONFIG"], "/tmp/test-config.toml")
 	}
 }

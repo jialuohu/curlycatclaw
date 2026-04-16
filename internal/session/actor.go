@@ -2425,6 +2425,15 @@ func (a *Actor) buildHistoryPreamble(convID string) string {
 // It includes the curlycatclaw skills MCP server with user-scoped env vars,
 // plus any external MCP servers from the config.
 func (a *Actor) buildMCPConfig(userID, chatID int64) string {
+	return buildMCPConfigForUser(a.cfg, a.configPath, userID, chatID)
+}
+
+// buildMCPConfigForUser generates the --mcp-config JSON scoped to (userID,
+// chatID). Extracted from Actor.buildMCPConfig so CronExecutor can produce
+// the same MCP configuration for its one-shot CLI spawns — without this,
+// cron-fired tasks lose access to runtime MCP extensions (paper-search-mcp,
+// scrapling, etc.) and fall back to WebSearch/WebFetch.
+func buildMCPConfigForUser(cfg *config.Config, configPath string, userID, chatID int64) string {
 	type mcpServer struct {
 		Command string            `json:"command,omitempty"`
 		Args    []string          `json:"args,omitempty"`
@@ -2443,14 +2452,14 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	mcpEnv := map[string]string{
 		"CURLYCATCLAW_USER_ID": fmt.Sprintf("%d", userID),
 		"CURLYCATCLAW_CHAT_ID": fmt.Sprintf("%d", chatID),
-		"CURLYCATCLAW_DB_PATH": a.cfg.Storage.DBPath,
-		"CURLYCATCLAW_CONFIG":  a.configPath,
+		"CURLYCATCLAW_DB_PATH": cfg.Storage.DBPath,
+		"CURLYCATCLAW_CONFIG":  configPath,
 	}
-	if a.cfg.Claude.IsolatedHome != "" {
-		mcpEnv["CURLYCATCLAW_ISOLATED_HOME"] = a.cfg.Claude.IsolatedHome
+	if cfg.Claude.IsolatedHome != "" {
+		mcpEnv["CURLYCATCLAW_ISOLATED_HOME"] = cfg.Claude.IsolatedHome
 	}
-	if a.cfg.Claude.CLIPath != "" {
-		mcpEnv["CURLYCATCLAW_CLI_PATH"] = a.cfg.Claude.CLIPath
+	if cfg.Claude.CLIPath != "" {
+		mcpEnv["CURLYCATCLAW_CLI_PATH"] = cfg.Claude.CLIPath
 	}
 	// Pass updater secret so the MCP subprocess can register manage_service.
 	if secret := os.Getenv("UPDATER_SECRET"); secret != "" {
@@ -2483,8 +2492,8 @@ func (a *Actor) buildMCPConfig(userID, chatID int64) string {
 	// Include MCP servers from installed plugins in the isolated home.
 	// Reads installed_plugins.json (the CLI's plugin manifest) and follows
 	// each plugin's installPath to discover .mcp.json server declarations.
-	if a.cfg.Claude.IsolatedHome != "" {
-		manifestPath := filepath.Join(a.cfg.Claude.IsolatedHome, ".claude", "plugins", "installed_plugins.json")
+	if cfg.Claude.IsolatedHome != "" {
+		manifestPath := filepath.Join(cfg.Claude.IsolatedHome, ".claude", "plugins", "installed_plugins.json")
 		manifestData, err := os.ReadFile(manifestPath)
 		if err != nil {
 			slog.Debug("buildMCPConfig: no plugin manifest", "path", manifestPath)

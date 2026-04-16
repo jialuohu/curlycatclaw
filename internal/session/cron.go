@@ -18,18 +18,23 @@ import (
 // CronExecutor runs Claude with a clean context for scheduled tasks.
 // It implements skills.CronRunner.
 type CronExecutor struct {
-	cfg      *config.Config
-	claude   LLMClient
-	cliMgr   *claude.CLIManager
-	mcp      ToolRouter
-	skills   *skills.Registry
-	facts    FactProvider
-	sem      chan struct{} // bounds concurrent cron executions
+	cfg        *config.Config
+	configPath string // path to config.toml, passed to MCP subprocesses spawned for cron runs
+	claude     LLMClient
+	cliMgr     *claude.CLIManager
+	mcp        ToolRouter
+	skills     *skills.Registry
+	facts      FactProvider
+	sem        chan struct{} // bounds concurrent cron executions
 }
 
 // NewCronExecutor creates a CronExecutor. cliMgr may be nil if not using CLI mode.
+// configPath is propagated into the --mcp-config JSON so the CLI subprocess's
+// curlycatclaw-skills MCP server can load the same config as the interactive
+// session (required for runtime MCP extensions like paper-search-mcp).
 func NewCronExecutor(
 	cfg *config.Config,
+	configPath string,
 	claudeClient LLMClient,
 	cliMgr *claude.CLIManager,
 	mcpMgr ToolRouter,
@@ -37,13 +42,14 @@ func NewCronExecutor(
 	factStore FactProvider,
 ) *CronExecutor {
 	return &CronExecutor{
-		cfg:    cfg,
-		claude: claudeClient,
-		cliMgr: cliMgr,
-		mcp:    mcpMgr,
-		skills: skillReg,
-		facts:  factStore,
-		sem:    make(chan struct{}, 3),
+		cfg:        cfg,
+		configPath: configPath,
+		claude:     claudeClient,
+		cliMgr:     cliMgr,
+		mcp:        mcpMgr,
+		skills:     skillReg,
+		facts:      factStore,
+		sem:        make(chan struct{}, 3),
 	}
 }
 
@@ -175,13 +181,22 @@ func (ce *CronExecutor) runToolLoop(
 }
 
 // executeWithCLI runs the prompt through a one-shot CLI subprocess.
-func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error) {
-	_ = chatID // reserved for future per-chat routing
-	proc, err := ce.cliMgr.SpawnOneShot(ctx, claude.SpawnParams{
+// buildSpawnParams assembles the SpawnParams for a cron-triggered CLI run.
+// Extracted from executeWithCLI so tests can assert that the MCP config is
+// populated — without that, cron-fired tasks spawn a CLI subprocess with no
+// MCP servers and lose access to runtime extensions like paper-search-mcp
+// (the v0.36.7 incident where a paper digest fell back to WebSearch).
+func (ce *CronExecutor) buildSpawnParams(userID, chatID int64, prompt, model string, scheduledAt time.Time) claude.SpawnParams {
+	return claude.SpawnParams{
 		SystemPrompt: ce.buildSystemPrompt(userID, scheduledAt),
+		MCPConfig:    buildMCPConfigForUser(ce.cfg, ce.configPath, userID, chatID),
 		InitialMsg:   claude.BuildUserMessage(prompt),
 		Model:        model,
-	})
+	}
+}
+
+func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error) {
+	proc, err := ce.cliMgr.SpawnOneShot(ctx, ce.buildSpawnParams(userID, chatID, prompt, model, scheduledAt))
 	if err != nil {
 		return "", fmt.Errorf("cron: spawn CLI: %w", err)
 	}
