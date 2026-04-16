@@ -199,4 +199,4 @@ The file content is injected as the system prompt prefix for chat conversations.
 
 ## Encrypted MCP Credentials
 
-For encrypted MCP credentials, set `CURLYCATCLAW_MASTER_KEY` env var (64 hex chars = 32 bytes). MCP servers, Wasm plugins, cron tasks, and other advanced options are documented in `config.toml.example`.
+For encrypted MCP credentials, generate a 64-hex-char (32-byte) key and put it in `.env` next to `docker-compose.yml` (gitignored): `echo "CURLYCATCLAW_MASTER_KEY=$(openssl rand -hex 32)" >> .env`. Docker Compose auto-reads `.env` and passes the key into the container. Without it, `set_extension_env`/`unset_extension_env` are not available and any existing `credentials.enc` cannot be decrypted; a startup `WARN` fires if `credentials.enc` exists but the key is missing, so you'll see it in `docker compose logs` immediately. MCP servers, Wasm plugins, cron tasks, and other advanced options are documented in `config.toml.example`.
