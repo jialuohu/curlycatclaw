@@ -312,11 +312,20 @@ func NewReminderActor(db *sql.DB, tgInbox chan<- telegram.OutgoingMessage, loc *
 // Name implements actor.Actor.
 func (ra *ReminderActor) Name() string { return "reminder" }
 
+// newCronScheduler returns a gocron scheduler bound to loc so cron expressions
+// like "0 6 * * *" evaluate in the user's configured timezone, not the
+// container's local time. Without this, a UTC container with a PDT-configured
+// user fires "0 6 * * *" at 06:00 UTC = 23:00 PDT the previous day — 7 hours
+// early. Regression guard: skills/remind_test.go:TestNewCronScheduler_FiresInConfiguredLocation.
+func newCronScheduler(loc *time.Location) (gocron.Scheduler, error) {
+	return gocron.NewScheduler(gocron.WithLocation(loc))
+}
+
 // Run implements actor.Actor. It starts a gocron scheduler, loads all pending
 // reminders, fires past-due ones immediately, and schedules future ones.
 // It then listens for signals to add or cancel reminders.
 func (ra *ReminderActor) Run(ctx context.Context) error {
-	scheduler, err := gocron.NewScheduler()
+	scheduler, err := newCronScheduler(ra.loc)
 	if err != nil {
 		return fmt.Errorf("reminder: create scheduler: %w", err)
 	}

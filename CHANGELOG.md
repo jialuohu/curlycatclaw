@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.36.7] - 2026-04-16
+
+### Fixed
+- **Cron reminders fired in the wrong timezone**: The gocron scheduler was created with no location option, so cron expressions like `0 6 * * *` evaluated in the container's `time.Local` (UTC) instead of the user's configured timezone. A daily digest scheduled for 6 AM America/Los_Angeles fired at 06:00 UTC = 23:00 PDT the previous day, **7 hours early**, which is how the "agent suddenly sent me a daily digest at 11 PM" incident happened on Apr 15. The fix extracts a tiny `newCronScheduler(loc)` helper and passes `gocron.WithLocation(ra.loc)` so the scheduler evaluates cron expressions in the configured timezone. One-time reminders are unaffected (they already used absolute `time.Time` instants). A regression test schedules `0 6 * * *` in both PDT and Tokyo and asserts the resolved UTC instants differ — which catches this class of bug regardless of the host's `time.Local`. On restart, existing cron rows in the `reminders` table are automatically re-scheduled with the correct timezone.
+
 ## [0.36.6] - 2026-04-15
 
 ### Fixed

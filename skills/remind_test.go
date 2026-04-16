@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-co-op/gocron/v2"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 
 	_ "modernc.org/sqlite"
@@ -811,4 +812,69 @@ func TestMigration_DuplicateColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second InitRemindSkills should be idempotent: %v", err)
 	}
+}
+
+// TestNewCronScheduler_FiresInConfiguredLocation is the regression guard for
+// the Apr 15 incident where the scheduler was created with
+// `gocron.NewScheduler()` (no location), so cron expressions evaluated in
+// container-local time (UTC) instead of the user's configured timezone. A
+// daily digest scheduled as "0 6 * * *" with timezone America/Los_Angeles
+// fired at 06:00 UTC = 23:00 PDT the previous day, 7 hours early.
+//
+// The test uses TWO schedulers in different timezones and asserts their
+// NextRun for "0 6 * * *" resolves to DIFFERENT UTC instants. That's the
+// only way to catch the regression regardless of the host's time.Local,
+// since a PDT-local dev machine would make the pre-fix path coincidentally
+// pass a PDT-only test.
+func TestNewCronScheduler_FiresInConfiguredLocation(t *testing.T) {
+	pdt, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load America/Los_Angeles: %v", err)
+	}
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatalf("load Asia/Tokyo: %v", err)
+	}
+
+	pdtNext := nextCronRun(t, pdt, "0 6 * * *")
+	tokyoNext := nextCronRun(t, tokyo, "0 6 * * *")
+
+	// PDT is UTC-7/8 and Tokyo is UTC+9. "0 6 * * *" in each zone must produce
+	// different UTC instants. If the schedulers ignore WithLocation and fall
+	// back to time.Local, both NextRun calls share the same tz and return the
+	// same UTC instant. That's exactly the bug this test is here to catch.
+	if pdtNext.Equal(tokyoNext) {
+		t.Fatalf("cron \"0 6 * * *\" resolved to the SAME UTC instant %s in both America/Los_Angeles and Asia/Tokyo. gocron.WithLocation is being ignored — most likely because it was dropped from newCronScheduler.",
+			pdtNext.UTC().Format(time.RFC3339))
+	}
+
+	// Sanity: each scheduler fires at 06:00 in its own tz.
+	if h := pdtNext.In(pdt).Hour(); h != 6 {
+		t.Errorf("PDT scheduler: expected 06:00 PDT, got hour=%d (%s)", h, pdtNext.In(pdt).Format(time.RFC3339))
+	}
+	if h := tokyoNext.In(tokyo).Hour(); h != 6 {
+		t.Errorf("Tokyo scheduler: expected 06:00 JST, got hour=%d (%s)", h, tokyoNext.In(tokyo).Format(time.RFC3339))
+	}
+}
+
+func nextCronRun(t *testing.T, loc *time.Location, expr string) time.Time {
+	t.Helper()
+	sched, err := newCronScheduler(loc)
+	if err != nil {
+		t.Fatalf("newCronScheduler(%s): %v", loc, err)
+	}
+	t.Cleanup(func() { _ = sched.Shutdown() })
+	sched.Start()
+	job, err := sched.NewJob(
+		gocron.CronJob(expr, false),
+		gocron.NewTask(func() {}),
+	)
+	if err != nil {
+		t.Fatalf("schedule %q in %s: %v", expr, loc, err)
+	}
+	next, err := job.NextRun()
+	if err != nil {
+		t.Fatalf("NextRun (%s): %v", loc, err)
+	}
+	return next
 }
