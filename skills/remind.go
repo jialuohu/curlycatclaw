@@ -95,7 +95,14 @@ func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]
 		Execute:     makeDeleteReminderExecute(db),
 	}
 
-	return []*Skill{setSkill, listSkill, cancelSkill, deleteSkill}, nil
+	updateSkill := &Skill{
+		Name:        "update_reminder",
+		Description: "Update an existing pending reminder in place. Partial update: only fields you provide change; omitted fields stay as-is. Use this to rename/refine a reminder's title or prompt without losing the original prompt body (common for recurring cron tasks). Only updates pending reminders — for cancelled/fired rows, create a fresh one with set_reminder. fire_at is ignored for recurring reminders (cron_expr drives schedule).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Reminder ID to update"},"message":{"type":"string","description":"New label/title (omit to keep current)"},"fire_at":{"type":"string","description":"New ISO 8601 fire time (omit to keep current). Ignored if the reminder is recurring."},"recurring":{"type":"string","description":"New cron expression (omit to keep current). Cannot clear — for one-time, recreate with set_reminder."},"prompt":{"type":"string","description":"New Claude prompt (omit to keep current)."},"model":{"type":"string","description":"New model override (omit to keep current)."}},"required":["id"]}`),
+		Execute:     makeUpdateReminderExecute(db, signalCh, loc),
+	}
+
+	return []*Skill{setSkill, listSkill, cancelSkill, deleteSkill, updateSkill}, nil
 }
 
 type setReminderInput struct {
@@ -104,6 +111,49 @@ type setReminderInput struct {
 	Recurring string `json:"recurring"`
 	Prompt    string `json:"prompt"`
 	Model     string `json:"model"`
+}
+
+// validateReminderMessage enforces the 2000-rune cap shared by set_reminder
+// and update_reminder. Returns nil for empty strings — callers decide whether
+// empty is "don't change" (update) or "required" (set).
+func validateReminderMessage(s string) error {
+	if len([]rune(s)) > 2000 {
+		return fmt.Errorf("message too long (max 2000 characters)")
+	}
+	return nil
+}
+
+// validateReminderPrompt enforces the 5000-rune cap. Empty is accepted (means
+// "no prompt" for set, "don't change" for update).
+func validateReminderPrompt(s string) error {
+	if len([]rune(s)) > 5000 {
+		return fmt.Errorf("prompt too long (max 5000 characters)")
+	}
+	return nil
+}
+
+// parseFireAt parses an ISO 8601 timestamp in the configured location, falling
+// back to RFC3339 for inputs carrying their own offset. Shared by set_reminder
+// and update_reminder so both accept the same formats.
+func parseFireAt(s string, loc *time.Location) (time.Time, error) {
+	fireAt, err := time.ParseInLocation("2006-01-02T15:04:05", s, loc)
+	if err == nil {
+		return fireAt, nil
+	}
+	fireAt, rfcErr := time.Parse(time.RFC3339, s)
+	if rfcErr != nil {
+		return time.Time{}, fmt.Errorf("invalid fire_at format (use ISO 8601, e.g. 2025-01-15T09:00:00): %w", rfcErr)
+	}
+	return fireAt, nil
+}
+
+// validateCronExpr parses via robfig/cron/v3 standard parser so users get
+// immediate feedback rather than a silent scheduling failure later.
+func validateCronExpr(s string) error {
+	if _, err := cron.ParseStandard(s); err != nil {
+		return fmt.Errorf("invalid cron expression %q: %w", s, err)
+	}
+	return nil
 }
 
 func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -115,23 +165,19 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 		if params.Message == "" {
 			return "", fmt.Errorf("message is required")
 		}
-		if len([]rune(params.Message)) > 2000 {
-			return "", fmt.Errorf("message too long (max 2000 characters)")
+		if err := validateReminderMessage(params.Message); err != nil {
+			return "", err
 		}
-		if params.Prompt != "" && len([]rune(params.Prompt)) > 5000 {
-			return "", fmt.Errorf("prompt too long (max 5000 characters)")
+		if err := validateReminderPrompt(params.Prompt); err != nil {
+			return "", err
 		}
 		if params.FireAt == "" {
 			return "", fmt.Errorf("fire_at is required")
 		}
 
-		fireAt, err := time.ParseInLocation("2006-01-02T15:04:05", params.FireAt, loc)
+		fireAt, err := parseFireAt(params.FireAt, loc)
 		if err != nil {
-			// Try with timezone offset.
-			fireAt, err = time.Parse(time.RFC3339, params.FireAt)
-			if err != nil {
-				return "", fmt.Errorf("invalid fire_at format (use ISO 8601, e.g. 2025-01-15T09:00:00): %w", err)
-			}
+			return "", err
 		}
 
 		user := GetUser(ctx)
@@ -140,10 +186,8 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 
 		var cronExpr *string
 		if params.Recurring != "" {
-			// Validate the cron expression at input time so the user gets
-			// immediate feedback instead of a silent scheduling failure later.
-			if _, parseErr := cron.ParseStandard(params.Recurring); parseErr != nil {
-				return "", fmt.Errorf("invalid cron expression %q: %w", params.Recurring, parseErr)
+			if err := validateCronExpr(params.Recurring); err != nil {
+				return "", err
 			}
 			cronExpr = &params.Recurring
 		}
@@ -274,6 +318,142 @@ type deleteReminderInput struct {
 	ID int64 `json:"id"`
 }
 
+type updateReminderInput struct {
+	ID        int64  `json:"id"`
+	Message   string `json:"message"`
+	FireAt    string `json:"fire_at"`
+	Recurring string `json:"recurring"`
+	Prompt    string `json:"prompt"`
+	Model     string `json:"model"`
+}
+
+// makeUpdateReminderExecute patches a pending reminder in place. Empty-string
+// means "don't change", matching the convention in update_observation. The
+// signal is fired on every successful update (not just schedule changes) so
+// the actor drops the stale gocron closure and picks up new message/prompt/
+// model values on the next fire.
+func makeUpdateReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		var params updateReminderInput
+		if err := json.Unmarshal(input, &params); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
+		}
+		if params.ID == 0 {
+			return "", fmt.Errorf("id is required")
+		}
+		if params.Message == "" && params.FireAt == "" && params.Recurring == "" && params.Prompt == "" && params.Model == "" {
+			return "", fmt.Errorf("at least one field (message, fire_at, recurring, prompt, model) must be provided")
+		}
+
+		user := GetUser(ctx)
+
+		// Look up first so we can produce the right error: not-found vs
+		// not-pending. Cross-user IDs collapse to "not found" to avoid
+		// leaking existence of another user's rows (IDOR-safe, same shape
+		// as delete_reminder). We also pull cron_expr because we need to
+		// know the current recurrence state to validate fire_at updates.
+		var status string
+		var currentCronExpr *string
+		err := db.QueryRowContext(ctx,
+			`SELECT status, cron_expr FROM reminders WHERE id = ? AND user_id = ?`,
+			params.ID, user.UserID,
+		).Scan(&status, &currentCronExpr)
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("reminder #%d not found", params.ID)
+		}
+		if err != nil {
+			return "", fmt.Errorf("lookup reminder: %w", err)
+		}
+		if status != "pending" {
+			return "", fmt.Errorf("reminder #%d is %s, not pending; call set_reminder to create a new one", params.ID, status)
+		}
+
+		// Reject fire_at on recurring reminders: gocron uses cron_expr not
+		// fire_at to pick next run, but fire_at is stored and passed to
+		// CronExecutor as the reported scheduledAt. Letting update_reminder
+		// rewrite it silently corrupts what Claude reports as the scheduled
+		// fire time. The only legitimate way to reschedule a recurring
+		// reminder is via `recurring`. Callers updating fire_at AND clearing
+		// to one-time are not supported (can't clear optional fields here —
+		// that requires cancel+recreate).
+		if params.FireAt != "" && currentCronExpr != nil && params.Recurring == "" {
+			return "", fmt.Errorf("reminder #%d is recurring; fire_at is not applicable. Use `recurring` to change the cron schedule, or cancel + set_reminder to convert to one-time", params.ID)
+		}
+
+		// Validate each provided field before touching the DB.
+		setClauses := make([]string, 0, 5)
+		args := make([]any, 0, 7)
+
+		if params.Message != "" {
+			if err := validateReminderMessage(params.Message); err != nil {
+				return "", err
+			}
+			setClauses = append(setClauses, "message = ?")
+			args = append(args, params.Message)
+		}
+		if params.FireAt != "" {
+			fireAt, err := parseFireAt(params.FireAt, loc)
+			if err != nil {
+				return "", err
+			}
+			setClauses = append(setClauses, "fire_at = ?")
+			args = append(args, fireAt.UTC())
+		}
+		if params.Recurring != "" {
+			if err := validateCronExpr(params.Recurring); err != nil {
+				return "", err
+			}
+			setClauses = append(setClauses, "cron_expr = ?")
+			args = append(args, params.Recurring)
+		}
+		if params.Prompt != "" {
+			if err := validateReminderPrompt(params.Prompt); err != nil {
+				return "", err
+			}
+			setClauses = append(setClauses, "prompt = ?")
+			args = append(args, params.Prompt)
+		}
+		if params.Model != "" {
+			setClauses = append(setClauses, "model = ?")
+			args = append(args, params.Model)
+		}
+
+		// TOCTOU guard: gate UPDATE with status='pending'. If the row flipped
+		// to cancelled/fired between our lookup and this update, rowsAffected
+		// will be 0 and we surface a retry-friendly error instead of silently
+		// patching a tombstone.
+		query := fmt.Sprintf(
+			`UPDATE reminders SET %s WHERE id = ? AND user_id = ? AND status = 'pending'`,
+			strings.Join(setClauses, ", "),
+		)
+		args = append(args, params.ID, user.UserID)
+
+		res, err := db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return "", fmt.Errorf("update reminder: %w", err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			return "", fmt.Errorf("reminder #%d is no longer pending; refresh with list_reminders and retry", params.ID)
+		}
+
+		// Always signal the actor so it re-reads from DB and replaces the
+		// stale gocron closure. Without this, message/prompt/model edits
+		// wouldn't take effect until the next container restart because the
+		// original closure captures reminderRow by value at schedule time.
+		signalTimer := time.NewTimer(5 * time.Second)
+		defer signalTimer.Stop()
+		select {
+		case signalCh <- params.ID:
+		case <-signalTimer.C:
+			slog.Error("remind signal channel full after 5s", "id", params.ID)
+			return "", fmt.Errorf("reminder #%d updated in database but scheduler is unresponsive; changes will take effect on next restart", params.ID)
+		}
+
+		return fmt.Sprintf("Updated reminder #%d", params.ID), nil
+	}
+}
+
 func makeDeleteReminderExecute(db *sql.DB) func(ctx context.Context, input json.RawMessage) (string, error) {
 	return func(ctx context.Context, input json.RawMessage) (string, error) {
 		var params deleteReminderInput
@@ -376,8 +556,20 @@ type ReminderActor struct {
 	cronExec  CronRunner            // nil = no cron task support (static text only)
 	persister ConversationPersister // nil = cron output goes to Telegram only, not chat history
 
-	mu   sync.Mutex
-	jobs map[int64]gocron.Job
+	mu       sync.Mutex
+	jobs     map[int64]gocron.Job
+	jobMeta  map[int64]scheduleSnapshot // per-id snapshot of schedule-affecting fields at last schedule time
+}
+
+// scheduleSnapshot records the schedule-affecting fields (FireAt for one-time,
+// CronExpr for recurring) captured when a reminder was last scheduled. Used by
+// pollNewReminders to detect in-DB edits that arrived via a channel that
+// doesn't reach this actor — specifically the MCP subprocess's drained
+// signalCh in CLI mode. Without this, update_reminder would be a no-op in CLI
+// mode: DB gets updated, scheduler keeps firing with the old timing.
+type scheduleSnapshot struct {
+	FireAt   time.Time
+	CronExpr *string
 }
 
 // NewReminderActor creates a new ReminderActor. cronExec may be nil to disable
@@ -390,6 +582,7 @@ func NewReminderActor(db *sql.DB, tgInbox chan<- telegram.OutgoingMessage, loc *
 		signalCh: signalCh,
 		cronExec: cronExec,
 		jobs:     make(map[int64]gocron.Job),
+		jobMeta:  make(map[int64]scheduleSnapshot),
 	}
 }
 
@@ -477,20 +670,36 @@ func (ra *ReminderActor) loadPendingReminders(ctx context.Context, scheduler goc
 	}
 	rows.Close()
 
-	now := time.Now().UTC()
 	for _, r := range reminders {
-		if r.FireAt.Before(now) && r.CronExpr == nil {
-			// Past-due, non-recurring: fire immediately.
-			ra.fireReminder(r)
-		} else {
-			ra.scheduleReminder(scheduler, r)
-		}
+		ra.scheduleOrFire(scheduler, r)
 	}
 	return nil
 }
 
+// scheduleOrFire schedules a reminder via gocron, or fires it immediately if
+// it's a past-due one-time reminder (gocron.OneTimeJob behavior with a past
+// start time is implementation-defined — may silently no-op, which would mean
+// users never get their reminder). Used by loadPendingReminders on startup,
+// handleSignal on API-mode update signals, and pollNewReminders Phase 1.5
+// for CLI-mode schedule drift, so all three paths have matching semantics
+// when update_reminder sets fire_at to a past time.
+func (ra *ReminderActor) scheduleOrFire(scheduler gocron.Scheduler, r reminderRow) {
+	if r.CronExpr == nil && r.FireAt.Before(time.Now().UTC()) {
+		ra.fireReminder(r)
+		return
+	}
+	ra.scheduleReminder(scheduler, r)
+}
+
 // handleSignal processes a signal for a reminder ID. It queries the reminder
-// and either schedules or cancels it.
+// and syncs the gocron schedule to current DB state — cancelling if the row
+// is cancelled, (re)scheduling if pending. For updates (where the row was
+// already pending and is now pending with different fields), it cancels the
+// existing job first before creating a new one. Without that, scheduleReminder
+// would leave the old gocron job in the scheduler firing at the old time while
+// adding a second job at the new time. It would also keep the gocron closure
+// capturing a stale reminderRow, so title/prompt updates wouldn't surface
+// until the next container restart.
 func (ra *ReminderActor) handleSignal(ctx context.Context, scheduler gocron.Scheduler, id int64) {
 	var r reminderRow
 	var status string
@@ -509,7 +718,13 @@ func (ra *ReminderActor) handleSignal(ctx context.Context, scheduler gocron.Sche
 	}
 
 	if status == "pending" {
-		ra.scheduleReminder(scheduler, r)
+		ra.mu.Lock()
+		_, existing := ra.jobs[id]
+		ra.mu.Unlock()
+		if existing {
+			ra.cancelJob(scheduler, id)
+		}
+		ra.scheduleOrFire(scheduler, r)
 	}
 }
 
@@ -528,6 +743,7 @@ func (ra *ReminderActor) scheduleReminder(scheduler gocron.Scheduler, r reminder
 		if r.CronExpr == nil {
 			ra.mu.Lock()
 			delete(ra.jobs, r.ID)
+			delete(ra.jobMeta, r.ID)
 			ra.mu.Unlock()
 		}
 	})
@@ -540,6 +756,7 @@ func (ra *ReminderActor) scheduleReminder(scheduler gocron.Scheduler, r reminder
 
 	ra.mu.Lock()
 	ra.jobs[r.ID] = job
+	ra.jobMeta[r.ID] = scheduleSnapshot{FireAt: r.FireAt, CronExpr: r.CronExpr}
 	ra.mu.Unlock()
 
 	slog.Info("reminder: scheduled", "id", r.ID, "fire_at", r.FireAt)
@@ -547,13 +764,21 @@ func (ra *ReminderActor) scheduleReminder(scheduler gocron.Scheduler, r reminder
 
 // fireReminder sends the reminder message via Telegram and updates the DB status.
 // If the reminder has a prompt and CronRunner is available, it invokes Claude instead.
+// Re-reads the full row from DB before firing so message/prompt/model edits
+// made via update_reminder propagate without requiring a reschedule. This
+// matters especially in CLI mode where update_reminder's signal drains to
+// /dev/null in the MCP subprocess; the scheduled gocron closure captured the
+// row by value at schedule time, so without this re-read, the fire would use
+// stale content. Status is still checked to skip fires for cancelled rows.
 func (ra *ReminderActor) fireReminder(r reminderRow) {
-	// Re-check DB status before firing. The reminder may have been cancelled
-	// between scheduling and firing (e.g., cancel_reminder in CLI mode where
-	// the signal channel doesn't reach this process).
+	var fresh reminderRow
 	var status string
-	if err := ra.db.QueryRow(`SELECT status FROM reminders WHERE id = ?`, r.ID).Scan(&status); err != nil {
-		slog.Error("reminder: failed to re-check status before firing", "id", r.ID, "err", err)
+	err := ra.db.QueryRow(
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, status FROM reminders WHERE id = ?`,
+		r.ID,
+	).Scan(&fresh.ID, &fresh.UserID, &fresh.ChatID, &fresh.Message, &fresh.FireAt, &fresh.CronExpr, &fresh.Prompt, &fresh.Model, &status)
+	if err != nil {
+		slog.Error("reminder: failed to re-read before firing", "id", r.ID, "err", err)
 		return
 	}
 	if status != "pending" {
@@ -561,22 +786,27 @@ func (ra *ReminderActor) fireReminder(r reminderRow) {
 		return
 	}
 
-	if r.Prompt != nil && *r.Prompt != "" && ra.cronExec != nil {
-		ra.fireCronTask(r)
+	// Preserve the originally-scheduled fire time so cron-task output reports
+	// the scheduled time we actually fired at (not a fire_at that may have
+	// been rewritten post-schedule). fresh is otherwise authoritative.
+	fresh.FireAt = r.FireAt
+
+	if fresh.Prompt != nil && *fresh.Prompt != "" && ra.cronExec != nil {
+		ra.fireCronTask(fresh)
 		return
 	}
 
 	msg := telegram.OutgoingMessage{
-		ChatID: r.ChatID,
-		Text:   "Reminder: " + r.Message,
+		ChatID: fresh.ChatID,
+		Text:   "Reminder: " + fresh.Message,
 	}
 
 	// Blocking send with 5s timeout. Reminders are too important to silently drop.
-	if !ra.trySendTelegram(r.ID, msg) {
+	if !ra.trySendTelegram(fresh.ID, msg) {
 		return // Don't update status — will retry on next startup.
 	}
 
-	ra.markFiredIfOneTime(r)
+	ra.markFiredIfOneTime(fresh)
 }
 
 // fireCronTask invokes Claude with the reminder's prompt and sends the result.
@@ -594,7 +824,7 @@ func (ra *ReminderActor) fireCronTask(r reminderRow) {
 	if err != nil {
 		slog.Error("reminder: cron task failed", "id", r.ID, "err", err)
 		errText := fmt.Sprintf("[Cron task failed] %s: %v", r.Message, err)
-		errMsg := telegram.OutgoingMessage{ChatID: r.ChatID, Text: errText}
+		errMsg := telegram.OutgoingMessage{ChatID: r.ChatID, Text: errText, HTML: true}
 		ra.trySendTelegram(r.ID, errMsg)
 		ra.persistCronTurn(r, errText)
 		// For one-time: still mark fired (error was delivered).
@@ -605,8 +835,13 @@ func (ra *ReminderActor) fireCronTask(r reminderRow) {
 		return
 	}
 
+	// HTML: true so the Telegram channel runs mdhtml.ConvertSafe and sends
+	// with ParseMode=HTML. Without it, Claude's markdown output (**bold**,
+	// ### headers, [links](url), - bullets) renders as raw characters in
+	// Telegram. Interactive session sets HTML: true on every Claude-output
+	// send (internal/session/actor.go); the cron path needs the same.
 	assistantText := fmt.Sprintf("**%s**\n\n%s", r.Message, result)
-	msg := telegram.OutgoingMessage{ChatID: r.ChatID, Text: assistantText}
+	msg := telegram.OutgoingMessage{ChatID: r.ChatID, Text: assistantText, HTML: true}
 	if !ra.trySendTelegram(r.ID, msg) {
 		return
 	}
@@ -701,6 +936,63 @@ func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.
 		}
 	}
 
+	// Phase 1.5: Detect schedule-affecting updates on tracked pending rows.
+	// In CLI mode, update_reminder signals a channel that drains to /dev/null
+	// in the MCP subprocess, so the live actor never hears about fire_at /
+	// cron_expr changes. We compare DB against jobMeta (the snapshot captured
+	// when the job was last scheduled) and reschedule on divergence. Without
+	// this, update_reminder would appear to succeed but the scheduler would
+	// keep firing at the old time until the next container restart. Message /
+	// prompt / model edits are handled separately by fireReminder's DB
+	// re-read — they don't require a reschedule.
+	for _, id := range trackedIDs {
+		var fireAt time.Time
+		var cronExpr *string
+		var status string
+		if err := ra.db.QueryRowContext(ctx,
+			`SELECT fire_at, cron_expr, status FROM reminders WHERE id = ?`,
+			id,
+		).Scan(&fireAt, &cronExpr, &status); err != nil {
+			continue
+		}
+		if status != "pending" {
+			continue // Handled by Phase 1 above.
+		}
+
+		ra.mu.Lock()
+		snap, ok := ra.jobMeta[id]
+		ra.mu.Unlock()
+		if !ok {
+			continue // Just-cancelled by Phase 1 or never scheduled; skip.
+		}
+
+		fireChanged := !snap.FireAt.Equal(fireAt)
+		cronChanged := (snap.CronExpr == nil) != (cronExpr == nil) ||
+			(snap.CronExpr != nil && cronExpr != nil && *snap.CronExpr != *cronExpr)
+		if !fireChanged && !cronChanged {
+			continue
+		}
+
+		// Reload the full row (still filtering on pending — Finding 1C: between
+		// the first status check and here, the row could have flipped to
+		// fired/cancelled; without this filter we'd schedule a phantom job).
+		var r reminderRow
+		err := ra.db.QueryRowContext(ctx,
+			`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model FROM reminders WHERE id = ? AND status = 'pending'`,
+			id,
+		).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model)
+		if err == sql.ErrNoRows {
+			continue // Status raced to non-pending; Phase 1 (next tick) will clean up the stale job.
+		}
+		if err != nil {
+			slog.Error("reminder: poll reload for reschedule", "id", id, "err", err)
+			continue
+		}
+		slog.Info("reminder: poll detected schedule change, rescheduling", "id", id, "fire_changed", fireChanged, "cron_changed", cronChanged)
+		ra.cancelJob(scheduler, id)
+		ra.scheduleOrFire(scheduler, r)
+	}
+
 	// Phase 2: Find new pending reminders not yet scheduled.
 	rows, err := ra.db.QueryContext(ctx,
 		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model FROM reminders WHERE status = 'pending'`,
@@ -729,14 +1021,9 @@ func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.
 	}
 	rows.Close()
 
-	now := time.Now().UTC()
 	for _, r := range unscheduled {
 		slog.Info("reminder: poll found unscheduled reminder", "id", r.ID)
-		if r.FireAt.Before(now) && r.CronExpr == nil {
-			ra.fireReminder(r)
-		} else {
-			ra.scheduleReminder(scheduler, r)
-		}
+		ra.scheduleOrFire(scheduler, r)
 	}
 }
 
@@ -746,6 +1033,7 @@ func (ra *ReminderActor) cancelJob(scheduler gocron.Scheduler, id int64) {
 	job, ok := ra.jobs[id]
 	if ok {
 		delete(ra.jobs, id)
+		delete(ra.jobMeta, id)
 	}
 	ra.mu.Unlock()
 
