@@ -3,7 +3,7 @@
 All config lives in `~/.curlycatclaw/config.toml` (mounted as `/data/config.toml` inside Docker). Copy from the example and fill in your credentials. See [`config.toml.example`](../config.toml.example) for the full reference.
 
 ```toml
-timezone = "America/Los_Angeles"
+timezone = "America/Los_Angeles"   # also overridable at runtime: agent calls set_timezone Asia/Tokyo and pending recurring reminders reschedule within ~10s, no restart
 
 [claude]
 cli_path      = "/usr/local/bin/claude"

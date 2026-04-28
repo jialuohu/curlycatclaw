@@ -156,3 +156,11 @@ Qdrant (gRPC, cosine similarity, user_id tenant isolation):
 
 query → Embed(query) → Qdrant.Search(vector, user_id filter) → ranked results
 ```
+
+## Runtime Overrides
+
+Agent-modifiable global settings live in the `system_prefs` SQLite table (`key`, `value`, `updated_at`). Today's only key is `timezone`, written by the `set_timezone` MCP skill, read via `memory.EffectiveLocation(cfg, db)` which returns `(loc, source)` where source is `"override"` or `"config"`. Falls back to `cfg.Timezone` when no override row exists.
+
+When the override changes, the `ReminderActor` rebuilds its gocron scheduler (`gocron.WithLocation` is fixed at scheduler-creation time, so a full Shutdown + new Scheduler + reload-pending is required). Two paths feed the rebuild: the explicit `tzChangeCh` signal from `set_timezone` (immediate in API mode), and a 10s `pollNewReminders` tick (CLI-mode parity since the MCP subprocess's signal channel drains to /dev/null). `Shutdown` is wrapped in a 30s timeout so a stuck in-flight cron-Claude task can't block forever.
+
+Five callsites read the effective TZ: skill-closure factories in `skills/remind.go` (via a `locFn func() *time.Location` parameter, called fresh per invocation), `ReminderActor.maybeRebuildScheduler`, `CronExecutor.buildSystemPrompt`, the interactive session's `Actor.buildSystemPrompt`, and the `get_timezone` skill itself. The kv table is the planned home for future per-instance overrides (default model, locale).
