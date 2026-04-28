@@ -1398,6 +1398,12 @@ func (s *Store) migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_conv_summaries_user_chat
 		ON conversation_summaries (user_id, chat_id, created_at DESC);
+
+	CREATE TABLE IF NOT EXISTS system_prefs (
+		key        TEXT PRIMARY KEY,
+		value      TEXT NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
 	`
 
 	// After running the main schema, add the summarization_status column

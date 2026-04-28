@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -13,16 +14,20 @@ import (
 	"github.com/go-co-op/gocron/v2"
 	cron "github.com/robfig/cron/v3"
 
+	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/telegram"
 )
 
 // CronRunner executes a prompt through Claude with clean context.
 // Implemented by session.CronExecutor; defined here to avoid circular imports.
 // model is optional: if non-empty, it overrides the default model for this execution.
+// effort is optional: if non-empty, it overrides the default thinking effort
+// (low/medium/high/xhigh/max). Validated at the set_reminder boundary; the cron
+// runner passes it through.
 // scheduledAt is the time the task was scheduled to fire (may differ from wall time if
 // execution lagged) so Claude can reference the intended time, not the lagged one.
 type CronRunner interface {
-	Execute(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error)
+	Execute(ctx context.Context, userID, chatID int64, prompt, model, effort string, scheduledAt time.Time) (string, error)
 }
 
 // ConversationPersister records cron-fired turns in the same conversation
@@ -37,9 +42,78 @@ type ConversationPersister interface {
 	AppendMessage(convID string, role string, content json.RawMessage) error
 }
 
+// listRemindersLimit caps how many rows list_reminders returns in a single
+// call so a user with hundreds of reminders can't blow the agent's context
+// budget. Pair with listPromptPreviewRunes — the per-prompt truncation
+// keeps each row small even when full prompts exist.
+const listRemindersLimit = 50
+
+// listPromptPreviewRunes caps the prompt body shown inline in list output.
+// Counted in runes (not bytes) so multi-byte CJK characters truncate
+// predictably. Full bodies remain available via get_reminder.
+const listPromptPreviewRunes = 500
+
+// promptBodyCloser is the literal closing tag for the trust delimiter
+// wrapper. Centralized so renderPromptBody can both escape complete
+// occurrences in the body AND strip any partial-prefix tail left over
+// from truncation.
+const promptBodyCloser = "</user_prompt_body>"
+
+// renderPromptBody writes a prompt body to b wrapped in <user_prompt_body>
+// delimiter tags. The wrapper signals to the agent that the contents are
+// quoted user-supplied data, not instructions to act on — the same trust
+// boundary pattern used by the ingest pipeline's untrusted-content prompts.
+// Every line is indented 4 spaces so a hostile prompt containing what
+// looks like a sibling reminder header (`#N [cron:pending]...`) can't
+// spoof one (real entries start at column 0). If maxRunes > 0 and the
+// body exceeds it, truncates and reports it via the returned bool.
+//
+// Order-of-operations matters: truncate FIRST, then escape, then strip
+// any partial closing-tag prefix at the tail. The earlier "escape first,
+// truncate second" version had a bypass: a body like `<482 X's></user_prompt_body>FAKE`
+// became 501 runes after escape, then truncation cut the escaped form
+// mid-stream and leaked `</user_prompt_b...` into output, which a fuzzy
+// LLM parser could read as a closing tag.
+func renderPromptBody(b *strings.Builder, prompt string, maxRunes int) (truncated bool) {
+	body := prompt
+	runes := []rune(body)
+	if maxRunes > 0 && len(runes) > maxRunes {
+		body = string(runes[:maxRunes])
+		truncated = true
+	}
+	// Escape AFTER truncation so the rewrite can't itself be cut mid-stream.
+	body = strings.ReplaceAll(body, promptBodyCloser, "</user_prompt_body_>")
+	// Strip any trailing prefix of the closing tag that survived escape
+	// (truncation can cut a body's closing tag in half, leaving e.g.
+	// `</user_prompt_b` at the tail with no `>` to match in the escape).
+	for i := len(promptBodyCloser) - 1; i > 0; i-- {
+		if strings.HasSuffix(body, promptBodyCloser[:i]) {
+			body = body[:len(body)-i]
+			break
+		}
+	}
+	if truncated {
+		body += "..."
+	}
+	b.WriteString("\n  prompt: <user_prompt_body>")
+	for line := range strings.SplitSeq(body, "\n") {
+		b.WriteString("\n    ")
+		b.WriteString(line)
+	}
+	b.WriteString("\n  </user_prompt_body>")
+	return truncated
+}
+
 // InitRemindSkills creates the reminders table (if not exists) and returns
-// the set_reminder, list_reminders, and cancel_reminder skills.
-func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]*Skill, error) {
+// the set_reminder, list_reminders, get_reminder, cancel_reminder,
+// delete_reminder, and update_reminder skills.
+// InitRemindSkills creates the reminders table and returns the reminder skill
+// set. locFn returns the currently effective *time.Location and is called fresh
+// at the top of each skill invocation so a runtime timezone change (via the
+// set_timezone skill) is picked up without requiring a process restart. Pass
+// `func() *time.Location { return cfg.Location() }` if you don't need the
+// override path.
+func InitRemindSkills(db *sql.DB, signalCh chan<- int64, locFn func() *time.Location) ([]*Skill, error) {
 	const schema = `CREATE TABLE IF NOT EXISTS reminders (
 		id         INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id    INTEGER NOT NULL,
@@ -60,6 +134,12 @@ func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]
 			return nil, fmt.Errorf("skills: add prompt column: %w", err)
 		}
 	}
+	// Migrate: add effort column for per-reminder thinking-effort override.
+	if _, err := db.Exec(`ALTER TABLE reminders ADD COLUMN effort TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return nil, fmt.Errorf("skills: add effort column: %w", err)
+		}
+	}
 	// Migrate: add model column for per-reminder model override.
 	if _, err := db.Exec(`ALTER TABLE reminders ADD COLUMN model TEXT`); err != nil {
 		if !strings.Contains(err.Error(), "duplicate column") {
@@ -70,15 +150,22 @@ func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]
 	setSkill := &Skill{
 		Name:        "set_reminder",
 		Description: "Set a reminder that will fire at the specified time. Optionally make it recurring with a cron expression.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string","description":"Reminder label/message"},"fire_at":{"type":"string","description":"When to fire (ISO 8601 datetime, e.g. 2025-01-15T09:00:00)"},"recurring":{"type":"string","description":"Optional cron expression for recurring reminders (e.g. 0 9 * * MON-FRI)"},"prompt":{"type":"string","description":"Optional: if set, Claude executes this prompt at fire time with tool access (web_search, notes, facts, etc) and sends the result to your chat. Example: 'Check my notes and summarize what I need to do today'"},"model":{"type":"string","description":"Optional: model to use for this reminder's prompt (e.g. claude-haiku-4-5 for cheap tasks, claude-sonnet-4-6 for complex ones). Defaults to the main session model."}},"required":["message","fire_at"]}`),
-		Execute:     makeSetReminderExecute(db, signalCh, loc),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string","description":"Reminder label/message"},"fire_at":{"type":"string","description":"When to fire (ISO 8601 datetime, e.g. 2025-01-15T09:00:00)"},"recurring":{"type":"string","description":"Optional cron expression for recurring reminders (e.g. 0 9 * * MON-FRI)"},"prompt":{"type":"string","description":"Optional: if set, Claude executes this prompt at fire time with tool access (web_search, notes, facts, etc) and sends the result to your chat. Example: 'Check my notes and summarize what I need to do today'"},"model":{"type":"string","description":"Optional: model to use for this reminder's prompt (e.g. claude-haiku-4-5 for cheap tasks, claude-sonnet-4-6 for complex ones). Defaults to the main session model."},"effort":{"type":"string","enum":["","low","medium","high","xhigh","max"],"description":"Optional: thinking effort for this reminder's Claude run. Overrides the global thinking_effort config default. xhigh requires Claude Opus 4.7+."}},"required":["message","fire_at"]}`),
+		Execute:     makeSetReminderExecute(db, signalCh, locFn),
 	}
 
 	listSkill := &Skill{
 		Name:        "list_reminders",
-		Description: "List reminders for the current user. Returns only active (pending) reminders by default; pass status=\"all\" to include cancelled and fired history, or a specific status (pending/cancelled/fired) to filter.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"status":{"type":"string","description":"Filter: pending (default), cancelled, fired, or \"all\" to include history."}}}`),
-		Execute:     makeListRemindersExecute(db, loc),
+		Description: "List reminders for the current user (50 rows per page). Returns only active (pending) reminders by default; pass status=\"all\" to include cancelled and fired history, or a specific status (pending/cancelled/fired) to filter. Includes a 500-rune preview of the prompt body and model override for cron tasks. Use get_reminder to fetch the full prompt body before refining a long cron task with update_reminder. For pagination, pass offset=50 to see rows 51-100, offset=100 for 101-150, etc. The overflow notice shows the exact offset to use for the next page.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"status":{"type":"string","description":"Filter: pending (default), cancelled, fired, or \"all\" to include history."},"offset":{"type":"integer","minimum":0,"description":"Zero-indexed offset for pagination. Default 0 (first page). Pass 50 for the second page, 100 for the third, etc. Must be >= 0."}}}`),
+		Execute:     makeListRemindersExecute(db, locFn),
+	}
+
+	getSkill := &Skill{
+		Name:        "get_reminder",
+		Description: "Get full details for a single reminder by ID, including the FULL prompt body (list_reminders truncates prompts to 500 chars). Use this when refining a long cron task to see the complete prompt before calling update_reminder. Returns 'reminder not found' for IDs that don't exist or belong to another user.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Reminder ID"}},"required":["id"]}`),
+		Execute:     makeGetReminderExecute(db, locFn),
 	}
 
 	cancelSkill := &Skill{
@@ -98,11 +185,11 @@ func InitRemindSkills(db *sql.DB, signalCh chan<- int64, loc *time.Location) ([]
 	updateSkill := &Skill{
 		Name:        "update_reminder",
 		Description: "Update an existing pending reminder in place. Partial update: only fields you provide change; omitted fields stay as-is. Use this to rename/refine a reminder's title or prompt without losing the original prompt body (common for recurring cron tasks). Only updates pending reminders — for cancelled/fired rows, create a fresh one with set_reminder. fire_at is ignored for recurring reminders (cron_expr drives schedule).",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Reminder ID to update"},"message":{"type":"string","description":"New label/title (omit to keep current)"},"fire_at":{"type":"string","description":"New ISO 8601 fire time (omit to keep current). Ignored if the reminder is recurring."},"recurring":{"type":"string","description":"New cron expression (omit to keep current). Cannot clear — for one-time, recreate with set_reminder."},"prompt":{"type":"string","description":"New Claude prompt (omit to keep current)."},"model":{"type":"string","description":"New model override (omit to keep current)."}},"required":["id"]}`),
-		Execute:     makeUpdateReminderExecute(db, signalCh, loc),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","description":"Reminder ID to update"},"message":{"type":"string","description":"New label/title (omit to keep current)"},"fire_at":{"type":"string","description":"New ISO 8601 fire time (omit to keep current). Ignored if the reminder is recurring."},"recurring":{"type":"string","description":"New cron expression (omit to keep current). Cannot clear — for one-time, recreate with set_reminder."},"prompt":{"type":"string","description":"New Claude prompt (omit to keep current)."},"model":{"type":"string","description":"New model override (omit to keep current)."},"effort":{"type":"string","enum":["","low","medium","high","xhigh","max"],"description":"New thinking effort override (omit to keep current). xhigh requires Claude Opus 4.7+."}},"required":["id"]}`),
+		Execute:     makeUpdateReminderExecute(db, signalCh, locFn),
 	}
 
-	return []*Skill{setSkill, listSkill, cancelSkill, deleteSkill, updateSkill}, nil
+	return []*Skill{setSkill, listSkill, getSkill, cancelSkill, deleteSkill, updateSkill}, nil
 }
 
 type setReminderInput struct {
@@ -111,25 +198,72 @@ type setReminderInput struct {
 	Recurring string `json:"recurring"`
 	Prompt    string `json:"prompt"`
 	Model     string `json:"model"`
+	Effort    string `json:"effort"`
 }
 
 // validateReminderMessage enforces the 2000-rune cap shared by set_reminder
-// and update_reminder. Returns nil for empty strings — callers decide whether
-// empty is "don't change" (update) or "required" (set).
+// and update_reminder, and rejects newlines so a hostile message can't spoof
+// a sibling reminder header at column 0 in list_reminders/get_reminder
+// output. Returns nil for empty strings — callers decide whether empty is
+// "don't change" (update) or "required" (set).
 func validateReminderMessage(s string) error {
 	if len([]rune(s)) > 2000 {
 		return fmt.Errorf("message too long (max 2000 characters)")
+	}
+	if strings.ContainsAny(s, "\r\n") {
+		return fmt.Errorf("message must not contain newlines")
 	}
 	return nil
 }
 
 // validateReminderPrompt enforces the 5000-rune cap. Empty is accepted (means
-// "no prompt" for set, "don't change" for update).
+// "no prompt" for set, "don't change" for update). Newlines ARE allowed —
+// prompts are wrapped in <user_prompt_body> tags by renderPromptBody and
+// every line is indented, so multi-line content can't spoof headers.
 func validateReminderPrompt(s string) error {
 	if len([]rune(s)) > 5000 {
 		return fmt.Errorf("prompt too long (max 5000 characters)")
 	}
 	return nil
+}
+
+// validateReminderEffort accepts only the canonical effort levels
+// (delegated to config.ValidEffort, the single source of truth for the
+// enum). Returns nil for empty strings — callers decide whether empty
+// means "don't change" (update) or "use config default" (set).
+func validateReminderEffort(s string) error {
+	if s == "" {
+		return nil
+	}
+	if !config.ValidEffort(config.Effort(s)) {
+		return fmt.Errorf("effort must be one of low, medium, high, xhigh, max; got %q", s)
+	}
+	return nil
+}
+
+// validateReminderModel caps the model identifier at 100 runes and rejects
+// newlines for the same anti-spoof reason as validateReminderMessage —
+// the model renders raw as `[model: X]` on the title line. Real Anthropic
+// model IDs are short alphanumeric+dash strings (e.g. "claude-haiku-4-5"),
+// well under the cap. Returns nil for empty strings.
+func validateReminderModel(s string) error {
+	if len([]rune(s)) > 100 {
+		return fmt.Errorf("model too long (max 100 characters)")
+	}
+	if strings.ContainsAny(s, "\r\n") {
+		return fmt.Errorf("model must not contain newlines")
+	}
+	return nil
+}
+
+// sanitizeForHeader replaces newlines with single spaces so that a value
+// rendered inline on a reminder header line can never split into multiple
+// lines and spoof a sibling. Belt-and-suspenders defense for any
+// pre-validation row that may carry embedded newlines (writes go through
+// validateReminderMessage/Model now, but historical data and any future
+// direct DB writer aren't covered by validation).
+func sanitizeForHeader(s string) string {
+	return strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
 }
 
 // parseFireAt parses an ISO 8601 timestamp in the configured location, falling
@@ -156,8 +290,11 @@ func validateCronExpr(s string) error {
 	return nil
 }
 
-func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
+func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, locFn func() *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
 	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		// Snapshot the location once per invocation so any concurrent
+		// set_timezone call can't change parsing semantics mid-execution.
+		loc := locFn()
 		var params setReminderInput
 		if err := json.Unmarshal(input, &params); err != nil {
 			return "", fmt.Errorf("invalid input: %w", err)
@@ -169,6 +306,12 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 			return "", err
 		}
 		if err := validateReminderPrompt(params.Prompt); err != nil {
+			return "", err
+		}
+		if err := validateReminderModel(params.Model); err != nil {
+			return "", err
+		}
+		if err := validateReminderEffort(params.Effort); err != nil {
 			return "", err
 		}
 		if params.FireAt == "" {
@@ -200,10 +343,14 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 		if params.Model != "" {
 			model = &params.Model
 		}
+		var effort *string
+		if params.Effort != "" {
+			effort = &params.Effort
+		}
 
 		res, err := db.ExecContext(ctx,
-			`INSERT INTO reminders (user_id, chat_id, message, fire_at, cron_expr, prompt, model, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-			user.UserID, user.ChatID, params.Message, fireAtUTC, cronExpr, prompt, model, now,
+			`INSERT INTO reminders (user_id, chat_id, message, fire_at, cron_expr, prompt, model, effort, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+			user.UserID, user.ChatID, params.Message, fireAtUTC, cronExpr, prompt, model, effort, now,
 		)
 		if err != nil {
 			return "", fmt.Errorf("set reminder: %w", err)
@@ -235,13 +382,18 @@ func makeSetReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Locatio
 
 type listRemindersInput struct {
 	Status string `json:"status"`
+	Offset int    `json:"offset"`
 }
 
-func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
+func makeListRemindersExecute(db *sql.DB, locFn func() *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
 	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		loc := locFn()
 		var params listRemindersInput
 		if err := json.Unmarshal(input, &params); err != nil {
 			return "", fmt.Errorf("invalid input: %w", err)
+		}
+		if params.Offset < 0 {
+			return "", fmt.Errorf("offset must be >= 0")
 		}
 
 		user := GetUser(ctx)
@@ -255,17 +407,24 @@ func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.C
 			statusFilter = "pending"
 		}
 
+		// Fetch limit+1 so we can detect "more rows exist" without a
+		// second COUNT query. If we get back limit+1 rows, the user has
+		// hit the cap and we render only the first `limit` plus an
+		// overflow notice pointing at the next offset. Pagination is
+		// offset-based (not cursor-based) because the underlying dataset
+		// is small (typically <100 rows) and ORDER BY (fire_at, id) is
+		// already stable — a cursor buys no durability here.
 		var rows *sql.Rows
 		var err error
 		if statusFilter != "all" {
 			rows, err = db.QueryContext(ctx,
-				`SELECT id, message, fire_at, cron_expr, prompt, status, created_at FROM reminders WHERE user_id = ? AND status = ? ORDER BY fire_at`,
-				user.UserID, statusFilter,
+				`SELECT id, message, fire_at, cron_expr, prompt, model, effort, status, created_at FROM reminders WHERE user_id = ? AND status = ? ORDER BY fire_at, id LIMIT ? OFFSET ?`,
+				user.UserID, statusFilter, listRemindersLimit+1, params.Offset,
 			)
 		} else {
 			rows, err = db.QueryContext(ctx,
-				`SELECT id, message, fire_at, cron_expr, prompt, status, created_at FROM reminders WHERE user_id = ? ORDER BY fire_at`,
-				user.UserID,
+				`SELECT id, message, fire_at, cron_expr, prompt, model, effort, status, created_at FROM reminders WHERE user_id = ? ORDER BY fire_at, id LIMIT ? OFFSET ?`,
+				user.UserID, listRemindersLimit+1, params.Offset,
 			)
 		}
 		if err != nil {
@@ -273,14 +432,23 @@ func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.C
 		}
 		defer rows.Close()
 
-		var result string
+		// Accumulate rows in `body`; the page header (when paginating) is
+		// prepended AFTER we know count > 0, so a paged-past-end response
+		// doesn't carry a stray "(page starting at offset=N)" that the
+		// empty-page early-return would discard anyway.
+		var body strings.Builder
 		count := 0
+		overflow := false
 		for rows.Next() {
+			if count >= listRemindersLimit {
+				overflow = true
+				break
+			}
 			var id int64
 			var message, status string
 			var fireAt, createdAt time.Time
-			var cronExpr, prompt *string
-			if err := rows.Scan(&id, &message, &fireAt, &cronExpr, &prompt, &status, &createdAt); err != nil {
+			var cronExpr, prompt, model, effort *string
+			if err := rows.Scan(&id, &message, &fireAt, &cronExpr, &prompt, &model, &effort, &status, &createdAt); err != nil {
 				return "", fmt.Errorf("scan reminder: %w", err)
 			}
 			count++
@@ -289,24 +457,135 @@ func makeListRemindersExecute(db *sql.DB, loc *time.Location) func(ctx context.C
 			if prompt != nil {
 				tag = "cron:" + status
 			}
-			entry := fmt.Sprintf("#%d [%s] %s — %s", id, tag, localFire, message)
+			// Sanitize message + model at render so any pre-validation
+			// row with embedded newlines can't spoof a sibling header.
+			// validate*() also rejects newlines now, but render-time
+			// sanitization is the belt that catches the suspenders.
+			fmt.Fprintf(&body, "#%d [%s] %s — %s", id, tag, localFire, sanitizeForHeader(message))
 			if cronExpr != nil {
-				entry += fmt.Sprintf(" (recurring: %s)", *cronExpr)
+				fmt.Fprintf(&body, " (recurring: %s)", sanitizeForHeader(*cronExpr))
 			}
-			result += entry + "\n"
+			if model != nil && *model != "" {
+				fmt.Fprintf(&body, " [model: %s]", sanitizeForHeader(*model))
+			}
+			if effort != nil && *effort != "" {
+				fmt.Fprintf(&body, " [effort: %s]", sanitizeForHeader(*effort))
+			}
+			if prompt != nil && *prompt != "" {
+				truncated := renderPromptBody(&body, *prompt, listPromptPreviewRunes)
+				if truncated {
+					fmt.Fprintf(&body, "\n  (truncated; use get_reminder id=%d for full body)", id)
+				}
+			}
+			body.WriteByte('\n')
 		}
 		if err := rows.Err(); err != nil {
 			return "", fmt.Errorf("iterate reminders: %w", err)
 		}
 
 		if count == 0 {
+			// Empty-page messages differ by offset: at offset=0 the user
+			// has no reminders of this kind; at offset>0 they've paged
+			// past the end. Include the status filter in both branches
+			// so the agent can tell whether the empty result is a
+			// filter-too-narrow or an out-of-range-offset situation.
+			filterHint := ""
+			if statusFilter != "all" {
+				filterHint = fmt.Sprintf(" %s", statusFilter)
+			}
+			if params.Offset > 0 {
+				return fmt.Sprintf("No%s reminders at offset=%d. Try a smaller offset (or omit offset to start from the beginning).", filterHint, params.Offset), nil
+			}
 			if statusFilter == "all" {
 				return "No reminders found", nil
 			}
 			return fmt.Sprintf("No %s reminders found (pass status=\"all\" to see cancelled/fired history)", statusFilter), nil
 		}
 
-		return result, nil
+		// Prepend page header now that we know count > 0 (no header on a
+		// paged-past-end response).
+		var result strings.Builder
+		if params.Offset > 0 {
+			fmt.Fprintf(&result, "(page starting at offset=%d)\n", params.Offset)
+		}
+		result.WriteString(body.String())
+
+		if overflow {
+			// Guard against integer overflow near math.MaxInt. Practically
+			// unreachable (would need trillions of reminders) but the
+			// wrap would suggest a negative next offset, which the agent
+			// would then reject via the validator — noisy self-correction
+			// we'd rather not emit.
+			if params.Offset > math.MaxInt-listRemindersLimit {
+				result.WriteString("\n(more results exist; cannot compute next offset due to overflow — narrow the filter instead.)\n")
+			} else {
+				nextOffset := params.Offset + listRemindersLimit
+				fmt.Fprintf(&result, "\n(more results exist — call list_reminders again with offset=%d for the next page.)\n", nextOffset)
+			}
+		}
+
+		return result.String(), nil
+	}
+}
+
+// makeGetReminderExecute returns a single reminder by ID with the FULL
+// prompt body (no truncation). IDOR-safe: cross-user IDs return the same
+// "not found" string as missing IDs so callers can't probe for existence.
+func makeGetReminderExecute(db *sql.DB, locFn func() *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		loc := locFn()
+		var params struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal(input, &params); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
+		}
+		if params.ID <= 0 {
+			return "", fmt.Errorf("id must be a positive integer")
+		}
+
+		user := GetUser(ctx)
+
+		var (
+			id                int64
+			message, status   string
+			fireAt, createdAt time.Time
+			cronExpr, prompt  *string
+			model, effort     *string
+		)
+		err := db.QueryRowContext(ctx,
+			`SELECT id, message, fire_at, cron_expr, prompt, model, effort, status, created_at FROM reminders WHERE id = ? AND user_id = ?`,
+			params.ID, user.UserID,
+		).Scan(&id, &message, &fireAt, &cronExpr, &prompt, &model, &effort, &status, &createdAt)
+		if err == sql.ErrNoRows {
+			return fmt.Sprintf("reminder #%d not found", params.ID), nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("get reminder: %w", err)
+		}
+
+		var result strings.Builder
+		localFire := fireAt.In(loc).Format("2006-01-02 15:04")
+		localCreated := createdAt.In(loc).Format("2006-01-02 15:04")
+		tag := status
+		if prompt != nil {
+			tag = "cron:" + status
+		}
+		fmt.Fprintf(&result, "#%d [%s] %s — %s", id, tag, localFire, sanitizeForHeader(message))
+		if cronExpr != nil {
+			fmt.Fprintf(&result, " (recurring: %s)", sanitizeForHeader(*cronExpr))
+		}
+		if model != nil && *model != "" {
+			fmt.Fprintf(&result, " [model: %s]", sanitizeForHeader(*model))
+		}
+		if effort != nil && *effort != "" {
+			fmt.Fprintf(&result, " [effort: %s]", sanitizeForHeader(*effort))
+		}
+		fmt.Fprintf(&result, "\n  created: %s", localCreated)
+		if prompt != nil && *prompt != "" {
+			renderPromptBody(&result, *prompt, 0) // 0 = no truncation
+		}
+		return result.String(), nil
 	}
 }
 
@@ -325,6 +604,7 @@ type updateReminderInput struct {
 	Recurring string `json:"recurring"`
 	Prompt    string `json:"prompt"`
 	Model     string `json:"model"`
+	Effort    string `json:"effort"`
 }
 
 // makeUpdateReminderExecute patches a pending reminder in place. Empty-string
@@ -332,8 +612,9 @@ type updateReminderInput struct {
 // signal is fired on every successful update (not just schedule changes) so
 // the actor drops the stale gocron closure and picks up new message/prompt/
 // model values on the next fire.
-func makeUpdateReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
+func makeUpdateReminderExecute(db *sql.DB, signalCh chan<- int64, locFn func() *time.Location) func(ctx context.Context, input json.RawMessage) (string, error) {
 	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		loc := locFn()
 		var params updateReminderInput
 		if err := json.Unmarshal(input, &params); err != nil {
 			return "", fmt.Errorf("invalid input: %w", err)
@@ -341,8 +622,8 @@ func makeUpdateReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Loca
 		if params.ID == 0 {
 			return "", fmt.Errorf("id is required")
 		}
-		if params.Message == "" && params.FireAt == "" && params.Recurring == "" && params.Prompt == "" && params.Model == "" {
-			return "", fmt.Errorf("at least one field (message, fire_at, recurring, prompt, model) must be provided")
+		if params.Message == "" && params.FireAt == "" && params.Recurring == "" && params.Prompt == "" && params.Model == "" && params.Effort == "" {
+			return "", fmt.Errorf("at least one field (message, fire_at, recurring, prompt, model, effort) must be provided")
 		}
 
 		user := GetUser(ctx)
@@ -414,8 +695,18 @@ func makeUpdateReminderExecute(db *sql.DB, signalCh chan<- int64, loc *time.Loca
 			args = append(args, params.Prompt)
 		}
 		if params.Model != "" {
+			if err := validateReminderModel(params.Model); err != nil {
+				return "", err
+			}
 			setClauses = append(setClauses, "model = ?")
 			args = append(args, params.Model)
+		}
+		if params.Effort != "" {
+			if err := validateReminderEffort(params.Effort); err != nil {
+				return "", err
+			}
+			setClauses = append(setClauses, "effort = ?")
+			args = append(args, params.Effort)
 		}
 
 		// TOCTOU guard: gate UPDATE with status='pending'. If the row flipped
@@ -549,16 +840,18 @@ func makeCancelReminderExecute(db *sql.DB, signalCh chan<- int64) func(ctx conte
 
 // ReminderActor is an actor that schedules and fires reminders using gocron.
 type ReminderActor struct {
-	db        *sql.DB
-	tgInbox   chan<- telegram.OutgoingMessage
-	loc       *time.Location
-	signalCh  <-chan int64
-	cronExec  CronRunner            // nil = no cron task support (static text only)
-	persister ConversationPersister // nil = cron output goes to Telegram only, not chat history
+	db         *sql.DB
+	tgInbox    chan<- telegram.OutgoingMessage
+	locFn      func() *time.Location // returns the current effective location; called fresh for each TZ-aware operation
+	signalCh   <-chan int64
+	tzChangeCh <-chan struct{}       // nil-safe: nil channel never fires; set_timezone signals here
+	cronExec   CronRunner            // nil = no cron task support (static text only)
+	persister  ConversationPersister // nil = cron output goes to Telegram only, not chat history
 
-	mu       sync.Mutex
-	jobs     map[int64]gocron.Job
-	jobMeta  map[int64]scheduleSnapshot // per-id snapshot of schedule-affecting fields at last schedule time
+	mu      sync.Mutex
+	jobs    map[int64]gocron.Job
+	jobMeta map[int64]scheduleSnapshot // per-id snapshot of schedule-affecting fields at last schedule time
+	lastLoc *time.Location             // last location applied to the gocron scheduler; gate to skip no-op rebuilds. Read/written only from the Run goroutine.
 }
 
 // scheduleSnapshot records the schedule-affecting fields (FireAt for one-time,
@@ -574,15 +867,28 @@ type scheduleSnapshot struct {
 
 // NewReminderActor creates a new ReminderActor. cronExec may be nil to disable
 // Claude-powered cron tasks (reminders with prompts will fall back to static text).
-func NewReminderActor(db *sql.DB, tgInbox chan<- telegram.OutgoingMessage, loc *time.Location, signalCh <-chan int64, cronExec CronRunner) *ReminderActor {
+// tzChangeCh is the wakeup signal from the set_timezone skill; nil disables
+// signal-driven rebuild (the 10s poll path still detects DB-only TZ changes).
+// locFn returns the current effective location and is called fresh on each
+// scheduler-rebuild check, so a runtime override picked up via memory.SetTimezoneOverride
+// reaches the gocron scheduler without a process restart.
+func NewReminderActor(
+	db *sql.DB,
+	tgInbox chan<- telegram.OutgoingMessage,
+	locFn func() *time.Location,
+	signalCh <-chan int64,
+	tzChangeCh <-chan struct{},
+	cronExec CronRunner,
+) *ReminderActor {
 	return &ReminderActor{
-		db:       db,
-		tgInbox:  tgInbox,
-		loc:      loc,
-		signalCh: signalCh,
-		cronExec: cronExec,
-		jobs:     make(map[int64]gocron.Job),
-		jobMeta:  make(map[int64]scheduleSnapshot),
+		db:         db,
+		tgInbox:    tgInbox,
+		locFn:      locFn,
+		signalCh:   signalCh,
+		tzChangeCh: tzChangeCh,
+		cronExec:   cronExec,
+		jobs:       make(map[int64]gocron.Job),
+		jobMeta:    make(map[int64]scheduleSnapshot),
 	}
 }
 
@@ -610,8 +916,18 @@ func newCronScheduler(loc *time.Location) (gocron.Scheduler, error) {
 // Run implements actor.Actor. It starts a gocron scheduler, loads all pending
 // reminders, fires past-due ones immediately, and schedules future ones.
 // It then listens for signals to add or cancel reminders.
+//
+// Two TZ-change paths feed maybeRebuildScheduler: the explicit tzChangeCh
+// signal from the set_timezone skill (immediate in API mode), and a check on
+// every 10s pollTicker (catches CLI-mode set_timezone calls where the signal
+// channel drains to /dev/null in the MCP subprocess, same precedent as
+// cancel_reminder).
 func (ra *ReminderActor) Run(ctx context.Context) error {
-	scheduler, err := newCronScheduler(ra.loc)
+	initLoc := ra.locFn()
+	ra.mu.Lock()
+	ra.lastLoc = initLoc
+	ra.mu.Unlock()
+	scheduler, err := newCronScheduler(initLoc)
 	if err != nil {
 		return fmt.Errorf("reminder: create scheduler: %w", err)
 	}
@@ -638,10 +954,81 @@ func (ra *ReminderActor) Run(ctx context.Context) error {
 			return ctx.Err()
 		case id := <-ra.signalCh:
 			ra.handleSignal(ctx, scheduler, id)
+		case <-ra.tzChangeCh:
+			scheduler = ra.maybeRebuildScheduler(ctx, scheduler)
 		case <-pollTicker.C:
 			ra.pollNewReminders(ctx, scheduler)
+			// CLI-mode parity: the set_timezone skill in the MCP subprocess
+			// can't reach tzChangeCh, so detect TZ drift via DB read here.
+			scheduler = ra.maybeRebuildScheduler(ctx, scheduler)
 		}
 	}
+}
+
+// maybeRebuildScheduler compares the current effective location against
+// ra.lastLoc and, if they differ, shuts down `current`, returns a fresh
+// scheduler bound to the new location with all pending reminders re-loaded.
+// Returns `current` unchanged when no rebuild is needed.
+//
+// gocron.WithLocation is fixed at scheduler-creation time, so swapping
+// timezones requires a full Shutdown + new Scheduler. We wrap Shutdown in a
+// 30s timeout: an in-flight cron-Claude task can otherwise hold us hostage,
+// since gocron.Shutdown blocks until every running job returns. After the
+// timeout we abandon the old scheduler and create a fresh one anyway. The
+// orphaned scheduler GCs naturally once any stuck job exits.
+func (ra *ReminderActor) maybeRebuildScheduler(ctx context.Context, current gocron.Scheduler) gocron.Scheduler {
+	newLoc := ra.locFn()
+	ra.mu.Lock()
+	prevLoc := ra.lastLoc
+	ra.mu.Unlock()
+	if prevLoc != nil && newLoc.String() == prevLoc.String() {
+		return current
+	}
+
+	oldName := "<nil>"
+	if prevLoc != nil {
+		oldName = prevLoc.String()
+	}
+	slog.Info("reminder: timezone changed, rebuilding scheduler", "old", oldName, "new", newLoc.String())
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- current.Shutdown() }()
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			slog.Error("reminder: scheduler shutdown error during TZ rebuild", "err", err)
+		}
+	case <-time.After(30 * time.Second):
+		slog.Error("reminder: scheduler shutdown timed out after 30s during TZ rebuild; abandoning old scheduler. An in-flight cron task may still be running")
+	}
+
+	// Drop tracked job references; loadPendingReminders re-populates them
+	// against the new scheduler.
+	ra.mu.Lock()
+	ra.jobs = make(map[int64]gocron.Job)
+	ra.jobMeta = make(map[int64]scheduleSnapshot)
+	ra.mu.Unlock()
+
+	next, err := newCronScheduler(newLoc)
+	if err != nil {
+		slog.Error("reminder: new scheduler creation failed during TZ rebuild; falling back to old location", "err", err, "loc", newLoc.String())
+		// Fallback: keep the old location so the actor stays alive.
+		next, err = newCronScheduler(prevLoc)
+		if err != nil {
+			slog.Error("reminder: fallback scheduler creation also failed; reminders are now offline until supervisor restart", "err", err)
+			return current
+		}
+	} else {
+		ra.mu.Lock()
+		ra.lastLoc = newLoc
+		ra.mu.Unlock()
+	}
+	next.Start()
+
+	if err := ra.loadPendingReminders(ctx, next); err != nil {
+		slog.Error("reminder: failed to load pending reminders after TZ rebuild", "err", err)
+	}
+	return next
 }
 
 // loadPendingReminders queries all pending reminders and schedules or fires them.
@@ -649,7 +1036,7 @@ func (ra *ReminderActor) Run(ctx context.Context) error {
 // which avoids deadlocks with single-connection pools (e.g., in-memory SQLite).
 func (ra *ReminderActor) loadPendingReminders(ctx context.Context, scheduler gocron.Scheduler) error {
 	rows, err := ra.db.QueryContext(ctx,
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model FROM reminders WHERE status = 'pending'`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, effort FROM reminders WHERE status = 'pending'`,
 	)
 	if err != nil {
 		return fmt.Errorf("query pending reminders: %w", err)
@@ -658,7 +1045,7 @@ func (ra *ReminderActor) loadPendingReminders(ctx context.Context, scheduler goc
 	var reminders []reminderRow
 	for rows.Next() {
 		var r reminderRow
-		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model, &r.Effort); err != nil {
 			slog.Error("reminder: scan row", "err", err)
 			continue
 		}
@@ -704,9 +1091,9 @@ func (ra *ReminderActor) handleSignal(ctx context.Context, scheduler gocron.Sche
 	var r reminderRow
 	var status string
 	err := ra.db.QueryRowContext(ctx,
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, status FROM reminders WHERE id = ?`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, effort, status FROM reminders WHERE id = ?`,
 		id,
-	).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model, &status)
+	).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model, &r.Effort, &status)
 	if err != nil {
 		slog.Error("reminder: query signal target", "id", id, "err", err)
 		return
@@ -774,9 +1161,9 @@ func (ra *ReminderActor) fireReminder(r reminderRow) {
 	var fresh reminderRow
 	var status string
 	err := ra.db.QueryRow(
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, status FROM reminders WHERE id = ?`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, effort, status FROM reminders WHERE id = ?`,
 		r.ID,
-	).Scan(&fresh.ID, &fresh.UserID, &fresh.ChatID, &fresh.Message, &fresh.FireAt, &fresh.CronExpr, &fresh.Prompt, &fresh.Model, &status)
+	).Scan(&fresh.ID, &fresh.UserID, &fresh.ChatID, &fresh.Message, &fresh.FireAt, &fresh.CronExpr, &fresh.Prompt, &fresh.Model, &fresh.Effort, &status)
 	if err != nil {
 		slog.Error("reminder: failed to re-read before firing", "id", r.ID, "err", err)
 		return
@@ -820,7 +1207,11 @@ func (ra *ReminderActor) fireCronTask(r reminderRow) {
 	if r.Model != nil {
 		cronModel = *r.Model
 	}
-	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt, cronModel, r.FireAt)
+	cronEffort := ""
+	if r.Effort != nil {
+		cronEffort = *r.Effort
+	}
+	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt, cronModel, cronEffort, r.FireAt)
 	if err != nil {
 		slog.Error("reminder: cron task failed", "id", r.ID, "err", err)
 		errText := fmt.Sprintf("[Cron task failed] %s: %v", r.Message, err)
@@ -870,7 +1261,7 @@ func (ra *ReminderActor) persistCronTurn(r reminderRow, assistantText string) {
 	}
 	userText := fmt.Sprintf("[Cron reminder fired: %s]\nScheduled: %s\nPrompt: %s",
 		r.Message,
-		r.FireAt.In(ra.loc).Format("2006-01-02 15:04 MST"),
+		r.FireAt.In(ra.locFn()).Format("2006-01-02 15:04 MST"),
 		prompt)
 	userContent, _ := json.Marshal(userText) // Marshal cannot fail for a Go string.
 	if err := ra.persister.AppendMessage(convID, "user", userContent); err != nil {
@@ -978,9 +1369,9 @@ func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.
 		// fired/cancelled; without this filter we'd schedule a phantom job).
 		var r reminderRow
 		err := ra.db.QueryRowContext(ctx,
-			`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model FROM reminders WHERE id = ? AND status = 'pending'`,
+			`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, effort FROM reminders WHERE id = ? AND status = 'pending'`,
 			id,
-		).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model)
+		).Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model, &r.Effort)
 		if err == sql.ErrNoRows {
 			continue // Status raced to non-pending; Phase 1 (next tick) will clean up the stale job.
 		}
@@ -995,7 +1386,7 @@ func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.
 
 	// Phase 2: Find new pending reminders not yet scheduled.
 	rows, err := ra.db.QueryContext(ctx,
-		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model FROM reminders WHERE status = 'pending'`,
+		`SELECT id, user_id, chat_id, message, fire_at, cron_expr, prompt, model, effort FROM reminders WHERE status = 'pending'`,
 	)
 	if err != nil {
 		slog.Error("reminder: poll query failed", "err", err)
@@ -1005,7 +1396,7 @@ func (ra *ReminderActor) pollNewReminders(ctx context.Context, scheduler gocron.
 	var unscheduled []reminderRow
 	for rows.Next() {
 		var r reminderRow
-		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.ChatID, &r.Message, &r.FireAt, &r.CronExpr, &r.Prompt, &r.Model, &r.Effort); err != nil {
 			slog.Error("reminder: poll scan", "err", err)
 			continue
 		}
@@ -1057,4 +1448,5 @@ type reminderRow struct {
 	CronExpr *string
 	Prompt   *string
 	Model    *string
+	Effort   *string
 }

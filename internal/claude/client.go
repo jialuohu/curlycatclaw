@@ -20,10 +20,13 @@ import (
 // defaultMaxTokens is used when the caller does not specify a limit.
 const defaultMaxTokens = 8192
 
-// Budget token presets for extended thinking.
+// Budget token presets for extended thinking. xhigh sits between high and
+// max — used for Claude Opus 4.7's mid-high level where `high` feels
+// underbaked but `max` is more budget than you want to spend routinely.
 var effortBudget = map[config.Effort]int64{
-	config.EffortHigh: 10_000,
-	config.EffortMax:  32_000,
+	config.EffortHigh:  10_000,
+	config.EffortXHigh: 20_000,
+	config.EffortMax:   32_000,
 }
 
 // maxModelOutputTokens caps MaxTokens to prevent API errors.

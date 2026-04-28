@@ -215,7 +215,7 @@ func (ch *Channel) Run(ctx context.Context) error {
 	_, err = b.SetMyCommands(ctx, &bot.SetMyCommandsParams{
 		Commands: []models.BotCommand{
 			{Command: "stop", Description: "Stop the agent's in-flight work"},
-			{Command: "effort", Description: "Show or set thinking effort level (low/medium/high/max)"},
+			{Command: "effort", Description: "Show or set thinking effort level (low/medium/high/xhigh/max)"},
 			{Command: "retry", Description: "Replay last message at higher effort"},
 			{Command: "debug", Description: "Toggle tool call visibility (on/off)"},
 			{Command: "update", Description: "Check for and install updates"},

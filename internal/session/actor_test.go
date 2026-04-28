@@ -1122,11 +1122,47 @@ func TestHandleEffortCommand_ShowCurrent(t *testing.T) {
 
 	select {
 	case msg := <-tg.inbox:
-		if !strings.Contains(msg.Text, "high") {
-			t.Errorf("expected 'high' in response, got: %s", msg.Text)
+		// Word-boundary match — `strings.Contains(msg.Text, "high")` would
+		// trivially pass via the `xhigh` level, masking a regression that
+		// drops `high` entirely from the display string. Use the level-loop
+		// below as the canonical check; this top-level assertion just
+		// ensures SOMETHING about the current effort rendered.
+		if !strings.Contains(msg.Text, "Effort:") {
+			t.Errorf("expected 'Effort:' prefix in response, got: %s", msg.Text)
+		}
+		// Regression guard: the help text must list every valid effort
+		// level. A new level added to ValidEffort without a matching
+		// update to the /effort display string leaves users unable to
+		// discover it via `/effort` with no args. Apr 17 added `xhigh`
+		// for Claude Opus 4.7.
+		for _, level := range []string{"low", "medium", "high", "xhigh", "max"} {
+			if !strings.Contains(msg.Text, level) {
+				t.Errorf("/effort help must advertise level %q, got: %s", level, msg.Text)
+			}
 		}
 	default:
 		t.Error("expected a message to be sent")
+	}
+}
+
+// TestHandleEffortCommand_SetXHigh is the regression guard for Claude
+// Opus 4.7's `xhigh` effort level: a future change to ValidEffort that
+// drops `xhigh` would still compile but the override would silently fail
+// via the "Unknown effort level" branch.
+func TestHandleEffortCommand_SetXHigh(t *testing.T) {
+	tg := newMockTG()
+	a := &Actor{
+		cfg:            &config.Config{Claude: config.ClaudeConfig{ThinkingEffort: ""}},
+		tg:             tg,
+		effortOverride: make(map[userKey]config.Effort),
+		lastUserMsg:    make(map[userKey]telegram.IncomingMessage),
+	}
+
+	a.handleEffortCommand(telegram.IncomingMessage{UserID: 42, ChatID: 100, Text: "/effort xhigh"})
+
+	key := userKey{UserID: 42, ChatID: 100}
+	if a.effortOverride[key] != config.EffortXHigh {
+		t.Errorf("effortOverride = %q, want %q", a.effortOverride[key], config.EffortXHigh)
 	}
 }
 

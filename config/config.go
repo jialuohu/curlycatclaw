@@ -104,25 +104,29 @@ const (
 	EffortLow    Effort = "low"
 	EffortMedium Effort = "medium"
 	EffortHigh   Effort = "high"
-	EffortMax    Effort = "max"
+	// EffortXHigh is Claude Opus 4.7's mid-high level (between high and max).
+	// Adaptive thinking budget heavier than high but cheaper than max.
+	// See Anthropic effort docs for the model/level matrix.
+	EffortXHigh Effort = "xhigh"
+	EffortMax   Effort = "max"
 )
 
 // ValidEffort returns true if e is a recognized effort level (including empty for default).
 func ValidEffort(e Effort) bool {
 	switch e {
-	case "", EffortLow, EffortMedium, EffortHigh, EffortMax:
+	case "", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
 		return true
 	}
 	return false
 }
 
 type ClaudeConfig struct {
-	CLIPath        string   `toml:"cli_path"`        // path to claude binary (CLI subprocess mode)
-	APIKey         string   `toml:"api_key"`         // direct API mode
-	OAuthToken     string   `toml:"oauth_token"`     // long-lived token from `claude setup-token` (CLI mode)
-	Model          string   `toml:"model"`
-	ThinkingEffort Effort   `toml:"thinking_effort"` // reasoning depth: low, medium, high, max
-	IsolatedHome   string   `toml:"isolated_home"`   // path to isolated Claude home dir for project work
+	CLIPath        string `toml:"cli_path"`        // path to claude binary (CLI subprocess mode)
+	APIKey         string `toml:"api_key"`         // direct API mode
+	OAuthToken     string `toml:"oauth_token"`     // long-lived token from `claude setup-token` (CLI mode)
+	Model          string `toml:"model"`
+	ThinkingEffort Effort `toml:"thinking_effort"` // reasoning depth: low, medium, high, xhigh, max
+	IsolatedHome   string `toml:"isolated_home"`   // path to isolated Claude home dir for project work
 }
 
 // UseCLI returns true if CLI subprocess mode is configured.
@@ -474,7 +478,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: claude.cli_path cannot be combined with api_key")
 	}
 	if !ValidEffort(c.Claude.ThinkingEffort) {
-		return fmt.Errorf("config: claude.thinking_effort must be one of low, medium, high, max; got %q", c.Claude.ThinkingEffort)
+		return fmt.Errorf("config: claude.thinking_effort must be one of low, medium, high, xhigh, max; got %q", c.Claude.ThinkingEffort)
 	}
 	if c.Telegram.Token == "" {
 		return fmt.Errorf("config: telegram.token is required")

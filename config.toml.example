@@ -12,7 +12,7 @@ timezone = "America/Los_Angeles"
 # api_key  = "sk-ant-..."
 #
 model = "claude-opus-4-6"
-# Reasoning depth: low/medium = standard reasoning, high/max = extended thinking enabled.
+# Reasoning depth: low/medium = standard reasoning, high/xhigh/max = extended thinking enabled (xhigh requires Claude Opus 4.7+).
 # Override per session with /effort in Telegram, or env CURLYCATCLAW_THINKING_EFFORT.
 # thinking_effort = "high"
 # isolated_home = "/data/claude-home"

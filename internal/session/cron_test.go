@@ -71,7 +71,7 @@ func TestCronExecutor_SimplePrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Summarize my day", "", time.Now())
+	result, err := ce.Execute(ctx, 1, 10, "Summarize my day", "", "", time.Now())
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestCronExecutor_WithToolUse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Search for test", "", time.Now())
+	result, err := ce.Execute(ctx, 1, 10, "Search for test", "", "", time.Now())
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestCronExecutor_ToolError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ce.Execute(ctx, 1, 10, "Use broken tool", "", time.Now())
+	result, err := ce.Execute(ctx, 1, 10, "Use broken tool", "", "", time.Now())
 	if err != nil {
 		t.Fatalf("Execute should succeed (tool error fed back to Claude): %v", err)
 	}
@@ -218,7 +218,7 @@ func TestCronExecutor_UserContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := ce.Execute(ctx, 42, 10, "check user context", "", time.Now())
+	_, err := ce.Execute(ctx, 42, 10, "check user context", "", "", time.Now())
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestCronExecutor_Semaphore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := ce.Execute(ctx, 1, 10, "blocked", "", time.Now())
+	_, err := ce.Execute(ctx, 1, 10, "blocked", "", "", time.Now())
 	if err == nil {
 		t.Fatal("expected error when semaphore is full and context times out")
 	}
@@ -283,6 +283,38 @@ func TestCronExecutor_SystemPromptIncludesFacts(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "scheduled task") {
 		t.Errorf("system prompt should mention scheduled task, got: %s", prompt)
+	}
+}
+
+// TestBuildSystemPrompt_IncludesMCPNamingHint is the regression guard for
+// the Apr 17 incident where the cron-fired paper digest claimed
+// `search_papers`/`search_arxiv`/`search_semantic` were "not loaded in
+// the current environment" and fell back to WebSearch. Root cause: the
+// MCP subprocess loaded all 60 paper-search tools correctly, but they
+// were exposed under namespaced names (`mcp__curlycatclaw-skills__paper
+// -search-mcp__search_papers`), and the reminder prompt referenced the
+// bare upstream names. The cron agent got a minimal system prompt that
+// didn't explain MCP naming, looked for literal `search_papers`, didn't
+// find it, and gave up. The fix: nudge the cron agent to search by
+// suffix when the task prompt uses bare upstream names.
+func TestBuildSystemPrompt_IncludesMCPNamingHint(t *testing.T) {
+	ce := newTestCronExecutor(
+		&mockLLM{responses: []*claude.Response{{TextContent: "ok"}}},
+		&mockCronFactProvider{},
+	)
+
+	prompt := ce.buildSystemPrompt(1, time.Now())
+	if !strings.Contains(prompt, "mcp__") {
+		t.Errorf("prompt must show the MCP naming format (mcp__<server>__<tool>), got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "namespaced") {
+		t.Errorf("prompt must explain namespacing so the agent can map bare tool names, got:\n%s", prompt)
+	}
+	// The hint must explicitly warn against declaring tools missing
+	// without searching the inventory — that's the exact failure mode
+	// the Apr 17 incident exhibited.
+	if !strings.Contains(prompt, "Do NOT declare") && !strings.Contains(prompt, "do not declare") {
+		t.Errorf("prompt must warn against declaring tools missing without searching first, got:\n%s", prompt)
 	}
 }
 
@@ -324,10 +356,22 @@ func TestBuildSystemPrompt_IncludesScheduledAt(t *testing.T) {
 func TestCronExecutor_SpawnParamsIncludeMCPConfig(t *testing.T) {
 	ce := newTestCronExecutor(&mockLLM{}, &mockCronFactProvider{})
 
-	params := ce.buildSpawnParams(42, 100, "hi", "", time.Now())
+	// Pass a non-empty effort so the assertion below can verify that
+	// per-reminder effort flows through buildSpawnParams to SpawnParams.Effort.
+	// A regression that drops effort at the CronExecutor layer would be
+	// silent today — fireCronTask still reads r.Effort and passes it into
+	// CronRunner.Execute, but if CronExecutor.buildSpawnParams failed to
+	// copy it into SpawnParams, the Claude CLI would spawn at the config
+	// default. This guard lives next to the MCPConfig guard because both
+	// are "field silently dropped between the reminder row and the CLI
+	// spawn" class bugs (same class as the Apr 15 MCPConfig regression).
+	params := ce.buildSpawnParams(42, 100, "hi", "", "xhigh", time.Now())
 
 	if params.MCPConfig == "" {
 		t.Fatal("cron SpawnParams.MCPConfig is empty; cron CLI subprocess will spawn with zero MCP servers, blocking access to every runtime extension (paper-search-mcp, scrapling, etc.). This is the v0.36.7 regression.")
+	}
+	if params.Effort != "xhigh" {
+		t.Errorf("cron SpawnParams.Effort = %q, want %q; per-reminder effort override must flow through to the CLI spawn (--effort flag) or the reminder's stored effort is silently ignored", params.Effort, "xhigh")
 	}
 	if !strings.Contains(params.MCPConfig, "curlycatclaw-skills") {
 		t.Errorf("cron SpawnParams.MCPConfig must register the curlycatclaw-skills proxy so runtime extensions reach the CLI subprocess; got:\n%s", params.MCPConfig)

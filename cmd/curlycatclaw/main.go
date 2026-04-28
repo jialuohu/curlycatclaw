@@ -140,6 +140,12 @@ func run(configPath string) error {
 	}
 	slog.Info("config loaded", "timezone", cfg.Timezone, "version", version)
 
+	// Effective timezone may differ from cfg.Timezone if a runtime override
+	// (set via the set_timezone skill in a prior session) is persisted in the
+	// system_prefs table. Logged once on startup so drift between config and
+	// override shows up in `docker compose logs`.
+	// (Logging happens after store init below.)
+
 	// Ensure data directory exists.
 	dataDir := filepath.Dir(cfg.Storage.DBPath)
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
@@ -257,13 +263,28 @@ func run(configPath string) error {
 		}
 	}
 	remindSignalCh := make(chan int64, 16)
-	remindSkills, err := skills.InitRemindSkills(store.DB(), remindSignalCh, cfg.Location())
+	tzChangeCh := make(chan struct{}, 1)
+	locFn := func() *time.Location {
+		loc, _ := memory.EffectiveLocation(cfg, store.DB())
+		return loc
+	}
+	// Log the effective timezone once on startup so drift between cfg.Timezone
+	// and a persisted override row in system_prefs is visible in logs.
+	if effLoc, src := memory.EffectiveLocation(cfg, store.DB()); src == "override" {
+		slog.Info("timezone effective", "tz", effLoc.String(), "source", src, "config_default", cfg.Timezone)
+	} else {
+		slog.Info("timezone effective", "tz", effLoc.String(), "source", src)
+	}
+	remindSkills, err := skills.InitRemindSkills(store.DB(), remindSignalCh, locFn)
 	if err != nil {
 		slog.Warn("failed to initialize remind skills", "err", err)
 	} else {
 		for _, s := range remindSkills {
 			skillReg.Register(s)
 		}
+	}
+	for _, s := range skills.InitTimezoneSkills(cfg, store.DB(), tzChangeCh) {
+		skillReg.Register(s)
 	}
 	skillReg.Register(skills.NewSendFileSkill(tg))
 
@@ -570,11 +591,11 @@ func run(configPath string) error {
 		if factStore != nil {
 			sessionFacts = factStore
 		}
-		cronRunner = session.NewCronExecutor(cfg, configPath, claudeClient, cliManager, mcpMgr, skillReg, sessionFacts)
+		cronRunner = session.NewCronExecutor(cfg, configPath, store.DB(), claudeClient, cliManager, mcpMgr, skillReg, sessionFacts)
 	}
 
 	// Create reminder actor.
-	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), cfg.Location(), remindSignalCh, cronRunner)
+	reminderActor := skills.NewReminderActor(store.DB(), tg.Inbox(), locFn, remindSignalCh, tzChangeCh, cronRunner)
 	// Persist cron-fired turns to the conversation history so the interactive
 	// agent can see its own cron output on the next user turn (fixes the
 	// "why did you send me this?" confusion from the v0.36.7 incident).

@@ -28,9 +28,11 @@ CurlyCatClaw is a long-running daemon that connects Claude to Telegram. You mess
 
 - 🔌 **Extensible** -- Google Workspace (multi-account with per-account service filtering), GitHub, any MCP server, Wasm plugins, exec skills, Claude Code plugins, file delivery, all manageable from chat
 
-- 🧪 **Thinking effort control** -- configure Claude's reasoning depth (`/effort low|medium|high|max`), replay messages at higher effort (`/retry`), stop in-flight work with `/stop`, extended thinking with budget presets, per-session override via Telegram
+- 🧪 **Thinking effort control** -- configure Claude's reasoning depth (`/effort low|medium|high|xhigh|max`, where `xhigh` is Opus 4.7's mid-high level), replay messages at higher effort (`/retry`), stop in-flight work with `/stop`, extended thinking with budget presets, per-session override via Telegram
 
-- ⏰ **Cron tasks** -- scheduled prompts through Claude with full tool access, per-reminder model selection
+- ⏰ **Cron tasks** -- scheduled prompts through Claude with full tool access, per-reminder model + thinking-effort selection
+
+- 🌍 **Runtime timezone** -- agent flips the daemon's effective timezone from chat (`set_timezone Asia/Tokyo`); pending recurring reminders reschedule in the new TZ within ~10s, no container restart
 
 - 🔒 **Secure** -- AES-256-GCM encrypted credentials, SSRF protection, user scoping, tool confirmation, Docker isolation
 

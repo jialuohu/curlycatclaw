@@ -9,7 +9,7 @@ timezone = "America/Los_Angeles"
 cli_path      = "/usr/local/bin/claude"
 oauth_token   = "sk-ant-oat01-..."          # from `claude setup-token`
 model         = "claude-opus-4-6"
-# thinking_effort = "medium"             # low/medium = standard, high/max = extended thinking
+# thinking_effort = "medium"             # low/medium = standard, high/xhigh/max = extended thinking (xhigh available on Opus 4.7)
 isolated_home = "/data/claude-home"
 
 [telegram]

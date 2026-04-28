@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/jialuohu/curlycatclaw/config"
 	"github.com/jialuohu/curlycatclaw/internal/claude"
+	"github.com/jialuohu/curlycatclaw/internal/memory"
 	"github.com/jialuohu/curlycatclaw/skills"
 )
 
@@ -20,6 +22,7 @@ import (
 type CronExecutor struct {
 	cfg        *config.Config
 	configPath string // path to config.toml, passed to MCP subprocesses spawned for cron runs
+	db         *sql.DB // used by memory.EffectiveLocation for the timezone override; cron-fired prompts must render in the *runtime* effective TZ, not the startup one
 	claude     LLMClient
 	cliMgr     *claude.CLIManager
 	mcp        ToolRouter
@@ -32,9 +35,12 @@ type CronExecutor struct {
 // configPath is propagated into the --mcp-config JSON so the CLI subprocess's
 // curlycatclaw-skills MCP server can load the same config as the interactive
 // session (required for runtime MCP extensions like paper-search-mcp).
+// db is used by memory.EffectiveLocation so the rendered "scheduled at" / "now"
+// times in the cron system prompt reflect any runtime timezone override.
 func NewCronExecutor(
 	cfg *config.Config,
 	configPath string,
+	db *sql.DB,
 	claudeClient LLMClient,
 	cliMgr *claude.CLIManager,
 	mcpMgr ToolRouter,
@@ -44,6 +50,7 @@ func NewCronExecutor(
 	return &CronExecutor{
 		cfg:        cfg,
 		configPath: configPath,
+		db:         db,
 		claude:     claudeClient,
 		cliMgr:     cliMgr,
 		mcp:        mcpMgr,
@@ -57,7 +64,7 @@ func NewCronExecutor(
 // conversation history) and returns the text result. It supports tool use.
 // scheduledAt is the intended fire time (passed through to the system prompt
 // so Claude references the scheduled time rather than the wall time at execution).
-func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error) {
+func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, prompt, model, effort string, scheduledAt time.Time) (string, error) {
 	// Acquire concurrency slot.
 	select {
 	case ce.sem <- struct{}{}:
@@ -66,17 +73,27 @@ func (ce *CronExecutor) Execute(ctx context.Context, userID, chatID int64, promp
 		return "", fmt.Errorf("cron: context cancelled waiting for semaphore: %w", ctx.Err())
 	}
 
-	slog.Info("cron: executing", "user_id", userID, "chat_id", chatID, "scheduled_at", scheduledAt)
+	// Effort resolution: per-reminder effort wins over config default in BOTH
+	// modes. Empty effort falls back to the config default so API-mode cron
+	// honors `thinking_effort = "xhigh"` like the interactive session does
+	// (prior to Apr 17 fix, runToolLoop constructed SendParams without
+	// ThinkingEffort, silently dropping both per-reminder AND config-default
+	// effort — the new [effort: X] display in list_reminders would lie about
+	// being applied in API mode).
+	effectiveEffort := effort
+	if effectiveEffort == "" {
+		effectiveEffort = string(ce.cfg.Claude.ThinkingEffort)
+	}
+	slog.Info("cron: executing", "user_id", userID, "chat_id", chatID, "scheduled_at", scheduledAt, "effort", effectiveEffort, "effort_source", map[bool]string{true: "per-reminder", false: "config-default"}[effort != ""])
 
 	if ce.cfg.Claude.UseCLI() && ce.cliMgr != nil {
-		return ce.executeWithCLI(ctx, userID, chatID, prompt, model, scheduledAt)
+		return ce.executeWithCLI(ctx, userID, chatID, prompt, model, effectiveEffort, scheduledAt)
 	}
-
-	return ce.executeWithAPI(ctx, userID, chatID, prompt, scheduledAt)
+	return ce.executeWithAPI(ctx, userID, chatID, prompt, effectiveEffort, scheduledAt)
 }
 
 // executeWithAPI runs the prompt through the direct Claude API with tool support.
-func (ce *CronExecutor) executeWithAPI(ctx context.Context, userID, chatID int64, prompt string, scheduledAt time.Time) (string, error) {
+func (ce *CronExecutor) executeWithAPI(ctx context.Context, userID, chatID int64, prompt, effort string, scheduledAt time.Time) (string, error) {
 	systemPrompt := ce.buildSystemPrompt(userID, scheduledAt)
 
 	// Collect tools from skills + MCP.
@@ -87,23 +104,27 @@ func (ce *CronExecutor) executeWithAPI(ctx context.Context, userID, chatID int64
 		anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
 	}
 
-	return ce.runToolLoop(ctx, userID, chatID, messages, systemPrompt, tools)
+	return ce.runToolLoop(ctx, userID, chatID, messages, systemPrompt, tools, effort)
 }
 
 // runToolLoop executes the Claude tool-use loop without streaming or DB writes.
+// effort is a config.Effort string (empty = no extended thinking); applyThinking
+// in the claude package maps high/xhigh/max to budget_tokens presets.
 func (ce *CronExecutor) runToolLoop(
 	ctx context.Context,
 	userID, chatID int64,
 	messages []anthropic.MessageParam,
 	systemPrompt string,
 	tools []anthropic.ToolUnionParam,
+	effort string,
 ) (string, error) {
 	for i := 0; i < maxToolRounds; i++ {
 		claudeCtx, claudeCancel := context.WithTimeout(ctx, claudeTimeout)
 		resp, err := ce.claude.SendStreaming(claudeCtx, claude.SendParams{
-			Messages:     messages,
-			SystemPrompt: systemPrompt,
-			Tools:        tools,
+			Messages:       messages,
+			SystemPrompt:   systemPrompt,
+			Tools:          tools,
+			ThinkingEffort: config.Effort(effort),
 			// No OnPartialText — non-streaming for cron tasks.
 		})
 		claudeCancel()
@@ -186,17 +207,18 @@ func (ce *CronExecutor) runToolLoop(
 // populated — without that, cron-fired tasks spawn a CLI subprocess with no
 // MCP servers and lose access to runtime extensions like paper-search-mcp
 // (the v0.36.7 incident where a paper digest fell back to WebSearch).
-func (ce *CronExecutor) buildSpawnParams(userID, chatID int64, prompt, model string, scheduledAt time.Time) claude.SpawnParams {
+func (ce *CronExecutor) buildSpawnParams(userID, chatID int64, prompt, model, effort string, scheduledAt time.Time) claude.SpawnParams {
 	return claude.SpawnParams{
 		SystemPrompt: ce.buildSystemPrompt(userID, scheduledAt),
 		MCPConfig:    buildMCPConfigForUser(ce.cfg, ce.configPath, userID, chatID),
 		InitialMsg:   claude.BuildUserMessage(prompt),
 		Model:        model,
+		Effort:       effort,
 	}
 }
 
-func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt, model string, scheduledAt time.Time) (string, error) {
-	proc, err := ce.cliMgr.SpawnOneShot(ctx, ce.buildSpawnParams(userID, chatID, prompt, model, scheduledAt))
+func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64, prompt, model, effort string, scheduledAt time.Time) (string, error) {
+	proc, err := ce.cliMgr.SpawnOneShot(ctx, ce.buildSpawnParams(userID, chatID, prompt, model, effort, scheduledAt))
 	if err != nil {
 		return "", fmt.Errorf("cron: spawn CLI: %w", err)
 	}
@@ -240,16 +262,26 @@ func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64
 // NOTE: cron tasks intentionally use a fixed prompt, not the configured personality.
 // Cron tasks are operational (reminders, scheduled checks), not persona-driven.
 func (ce *CronExecutor) buildSystemPrompt(userID int64, scheduledAt time.Time) string {
-	loc := ce.cfg.Location()
+	loc, _ := memory.EffectiveLocation(ce.cfg, ce.db)
 	now := time.Now().In(loc)
 	scheduledLocal := scheduledAt.In(loc)
 
 	var sb strings.Builder
 	sb.WriteString("You are executing a scheduled task. Be concise and actionable.\n\n")
-	fmt.Fprintf(&sb, "The user's timezone is %s.\n", ce.cfg.Timezone)
+	fmt.Fprintf(&sb, "The user's timezone is %s.\n", loc.String())
 	fmt.Fprintf(&sb, "This task was SCHEDULED to fire at: %s.\n", scheduledLocal.Format("2006-01-02 15:04 MST"))
 	fmt.Fprintf(&sb, "Current local time at execution: %s.\n", now.Format("2006-01-02 15:04 MST"))
 	sb.WriteString("When referencing \"this reminder\" or the scheduled time in your reply, use the SCHEDULED time above, not the current execution time. They may differ by minutes if execution lagged.\n")
+
+	// Tool-discovery hint: MCP tools are namespaced like
+	// `mcp__<config-server>__<upstream>__<tool>` when the task prompt
+	// references a bare name (e.g. `search_papers`), search your tool
+	// inventory for the matching suffix rather than declaring the tool
+	// missing. Cron prompts are often authored with the upstream's bare
+	// names; without this hint the agent sees `mcp__curlycatclaw-skills__
+	// paper-search-mcp__search_papers`, fails to match `search_papers`
+	// literally, and falls back to WebSearch — silently losing the tools.
+	sb.WriteString("\nMCP tools are namespaced as `mcp__<server>__<tool>` (sometimes with an extra proxied segment). If this task's prompt names a tool by its bare name (e.g. `search_papers`), find the matching namespaced tool in your inventory (e.g. `mcp__curlycatclaw-skills__paper-search-mcp__search_papers`) and call THAT. Do NOT declare a tool missing without first searching for its suffix in your tool list.\n")
 
 	// Include user facts (Tier 1) so Claude knows about the user.
 	if ce.cfg.Memory.Enabled && ce.facts != nil {

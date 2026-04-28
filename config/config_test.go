@@ -734,7 +734,7 @@ func TestLoad_EnvOverridesNotSet(t *testing.T) {
 }
 
 func TestValidEffort(t *testing.T) {
-	valid := []Effort{"", EffortLow, EffortMedium, EffortHigh, EffortMax}
+	valid := []Effort{"", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax}
 	for _, e := range valid {
 		if !ValidEffort(e) {
 			t.Errorf("ValidEffort(%q) = false, want true", e)
@@ -766,7 +766,7 @@ func TestValidate_InvalidThinkingEffort(t *testing.T) {
 }
 
 func TestValidate_ValidThinkingEffort(t *testing.T) {
-	for _, e := range []Effort{"", "low", "medium", "high", "max"} {
+	for _, e := range []Effort{"", "low", "medium", "high", "xhigh", "max"} {
 		cfg := &Config{
 			Timezone: "UTC",
 			Claude:   ClaudeConfig{APIKey: "sk-key", ThinkingEffort: e},

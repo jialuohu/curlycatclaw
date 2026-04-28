@@ -102,20 +102,35 @@ func runMCPServer() error {
 		}
 	}
 
-	// Remind skills need a signal channel but we don't process reminders in MCP mode.
-	// Use a buffered channel; drain it in the background to avoid blocking.
+	// Remind + timezone skills need a signal channel but we don't process
+	// reminders or run the actor in MCP-subprocess mode. Use buffered channels
+	// drained in the background to avoid blocking. The main daemon's
+	// ReminderActor detects DB-only writes (set_timezone / set_reminder issued
+	// from the MCP subprocess) via its 10s pollNewReminders tick.
 	remindSignalCh := make(chan int64, 64)
 	go func() {
 		for range remindSignalCh {
 		}
 	}()
-	remindSkills, err := skills.InitRemindSkills(store.DB(), remindSignalCh, cfg.Location())
+	tzChangeCh := make(chan struct{}, 1)
+	go func() {
+		for range tzChangeCh {
+		}
+	}()
+	locFn := func() *time.Location {
+		loc, _ := memory.EffectiveLocation(cfg, store.DB())
+		return loc
+	}
+	remindSkills, err := skills.InitRemindSkills(store.DB(), remindSignalCh, locFn)
 	if err != nil {
 		slog.Warn("mcp-server: remind skills init failed", "err", err)
 	} else {
 		for _, s := range remindSkills {
 			reg.Register(s)
 		}
+	}
+	for _, s := range skills.InitTimezoneSkills(cfg, store.DB(), tzChangeCh) {
+		reg.Register(s)
 	}
 
 	// Fact skills.

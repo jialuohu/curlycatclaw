@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	crand "crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -52,6 +53,7 @@ type Actor struct {
 	tg     TelegramTransport
 	mcp    ToolRouter
 	store  MessageStore
+	db     *sql.DB // raw handle for memory.EffectiveLocation; the MessageStore interface intentionally hides the DB so test mocks don't need it
 	ctxb   ContextProvider
 	skills *skills.Registry
 	vector VectorIndexer
@@ -166,6 +168,7 @@ func New(
 		tg:             tg,
 		mcp:            mcpMgr,
 		store:          store,
+		db:             store.DB(),
 		ctxb:           ctxb,
 		skills:         skillReg,
 		vector:         vi,
@@ -1645,7 +1648,7 @@ func (a *Actor) handleWithCLI(
 
 	// Inject current time into user message since the CLI process's system
 	// prompt (set at spawn) has a stale "Current local time" after the first message.
-	loc := a.cfg.Location()
+	loc, _ := memory.EffectiveLocation(a.cfg, a.db)
 	now := time.Now().In(loc)
 	timePrefix := fmt.Sprintf("[Current time: %s]\n", now.Format("2006-01-02 15:04 MST"))
 	userMsg = timePrefix + userMsg
@@ -2179,7 +2182,7 @@ func (a *Actor) handleEffortCommand(msg telegram.IncomingMessage) {
 		} else {
 			a.trySend(telegram.OutgoingMessage{
 				ChatID: msg.ChatID,
-				Text:   fmt.Sprintf("Effort: %s (from config). Use /effort <low|medium|high|max> to override.", label),
+				Text:   fmt.Sprintf("Effort: %s (from config). Use /effort <low|medium|high|xhigh|max> to override.", label),
 			})
 		}
 		return
@@ -2202,7 +2205,7 @@ func (a *Actor) handleEffortCommand(msg telegram.IncomingMessage) {
 	if !config.ValidEffort(effort) || effort == "" {
 		a.trySend(telegram.OutgoingMessage{
 			ChatID: msg.ChatID,
-			Text:   fmt.Sprintf("Unknown effort level %q. Valid: low, medium, high, max.", arg),
+			Text:   fmt.Sprintf("Unknown effort level %q. Valid: low, medium, high, xhigh, max.", arg),
 		})
 		return
 	}
@@ -2249,7 +2252,7 @@ func (a *Actor) handleRetryCommand(ctx context.Context, msg telegram.IncomingMes
 		if !config.ValidEffort(effort) || effort == "" {
 			a.trySend(telegram.OutgoingMessage{
 				ChatID: msg.ChatID,
-				Text:   fmt.Sprintf("Unknown effort level %q. Valid: low, medium, high, max. Or just /retry to replay at current effort.", arg),
+				Text:   fmt.Sprintf("Unknown effort level %q. Valid: low, medium, high, xhigh, max. Or just /retry to replay at current effort.", arg),
 			})
 			return nil
 		}
@@ -2666,7 +2669,7 @@ func (a *Actor) trySend(msg telegram.OutgoingMessage) {
 }
 
 func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg string) string {
-	loc := a.cfg.Location()
+	loc, _ := memory.EffectiveLocation(a.cfg, a.db)
 	now := time.Now().In(loc)
 
 	var sb strings.Builder
@@ -2736,7 +2739,7 @@ func (a *Actor) buildSystemPrompt(userID, chatID int64, chatType, currentMsg str
 		}
 	}
 
-	fmt.Fprintf(&sb, "The user's timezone is %s. Current local time: %s.\n", a.cfg.Timezone, now.Format("2006-01-02 15:04 MST"))
+	fmt.Fprintf(&sb, "The user's timezone is %s. Current local time: %s.\n", loc.String(), now.Format("2006-01-02 15:04 MST"))
 	sb.WriteString("Always use this timezone for scheduling, time references, and \"today/tomorrow/yesterday.\"\n")
 	sb.WriteString("When the user says \"3pm\" they mean 3pm in their timezone, not UTC.\n")
 	sb.WriteString("\nIMPORTANT: For reminders and scheduling, ALWAYS use the set_reminder tool (via MCP). Never use built-in tools like CronCreate.\n")
