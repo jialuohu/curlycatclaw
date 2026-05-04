@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.37.1] - 2026-05-04
+
+### Fixed
+- **Cron task timeout for compound jobs**: bumped `fireCronTask`'s wall-clock budget from 5 minutes to 20 minutes (`skills/remind.go:cronExecTimeout`). Compound recurring tasks like a daily paper digest (Zotero search, per-paper read/score, ReadLater write per paper, with extended thinking) consistently ran 8-15 minutes and surfaced the user-visible error `[Cron task failed] ...: cron: CLI send: context deadline exceeded` on every fire. The 5-minute cap dated to the original cron feature commit (Mar 30, 2026) and was untuned for tasks that chain many MCP tool calls; interactive sessions have no equivalent outer cap. Per-step inner timeouts (`claudeTimeout=120s`, `mcpToolTimeout=30s` in `internal/session/cron.go`) are unchanged. Regression guard: `TestFireCronTask_GivesRunnerEnoughTimeBudget` asserts the deadline budget passed to `CronRunner.Execute` is at least 15 minutes, so any future tightening fails CI loudly.
+
 ## [0.37.0] - 2026-04-28
 
 ### Added

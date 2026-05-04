@@ -59,6 +59,16 @@ const listPromptPreviewRunes = 500
 // from truncation.
 const promptBodyCloser = "</user_prompt_body>"
 
+// cronExecTimeout caps the total wall-clock budget for a single cron
+// task: Claude's whole streaming run plus every MCP tool round-trip it
+// makes. Compound tasks like a daily paper digest (Zotero search,
+// per-paper read/score, ReadLater write per paper, with extended
+// thinking) routinely run 8-15 minutes. The original 5-minute cap
+// fired `cron: CLI send: context deadline exceeded` for those
+// workloads on every fire. 20 minutes leaves real headroom while still
+// bounding a genuinely hung CLI subprocess.
+const cronExecTimeout = 20 * time.Minute
+
 // renderPromptBody writes a prompt body to b wrapped in <user_prompt_body>
 // delimiter tags. The wrapper signals to the agent that the contents are
 // quoted user-supplied data, not instructions to act on — the same trust
@@ -1198,7 +1208,7 @@ func (ra *ReminderActor) fireReminder(r reminderRow) {
 
 // fireCronTask invokes Claude with the reminder's prompt and sends the result.
 func (ra *ReminderActor) fireCronTask(r reminderRow) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), cronExecTimeout)
 	defer cancel()
 
 	slog.Info("reminder: executing cron task", "id", r.ID, "chat_id", r.ChatID)

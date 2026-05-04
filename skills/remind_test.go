@@ -1702,6 +1702,52 @@ func TestUpdateReminder_EffortField(t *testing.T) {
 	}
 }
 
+// TestFireCronTask_GivesRunnerEnoughTimeBudget pins the cronExecTimeout
+// against accidental rollback to the original 5-minute cap. A daily paper
+// digest (Zotero search + per-paper read/score + ReadLater write per paper,
+// with extended thinking) routinely needs 8-15 minutes; the 5-minute cap
+// surfaced as user-visible `cron: CLI send: context deadline exceeded`
+// errors on every fire. Asserting >= 15 minutes ensures any future tightening
+// has to clear a code review that names this regression.
+func TestFireCronTask_GivesRunnerEnoughTimeBudget(t *testing.T) {
+	db := newTestDBSingleConn(t)
+	signalCh := make(chan int64, 16)
+	_, err := InitRemindSkills(db, signalCh, func() *time.Location { return time.UTC })
+	if err != nil {
+		t.Fatalf("InitRemindSkills: %v", err)
+	}
+
+	tgInbox := make(chan telegram.OutgoingMessage, 16)
+	mock := &mockCronRunner{result: "done"}
+	ra := NewReminderActor(db, tgInbox, func() *time.Location { return time.UTC }, signalCh, nil, mock)
+
+	promptVal := "long-running digest"
+	r := reminderRow{
+		ID:      1,
+		UserID:  1,
+		ChatID:  10,
+		Message: "Paper digest",
+		FireAt:  time.Now().Add(-time.Second),
+		Prompt:  &promptVal,
+	}
+	if _, err := db.Exec(
+		`INSERT INTO reminders (id, user_id, chat_id, message, fire_at, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+		r.ID, r.UserID, r.ChatID, r.Message, r.FireAt, promptVal, time.Now(),
+	); err != nil {
+		t.Fatalf("seed reminder: %v", err)
+	}
+
+	ra.fireCronTask(r)
+
+	if !mock.called {
+		t.Fatal("mock CronRunner should have been called")
+	}
+	const minBudget = 15 * time.Minute
+	if mock.gotDeadlineBudget < minBudget {
+		t.Errorf("fireCronTask deadline budget = %s, want >= %s — cronExecTimeout may have regressed", mock.gotDeadlineBudget, minBudget)
+	}
+}
+
 // TestFireCronTask_PassesEffortToRunner asserts that the effort stored
 // on the reminder row flows through fireCronTask to CronRunner.Execute.
 // Without this, per-reminder effort overrides would persist to DB but
@@ -1888,21 +1934,25 @@ func TestListReminders_OrdersByFireAtThenID(t *testing.T) {
 
 // mockCronRunner is a test double for CronRunner.
 type mockCronRunner struct {
-	result      string
-	err         error
-	called      bool
-	gotPrompt   string
-	gotModel    string
-	gotEffort   string
-	gotSchedule time.Time
+	result            string
+	err               error
+	called            bool
+	gotPrompt         string
+	gotModel          string
+	gotEffort         string
+	gotSchedule       time.Time
+	gotDeadlineBudget time.Duration // time.Until(ctx deadline) at call time, 0 if no deadline
 }
 
-func (m *mockCronRunner) Execute(_ context.Context, _, _ int64, prompt, model, effort string, scheduledAt time.Time) (string, error) {
+func (m *mockCronRunner) Execute(ctx context.Context, _, _ int64, prompt, model, effort string, scheduledAt time.Time) (string, error) {
 	m.called = true
 	m.gotPrompt = prompt
 	m.gotModel = model
 	m.gotEffort = effort
 	m.gotSchedule = scheduledAt
+	if d, ok := ctx.Deadline(); ok {
+		m.gotDeadlineBudget = time.Until(d)
+	}
 	return m.result, m.err
 }
 
