@@ -231,6 +231,16 @@ func (ce *CronExecutor) executeWithCLI(ctx context.Context, userID, chatID int64
 		text.WriteString(delta)
 	}, nil)
 	if err != nil {
+		// proc.Send accumulates streamed text deltas into `text` via the
+		// callback before returning. If a context deadline (or any other
+		// error) interrupts the stream mid-flight, every delta that already
+		// arrived is committed. Surface that as a partial result alongside
+		// the error so fireCronTask can render "this is what completed
+		// before we ran out of time" instead of throwing the work away.
+		// Empty text falls through unchanged (caller still sees the error).
+		if text.Len() > 0 {
+			return text.String(), fmt.Errorf("cron: CLI send: %w", err)
+		}
 		return "", fmt.Errorf("cron: CLI send: %w", err)
 	}
 

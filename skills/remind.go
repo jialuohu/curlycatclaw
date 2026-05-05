@@ -1223,6 +1223,22 @@ func (ra *ReminderActor) fireCronTask(r reminderRow) {
 	}
 	result, err := ra.cronExec.Execute(ctx, r.UserID, r.ChatID, *r.Prompt, cronModel, cronEffort, r.FireAt)
 	if err != nil {
+		// Partial-result branch: CronExecutor.executeWithCLI returns any
+		// streamed assistant text alongside an error when the run hits the
+		// context deadline mid-stream. A 19-minute paper digest that
+		// already wrote 3 of 4 papers should NOT be reduced to a bare
+		// error in Telegram; the user wants what completed.
+		if result != "" {
+			slog.Warn("reminder: cron task partial", "id", r.ID, "err", err, "result_len", len(result))
+			partialText := fmt.Sprintf("**%s** [partial — timed out before completion]\n\n%s\n\n_Error: %v_", r.Message, result, err)
+			partialMsg := telegram.OutgoingMessage{ChatID: r.ChatID, Text: partialText, HTML: true}
+			ra.trySendTelegram(r.ID, partialMsg)
+			ra.persistCronTurn(r, partialText)
+			if r.CronExpr == nil {
+				ra.markFiredIfOneTime(r)
+			}
+			return
+		}
 		slog.Error("reminder: cron task failed", "id", r.ID, "err", err)
 		errText := fmt.Sprintf("[Cron task failed] %s: %v", r.Message, err)
 		errMsg := telegram.OutgoingMessage{ChatID: r.ChatID, Text: errText, HTML: true}

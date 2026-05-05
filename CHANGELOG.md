@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.37.2] - 2026-05-04
+
+### Fixed
+- **Cron task partial-result recovery on timeout**: when a cron-fired Claude run hits the 20-minute deadline mid-stream, the streamed assistant text up to that point is now sent to Telegram with a `[partial — timed out before completion]` marker instead of being thrown away. Before this, `CronExecutor.executeWithCLI` accumulated text deltas via `proc.Send`'s `onPartialText` callback into a `strings.Builder`, then on `context deadline exceeded` returned `("", err)` and dropped the buffer; the user saw a bare `[Cron task failed] ...: cron: CLI send: context deadline exceeded` and lost everything that had already rendered. A 19-minute paper digest that wrote 3 of 4 papers before the deadline now ships those 3 papers with the timeout note appended. Affects CLI mode only — API mode (`runToolLoop`) drops mid-run text across rounds and would need a structurally different fix. Regression guard: `TestFireCronTask_PartialOnTimeout` asserts a `(result, err)` return from `CronRunner.Execute` produces a Telegram message containing the partial body, the `partial` marker, and `HTML: true`, never the bare-error template.
+
 ## [0.37.1] - 2026-05-04
 
 ### Fixed

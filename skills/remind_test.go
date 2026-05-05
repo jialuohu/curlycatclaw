@@ -2060,6 +2060,65 @@ func TestFireCronTask_Error(t *testing.T) {
 	<-done
 }
 
+// TestFireCronTask_PartialOnTimeout pins the partial-recovery branch.
+// CronExecutor.executeWithCLI returns streamed assistant text alongside the
+// error when proc.Send hits the context deadline mid-stream. fireCronTask
+// must surface that partial body to Telegram with a clear "[partial]" marker
+// instead of dropping it and showing only the bare error. Without this, a
+// 19-minute paper digest that already streamed 3 of 4 papers gets reduced
+// to `[Cron task failed] ...: cron: CLI send: context deadline exceeded`
+// in the chat.
+func TestFireCronTask_PartialOnTimeout(t *testing.T) {
+	db := newTestDBSingleConn(t)
+	signalCh := make(chan int64, 16)
+	_, err := InitRemindSkills(db, signalCh, func() *time.Location { return time.UTC })
+	if err != nil {
+		t.Fatalf("InitRemindSkills: %v", err)
+	}
+
+	tgInbox := make(chan telegram.OutgoingMessage, 16)
+	mock := &mockCronRunner{
+		result: "Paper 1: ModServe\nPaper 2: HydraInfer\nPaper 3: SwiftServe",
+		err:    fmt.Errorf("cron: CLI send: %w", context.DeadlineExceeded),
+	}
+	ra := NewReminderActor(db, tgInbox, func() *time.Location { return time.UTC }, signalCh, nil, mock)
+
+	prompt := "daily paper digest"
+	fireAt := time.Now().Add(-1 * time.Second).UTC()
+	db.Exec(`INSERT INTO reminders (user_id, chat_id, message, fire_at, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+		1, 10, "Daily Papers", fireAt, prompt, time.Now().UTC())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- ra.Run(ctx) }()
+
+	select {
+	case msg := <-tgInbox:
+		if !strings.Contains(msg.Text, "Daily Papers") {
+			t.Errorf("expected reminder header, got: %s", msg.Text)
+		}
+		if !strings.Contains(msg.Text, "partial") {
+			t.Errorf("expected `partial` marker so the user knows the run was cut short; got: %s", msg.Text)
+		}
+		if !strings.Contains(msg.Text, "ModServe") || !strings.Contains(msg.Text, "SwiftServe") {
+			t.Errorf("expected partial body content (papers 1 and 3) preserved in the Telegram message; got: %s", msg.Text)
+		}
+		if strings.Contains(msg.Text, "[Cron task failed]") {
+			t.Errorf("partial branch must NOT use the bare-error template; got: %s", msg.Text)
+		}
+		if !msg.HTML {
+			t.Error("partial cron message must set HTML: true (matches success and error paths)")
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for partial-result notification")
+	}
+
+	cancel()
+	<-done
+}
+
 // mockPersister records GetActiveConversation and AppendMessage calls so tests
 // can assert the cron-turn persistence path without a real memory.Store.
 type mockPersister struct {
