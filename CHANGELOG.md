@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.37.3] - 2026-05-05
+
+### Fixed
+- **Cron CLI subprocess HOME parity**: cron-fired CLI subprocesses now run with `HOME=$IsolatedHome` (typically `/data/claude-home`), matching the interactive session. Before, `CronExecutor.buildSpawnParams` returned `SpawnParams` with no `HomeDir`, so the cron subprocess inherited the daemon's `HOME=/data` and every MCP server it spawned looked up XDG paths in the wrong place. Concrete failure: vibe-trading-mcp's `openai-codex` LangChain provider called `oauth_cli_kit.get_token()` which checks `$HOME/.local/share/oauth-cli-kit/auth/codex.json` — the OAuth token sits at `/data/claude-home/.local/share/...`, but the cron subprocess looked at `/data/.local/share/...` (file not found), and every morning auto-trader fire reported the swarm as `status=failed` with 0 tokens. The interactive session (`Actor.handleMessage`) sets `spawnParams.HomeDir = a.cfg.Claude.IsolatedHome` at `internal/session/actor.go:1718-1720`; `buildSpawnParams` was missing the equivalent line. Same class as the v0.36.7 cron MCPConfig regression — interactive vs cron CLI spawn parity. Regression guards: `TestCronExecutor_SpawnParamsPropagateIsolatedHome` and `TestCronExecutor_SpawnParamsBlankIsolatedHomeStaysBlank` in `internal/session/cron_test.go`.
+
 ## [0.37.2] - 2026-05-04
 
 ### Fixed

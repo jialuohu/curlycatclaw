@@ -342,6 +342,44 @@ func TestBuildSystemPrompt_IncludesScheduledAt(t *testing.T) {
 	}
 }
 
+// TestCronExecutor_SpawnParamsPropagateIsolatedHome pins the May 5 incident
+// where cron-fired CLI subprocesses inherited the daemon's HOME=/data instead
+// of the IsolatedHome (typically /data/claude-home) used by the interactive
+// session. Every MCP server those subprocesses spawn (vibe-trading-mcp,
+// scrapling, gws, etc.) ran under the wrong $HOME and looked up XDG paths in
+// the wrong place. Concrete failure mode: vibe-trading-mcp's openai-codex
+// provider failed `oauth_cli_kit.get_token()` because the auth file lives at
+// $IsolatedHome/.local/share/oauth-cli-kit/auth/codex.json, not /data/.local/...
+// — every morning auto-trader fire reported the swarm as `status=failed`
+// with 0 tokens. Actor.handleMessage already sets HomeDir from IsolatedHome
+// (internal/session/actor.go:1718-1720); buildSpawnParams was missing the
+// equivalent line. Same class as the v0.36.7 MCPConfig regression.
+func TestCronExecutor_SpawnParamsPropagateIsolatedHome(t *testing.T) {
+	ce := newTestCronExecutor(&mockLLM{}, &mockCronFactProvider{})
+	ce.cfg.Claude.IsolatedHome = "/data/claude-home"
+
+	params := ce.buildSpawnParams(42, 100, "hi", "", "high", time.Now())
+
+	if params.HomeDir != "/data/claude-home" {
+		t.Errorf("cron SpawnParams.HomeDir = %q, want %q; cron CLI subprocess will inherit the daemon's HOME, breaking every MCP server that reads XDG paths (notably vibe-trading-mcp's openai-codex OAuth lookup).", params.HomeDir, "/data/claude-home")
+	}
+}
+
+// TestCronExecutor_SpawnParamsBlankIsolatedHomeStaysBlank guards the
+// IsolatedHome="" path — when the operator hasn't configured an isolated
+// home, the cron subprocess must inherit the daemon's HOME (no replacement),
+// matching the behavior of the interactive session in that mode.
+func TestCronExecutor_SpawnParamsBlankIsolatedHomeStaysBlank(t *testing.T) {
+	ce := newTestCronExecutor(&mockLLM{}, &mockCronFactProvider{})
+	// IsolatedHome is left as zero value ("") by newTestCronExecutor.
+
+	params := ce.buildSpawnParams(42, 100, "hi", "", "high", time.Now())
+
+	if params.HomeDir != "" {
+		t.Errorf("cron SpawnParams.HomeDir = %q, want empty; with no IsolatedHome configured the spawn must inherit the daemon's HOME unchanged (subprocess.go:replaceEnv only fires when HomeDir is non-empty).", params.HomeDir)
+	}
+}
+
 // TestCronExecutor_SpawnParamsIncludeMCPConfig is the regression guard for
 // the Apr 15 incident where the cron-fired paper digest reported that
 // `search_papers`/`search_arxiv`/`search_semantic` were "not registered"

@@ -214,6 +214,16 @@ func (ce *CronExecutor) buildSpawnParams(userID, chatID int64, prompt, model, ef
 		InitialMsg:   claude.BuildUserMessage(prompt),
 		Model:        model,
 		Effort:       effort,
+		// HomeDir parity with Actor.handleMessage in actor.go: cron-fired CLI
+		// subprocesses (and every MCP server they spawn) must run with
+		// HOME=IsolatedHome so any tool that reads $HOME/.local/share or other
+		// XDG paths sees the same files the interactive session does. Without
+		// this, vibe-trading-mcp's openai-codex provider looked up
+		// /data/.local/share/oauth-cli-kit/auth/codex.json (the daemon's
+		// HOME=/data) instead of /data/claude-home/.local/share/... where
+		// the OAuth token actually lives, so every cron-fired swarm aborted
+		// with `OAuth credentials not found` (status=failed, 0 tokens).
+		HomeDir: ce.cfg.Claude.IsolatedHome,
 	}
 }
 
